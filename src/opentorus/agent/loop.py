@@ -8,6 +8,7 @@ cap prevents runaway loops.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import math
@@ -49,11 +50,6 @@ _MAX_DELIVERABLE_RETRIES = 5
 # no tool executed, stop instead of cycling to the step ceiling — important during
 # gap-fill, where the deliverable bootstrap does not re-fire and caps may be inf.
 _MAX_CHAT_ONLY_STALL = 8
-
-# Absolute backstop on model iterations when ``max_steps`` is infinite. Far above
-# any real run (gap-fill budgets are dozens of steps); prevents a stuck provider
-# from looping forever and exhausting the token budget.
-_INFINITE_STEP_CEILING = 1000
 
 _PROVE_RECOVERY_HINT = (
     "This prove session requires a deliverable tool call — not a chat reply. "
@@ -246,10 +242,11 @@ class AgentLoop:
         chat_only_streak = 0
         last_chat_only: str | None = None
         run_started = time.monotonic()
+        # ``max_steps = inf`` means truly unbounded: run until the deliverable is
+        # done, the no-progress stall guard trips, or the user interrupts (Ctrl-C).
+        # A finite max_steps is a hard cap.
         step_iter: Iterable[int] = (
-            range(_INFINITE_STEP_CEILING)
-            if math.isinf(self.max_steps)
-            else range(int(self.max_steps))
+            itertools.count() if math.isinf(self.max_steps) else range(int(self.max_steps))
         )
         for _ in step_iter:
             self.steps_run += 1
