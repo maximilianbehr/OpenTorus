@@ -1,0 +1,38 @@
+name: Design proposal
+description: Propose a larger design or architectural direction
+title: "[Design]: "
+labels: ["design"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for larger changes that need discussion before
+        implementation (new subsystems, milestone-spanning work, etc.).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A short summary of the proposal.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this change worth making?
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Design
+      description: Describe the proposed design, including trade-offs.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Milestone / scope
+      description: Which milestone(s) does this relate to?
+    validations:
+      required: false

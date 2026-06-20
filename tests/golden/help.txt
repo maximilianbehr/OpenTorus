@@ -1,0 +1,36 @@
+$ /help
+Available slash commands:
+  /help     Show this help.
+  /suggest  Suggest concrete next commands for this workspace.
+  /status   Show workspace, git, and project state.
+  /diff     Show the git diff of the working tree.
+  /claims   Show research claims and their statuses.
+  /experiments  Show registered experiments.
+  /papers   Show registered papers.
+  /tasks    Show planned research tasks.
+  /graph    Show the artifact relation graph.
+  /related <id>  Show relations touching an artifact.
+  /evidence <claim-id>  Show evidence linked to a claim.
+  /why <id>  Trace an artifact back to its evidence and relations.
+  /report [problem-id]  Rebuild a dossier report (defaults to the active problem).
+  /problem [id]  Show the active problem / dossiers, or set the active problem.
+  /patches  Show patch artifacts.
+  /patch <id>  Show a patch's metadata and diff.
+  /memory   Show structured project memory counts.
+  /actions  Show recent tool actions.
+  /history [n]  Show recent input history (↑/↓ recall, Ctrl+R searches).
+  /permissions  Show the current permission mode and policy.
+  /style [name]  Show or set the operating style (cautious/normal/fast/autonomous).
+  /mode [name]  Show or set the agent mode (normal/review).
+  /execute [goal]  Plan a goal (or resume) and execute tasks one at a time.
+  /replay [last|<id>]  Summarize a session for review.
+  /usage    Show the local token usage and estimated cost ledger.
+  /check    Run the configured quality gates (test/lint/typecheck).
+  /checkpoint create <label>  Record a recoverable checkpoint.
+  /context  Show the context summary sent to the model.
+  /model    Show the model config, or `/model set <key> <value>`.
+  /clear    Clear the screen.
+  /exit     Leave the session.
+
+Press TAB to complete commands; ↑/↓ recall history and Ctrl+R searches it.
+Type a natural-language task to run it through the agent loop.

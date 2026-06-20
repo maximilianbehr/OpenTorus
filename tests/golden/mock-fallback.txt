@@ -1,0 +1,2 @@
+> tell me a story about clouds
+I'm running with the deterministic mock provider (no LLM configured). I can inspect 'status', 'diff', or 'memory'. Configure a real provider with `opentorus config set model.provider <name>`.
