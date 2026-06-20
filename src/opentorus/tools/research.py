@@ -13,6 +13,18 @@ from opentorus.tools._examples import ex
 from opentorus.tools.base import Tool, ToolCall, ToolResult
 
 
+def _active_problem(ot_dir: Path) -> str | None:
+    """The workspace's current problem, used to attribute agent-created artifacts.
+
+    Claims, evidence, and experiments the agent records live in the workspace-global
+    research store; stamping them with the active problem id lets `problem show`
+    report accurate per-dossier counts instead of workspace-wide totals.
+    """
+    from opentorus.research.dossier.store import get_active_problem
+
+    return get_active_problem(ot_dir)
+
+
 def _as_str_list(value: object) -> list[str]:
     """Coerce a tool argument into a clean list of non-empty strings.
 
@@ -385,7 +397,7 @@ class ClaimNewTool(Tool):
         statement = str(call.args.get("statement", "")).strip()
         if not statement:
             return self.fail(call, "claim_new requires a 'statement'.")
-        claim = new_claim(self._ot_dir, statement)
+        claim = new_claim(self._ot_dir, statement, problem_id=_active_problem(self._ot_dir))
         return self.ok(
             call,
             f"{claim.id} [{claim.status}]: {claim.statement}",
@@ -447,6 +459,7 @@ class EvidenceAddTool(Tool):
                 summary=str(call.args.get("summary", "")),
                 direction=str(call.args.get("direction", "supports")),
                 strength=str(call.args.get("strength", "moderate")),
+                problem_id=_active_problem(self._ot_dir),
             )
         except OpenTorusError as exc:
             return self.fail(call, str(exc))
@@ -539,6 +552,7 @@ class ExpNewTool(Tool):
                 command=command,
                 environment=environment,
                 run_from=run_from,  # type: ignore[arg-type]
+                problem_id=_active_problem(self._ot_dir),
             )
         except OpenTorusError as exc:
             return self.fail(call, str(exc))

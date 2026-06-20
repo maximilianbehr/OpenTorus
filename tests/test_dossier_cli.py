@@ -32,6 +32,40 @@ def test_problem_new_and_show(tmp_path: Path, monkeypatch) -> None:
     assert "open" in res.stdout
 
 
+def test_problem_show_attributes_workspace_research_store(tmp_path: Path, monkeypatch) -> None:
+    # The agent's claim/evidence/exp tools write to the workspace-global research
+    # store, stamped with the active problem id; `problem show` must report the
+    # counts attributed to this dossier, not silently show 0.
+    from opentorus.research.claims import new_claim
+    from opentorus.workspace import workspace_dir
+
+    _init(tmp_path, monkeypatch)
+    runner.invoke(app, ["problem", "new", "Prove or refute: X holds."])
+    base = workspace_dir(tmp_path)
+    new_claim(base, "A claim attributed to this problem.", problem_id="PROBLEM-0001")
+
+    res = runner.invoke(app, ["problem", "show", "PROBLEM-0001"])
+    assert res.exit_code == 0
+    assert "research store (attributed to this problem)" in res.stdout
+    assert "claims: 1" in res.stdout  # the attributed claim is counted and surfaced
+
+
+def test_problem_show_counts_legacy_untagged_in_single_dossier(tmp_path: Path, monkeypatch) -> None:
+    # Legacy artifacts created before attribution carry no problem_id. In a workspace
+    # with exactly one dossier they can only belong to it, so they are counted here.
+    from opentorus.research.claims import new_claim
+    from opentorus.workspace import workspace_dir
+
+    _init(tmp_path, monkeypatch)
+    runner.invoke(app, ["problem", "new", "Prove or refute: Y holds."])
+    new_claim(workspace_dir(tmp_path), "Legacy untagged claim.")  # problem_id=None
+
+    res = runner.invoke(app, ["problem", "show", "PROBLEM-0001"])
+    assert res.exit_code == 0
+    assert "research store (attributed to this problem)" in res.stdout
+    assert "claims: 1" in res.stdout
+
+
 def test_full_workflow_produces_honest_report(tmp_path: Path, monkeypatch) -> None:
     _init(tmp_path, monkeypatch)
     runner.invoke(app, ["problem", "new", "Conjecture: X holds for all n."])

@@ -48,6 +48,11 @@ inspectable: you can always trace a conclusion back to its evidence.
 | Review | `REVIEW-` | A critic review with structured findings. |
 | Figure | `FIGURE-` | A regenerable plot with provenance. |
 
+Workspace-global claims, evidence, and experiments carry an optional `problem_id`,
+stamped from the active problem when the agent creates them, so `problem show`
+reports per-dossier counts. Records created outside any active problem (or before
+attribution existed) leave `problem_id` unset and are reported as unattributed.
+
 ## Claims and the status ladder
 
 Claims never auto-promote. They move up a deliberate ladder, and the stronger

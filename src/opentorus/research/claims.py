@@ -128,6 +128,9 @@ def _utcnow() -> datetime:
 class Claim(BaseModel):
     id: str
     statement: str
+    # Problem dossier this claim was created under (attribution). None for legacy
+    # records or claims created outside any active problem.
+    problem_id: str | None = None
     status: ClaimStatus = "idea"
     support: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
@@ -146,8 +149,11 @@ def claims_path(ot_dir: Path) -> Path:
     return ot_dir / "memory" / "claims.jsonl"
 
 
-def list_claims(ot_dir: Path) -> list[Claim]:
-    return read_jsonl(claims_path(ot_dir), Claim)
+def list_claims(ot_dir: Path, *, problem_id: str | None = None) -> list[Claim]:
+    claims = read_jsonl(claims_path(ot_dir), Claim)
+    if problem_id is not None:
+        return [c for c in claims if c.problem_id == problem_id]
+    return claims
 
 
 def get_claim(ot_dir: Path, claim_id: str) -> Claim | None:
@@ -157,12 +163,13 @@ def get_claim(ot_dir: Path, claim_id: str) -> Claim | None:
     return None
 
 
-def new_claim(ot_dir: Path, statement: str) -> Claim:
+def new_claim(ot_dir: Path, statement: str, *, problem_id: str | None = None) -> Claim:
     path = claims_path(ot_dir)
     existing = read_jsonl(path, Claim)
     claim = Claim(
         id=next_id("CLAIM", (c.id for c in existing)),
         statement=statement,
+        problem_id=problem_id,
         status="idea",
         allowed_usage=ALLOWED_USAGE["idea"],
     )

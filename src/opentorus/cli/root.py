@@ -509,6 +509,10 @@ def prove(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
 
+    # Make the proved problem active so the agent's claim/evidence/experiment tools
+    # attribute the artifacts they create to this dossier (not a stale active one).
+    store.set_active_problem(ot_dir, pid)
+
     if strategy:
         key = strategy.strip().lower()
         if key not in ATTACK_STRATEGIES:

@@ -56,6 +56,9 @@ class Evidence(BaseModel):
     direction: Direction = "neutral"
     strength: Strength = "moderate"
     limitations: list[str] = Field(default_factory=list)
+    # Problem dossier this evidence was recorded under (attribution). None for
+    # legacy records or evidence added outside any active problem.
+    problem_id: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -63,10 +66,14 @@ def evidence_path(ot_dir: Path) -> Path:
     return ot_dir / "evidence.jsonl"
 
 
-def list_evidence(ot_dir: Path, claim_id: str | None = None) -> list[Evidence]:
+def list_evidence(
+    ot_dir: Path, claim_id: str | None = None, *, problem_id: str | None = None
+) -> list[Evidence]:
     entries = read_jsonl(evidence_path(ot_dir), Evidence)
     if claim_id is not None:
-        return [e for e in entries if e.claim_id == claim_id]
+        entries = [e for e in entries if e.claim_id == claim_id]
+    if problem_id is not None:
+        entries = [e for e in entries if e.problem_id == problem_id]
     return entries
 
 
@@ -87,6 +94,7 @@ def add_evidence(
     direction: str = "neutral",
     strength: str = "moderate",
     limitations: list[str] | None = None,
+    problem_id: str | None = None,
 ) -> tuple[Evidence, str | None]:
     """Add an evidence record for a claim.
 
@@ -115,6 +123,7 @@ def add_evidence(
         direction=direction,  # type: ignore[arg-type]
         strength=strength,  # type: ignore[arg-type]
         limitations=limitations or [],
+        problem_id=problem_id,
     )
     append_jsonl(evidence_path(ot_dir), evidence)
 
