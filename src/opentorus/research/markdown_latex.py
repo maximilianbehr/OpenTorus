@@ -138,15 +138,20 @@ def _apply_combining(text: str) -> str:
 
 def _convert_math_run(run: str) -> str:
     run = _apply_combining(run)
-    latex_parts: list[str] = []
+    tokens: list[str] = []
     for ch in run:
         mapped = _char_to_latex(ch)
-        if mapped is None:
-            # Non-ascii unknown: keep as unicode text when the LaTeX engine supports UTF-8.
-            latex_parts.append(ch)
-        else:
-            latex_parts.append(mapped)
-    body = "".join(latex_parts).strip()
+        # Non-ascii unknown: keep as unicode text when the LaTeX engine supports UTF-8.
+        tokens.append(ch if mapped is None else mapped)
+    # Join, inserting a space where a control word (e.g. \in, \cdot, \rho) would
+    # otherwise glue to a following letter and form an undefined command:
+    # ``∈C`` -> ``\in`` + ``C`` must become ``\in C`` (renders ∈C), not ``\inC``.
+    pieces: list[str] = []
+    for tok in tokens:
+        if pieces and tok[:1].isalpha() and re.search(r"\\[A-Za-z]+$", pieces[-1]):
+            pieces.append(" ")
+        pieces.append(tok)
+    body = "".join(pieces).strip()
     if not body:
         return run
     return f"${body}$"
