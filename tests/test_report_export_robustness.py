@@ -129,6 +129,43 @@ def test_markdown_to_html_embeds_mathjax_and_preserves_math() -> None:
     assert "$$\\int_0^1 f$$" in html  # display math span survives
 
 
+def test_facts_to_latex_uses_llm_proofs_with_cache(tmp_path: Path) -> None:
+    # Deterministic structure + per-proof LLM conversion: the proof body is the
+    # model's clean LaTeX (not the raw Unicode-in-prose), and a shared cache means
+    # the conversion runs once even across repeated renders.
+    from opentorus.providers.base import BaseProvider, ProviderResponse
+    from opentorus.research.dossier.pdf_export import facts_to_latex, gather_dossier_facts
+
+    calls = {"n": 0}
+
+    class StubProvider(BaseProvider):
+        @property
+        def name(self) -> str:
+            return "ollama"
+
+        def generate(self, messages, tools=None):
+            calls["n"] += 1
+            return ProviderResponse(kind="message", content="$A\\in\\mathbb{C}^{n}$ as required.")
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    init_workspace(tmp_path)
+    base = workspace_dir(tmp_path)
+    d = store.create_dossier(base, "Conjecture: P.", domain="demo")
+    claims.add_proof_attempt(base, d.id, title="Sketch", body=_MALFORMED_PROOF_BODY)
+
+    facts = gather_dossier_facts(base, d.id)
+    cache: dict[str, str] = {}
+    prov = StubProvider()
+    body = facts_to_latex(facts, provider=prov, proof_compose_llm=True, cache=cache)
+    assert "$A\\in\\mathbb{C}^{n}$ as required." in body  # model LaTeX, not raw Unicode prose
+    assert "A∈C^{n×n}" not in body  # raw Unicode-in-prose was replaced
+    assert calls["n"] == 1 and cache  # converted once, cached
+    facts_to_latex(facts, provider=prov, proof_compose_llm=True, cache=cache)
+    assert calls["n"] == 1  # second render reuses the cache, no extra model call
+
+
 @pytest.mark.skipif(not tex_available(), reason="no LaTeX toolchain on PATH")
 def test_export_pdf_compiles_despite_malformed_proof_math(tmp_path: Path) -> None:
     # End-to-end gold test: a dossier whose proof sketch carries malformed math must

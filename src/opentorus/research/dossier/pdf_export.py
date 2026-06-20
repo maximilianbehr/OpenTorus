@@ -822,8 +822,14 @@ def proof_body_to_latex(
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
     strict_math: bool = False,
+    cache: dict[str, str] | None = None,
 ) -> str:
-    """Render a proof sketch body as integrated LaTeX (LLM or deterministic fallback)."""
+    """Render a proof sketch body as integrated LaTeX (LLM or deterministic fallback).
+
+    A ``cache`` keyed by proof id memoizes the (expensive) LLM conversion so a
+    failed whole-document attempt does not pay to re-convert every proof on the
+    next, deterministic-structure attempt.
+    """
     body = proof.get("body") or ""
     if not body.strip():
         return ""
@@ -831,8 +837,14 @@ def proof_body_to_latex(
         # Guaranteed-compile path: never invoke the LLM, neutralize all math.
         return _proof_markdown_to_latex_fallback(body, strict_math=True)
     if compose_llm and _llm_usable(provider):
+        pid = proof.get("id") or ""
+        if cache is not None and pid in cache:  # reuse a prior LLM conversion
+            return cache[pid]
         try:
-            return llm_convert_proof_to_latex(proof, provider, hooks=hooks)
+            latex = llm_convert_proof_to_latex(proof, provider, hooks=hooks)
+            if cache is not None and pid:
+                cache[pid] = latex
+            return latex
         except Exception as exc:  # noqa: BLE001 — fall back to deterministic LaTeX rendering
             logger.debug("LLM proof-to-LaTeX conversion failed (%s); using fallback.", exc)
     return _proof_markdown_to_latex_fallback(body)
@@ -854,6 +866,7 @@ def _proofs_section_latex(
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
     strict_math: bool = False,
+    cache: dict[str, str] | None = None,
 ) -> str:
     """LaTeX section with proof sketch bodies rendered as math-aware LaTeX."""
     proofs = facts.get("proofs") or []
@@ -876,7 +889,12 @@ def _proofs_section_latex(
             gaps = ", ".join(_latex_escape(_gap_text(g)) for g in proof["gaps"])
             parts.append(f"\\textit{{Recorded gaps:}} {gaps}")
         latex_body = proof_body_to_latex(
-            proof, provider, compose_llm=compose_llm, hooks=hooks, strict_math=strict_math
+            proof,
+            provider,
+            compose_llm=compose_llm,
+            hooks=hooks,
+            strict_math=strict_math,
+            cache=cache,
         )
         if latex_body:
             parts.append(latex_body)
@@ -892,6 +910,7 @@ def _append_missing_proofs(
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
     strict_math: bool = False,
+    cache: dict[str, str] | None = None,
 ) -> str:
     """Ensure every PROOF-* body appears in the LaTeX report body (LLM often omits them)."""
     proofs = facts.get("proofs") or []
@@ -902,7 +921,12 @@ def _append_missing_proofs(
         return body
     partial = {**facts, "proofs": missing}
     section = _proofs_section_latex(
-        partial, provider, compose_llm=compose_llm, hooks=hooks, strict_math=strict_math
+        partial,
+        provider,
+        compose_llm=compose_llm,
+        hooks=hooks,
+        strict_math=strict_math,
+        cache=cache,
     )
     return body.rstrip() + "\n\n" + section + "\n"
 
@@ -921,6 +945,7 @@ def _replace_verbatim_proof_blocks(
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
     strict_math: bool = False,
+    cache: dict[str, str] | None = None,
 ) -> str:
     """Swap LLM-emitted verbatim proof dumps for converted LaTeX proof sections."""
     proofs = {p["id"]: p for p in (facts.get("proofs") or []) if p.get("id")}
@@ -931,19 +956,37 @@ def _replace_verbatim_proof_blocks(
         if proof is None:
             return match.group(0)
         latex = proof_body_to_latex(
-            proof, provider, compose_llm=compose_llm, hooks=hooks, strict_math=strict_math
+            proof,
+            provider,
+            compose_llm=compose_llm,
+            hooks=hooks,
+            strict_math=strict_math,
+            cache=cache,
         )
         return latex if latex else match.group(0)
 
     return _VERBATIM_PROOF_RE.sub(repl, body)
 
 
-def facts_to_latex(facts: dict[str, Any], *, strict_math: bool = False) -> str:
-    """Deterministic LaTeX body from local artifacts (no LLM).
+def facts_to_latex(
+    facts: dict[str, Any],
+    *,
+    strict_math: bool = False,
+    provider: BaseProvider | None = None,
+    proof_compose_llm: bool = False,
+    cache: dict[str, str] | None = None,
+) -> str:
+    """LaTeX body from local artifacts with a deterministic, always-well-formed structure.
 
-    ``strict_math=True`` renders proof bodies with all math neutralized to literal
-    text, guaranteeing the document compiles even when stored proof sketches carry
-    malformed model-authored math. See :func:`_proof_markdown_to_latex_fallback`.
+    The document scaffold (summary, claims table, experiments) is template-generated.
+    With ``proof_compose_llm=True`` and a usable ``provider``, the proof-sketch bodies
+    are converted to clean LaTeX by the model (reliable typeset math) while the
+    surrounding structure stays deterministic — the robust "pretty math" path used
+    when whole-document LLM composition truncates or fails to compile.
+
+    ``strict_math=True`` instead renders proof bodies with all math neutralized to
+    literal text, guaranteeing the document compiles even when stored proof sketches
+    carry malformed model-authored math. See :func:`_proof_markdown_to_latex_fallback`.
     """
     parts: list[str] = [
         "\\section{Summary}",
@@ -1006,7 +1049,13 @@ def facts_to_latex(facts: dict[str, Any], *, strict_math: bool = False) -> str:
     else:
         parts.extend(["\\section{Experiments}", "(none recorded)", ""])
 
-    proof_section = _proofs_section_latex(facts, compose_llm=False, strict_math=strict_math)
+    proof_section = _proofs_section_latex(
+        facts,
+        provider,
+        compose_llm=proof_compose_llm,
+        strict_math=strict_math,
+        cache=cache,
+    )
     if proof_section:
         parts.extend([proof_section, ""])
     else:
@@ -1286,8 +1335,20 @@ def compose_and_render_pdf(
     harvest_prove_session(ot_dir, problem_id, create_proof=True)
     facts = gather_dossier_facts(ot_dir, problem_id)
 
-    def _document(*, use_llm: bool, strict_math: bool = False) -> str:
-        body = facts_to_latex(facts, strict_math=strict_math)
+    # Shared across attempts so a failed whole-document attempt does not pay to
+    # re-run the per-proof LLM conversions on the next, deterministic-structure one.
+    proof_cache: dict[str, str] = {}
+
+    def _document(*, use_llm: bool, strict_math: bool = False, llm_proofs: bool = False) -> str:
+        # The whole-document body (use_llm) is a throwaway baseline here, so only
+        # convert proofs in the baseline when that baseline IS the final structure.
+        body = facts_to_latex(
+            facts,
+            strict_math=strict_math,
+            provider=provider,
+            proof_compose_llm=(llm_proofs and not use_llm),
+            cache=proof_cache,
+        )
         if use_llm and _llm_usable(provider):
             if hooks and hooks.on_progress:
                 hooks.on_progress("Composing narrative report with the model…")
@@ -1296,12 +1357,31 @@ def compose_and_render_pdf(
                     facts, provider, markdown_context=markdown_context, hooks=hooks
                 )
             except Exception:
-                body = facts_to_latex(facts, strict_math=strict_math)
+                body = facts_to_latex(
+                    facts,
+                    strict_math=strict_math,
+                    provider=provider,
+                    proof_compose_llm=llm_proofs,
+                    cache=proof_cache,
+                )
+        proof_llm = use_llm or llm_proofs
         body = _replace_verbatim_proof_blocks(
-            body, facts, provider, compose_llm=use_llm, hooks=hooks, strict_math=strict_math
+            body,
+            facts,
+            provider,
+            compose_llm=proof_llm,
+            hooks=hooks,
+            strict_math=strict_math,
+            cache=proof_cache,
         )
         body = _append_missing_proofs(
-            body, facts, provider, compose_llm=use_llm, hooks=hooks, strict_math=strict_math
+            body,
+            facts,
+            provider,
+            compose_llm=proof_llm,
+            hooks=hooks,
+            strict_math=strict_math,
+            cache=proof_cache,
         )
         if strict_math:
             # Guaranteed-compile finalize: neutralize Unicode to ASCII and guard gap
@@ -1313,18 +1393,39 @@ def compose_and_render_pdf(
     target_tex = tex_path or pdf_path.with_suffix(".tex")
     target_tex.parent.mkdir(parents=True, exist_ok=True)
 
-    # Escalating attempts: model narrative (if requested) → deterministic template
-    # (math preserved) → deterministic template with math neutralized. The last
-    # attempt escapes every special char in proof bodies, so it compiles even when
-    # stored proof sketches carry malformed model-authored math.
+    # Escalating attempts. With a model available:
+    #   1. whole-document model narrative + model-converted proofs (richest prose);
+    #   2. deterministic structure + per-proof model conversion (reliable typeset
+    #      math — survives when the single whole-document call truncates or fails);
+    #   3. deterministic structure + deterministic proofs (math preserved);
+    #   4. deterministic structure with math neutralized to text (always compiles).
     if compose_llm and _llm_usable(provider):
-        attempts = [(True, False), (False, False), (False, True)]
+        attempts = [
+            {"use_llm": True, "strict_math": False, "llm_proofs": True},
+            {"use_llm": False, "strict_math": False, "llm_proofs": True},
+            {"use_llm": False, "strict_math": False, "llm_proofs": False},
+            {"use_llm": False, "strict_math": True, "llm_proofs": False},
+        ]
     else:
-        attempts = [(False, False), (False, True)]
+        attempts = [
+            {"use_llm": False, "strict_math": False, "llm_proofs": False},
+            {"use_llm": False, "strict_math": True, "llm_proofs": False},
+        ]
+
+    def _next_attempt_msg(nxt: dict[str, bool]) -> str:
+        if nxt["strict_math"]:
+            return "LaTeX failed to compile; retrying with math neutralized to text…"
+        if nxt["llm_proofs"]:
+            return (
+                "Whole-document LaTeX failed; retrying with a deterministic structure "
+                "and per-proof model conversion…"
+            )
+        return "LaTeX failed to compile; retrying with the deterministic template…"
+
     last_exc: OpenTorusError | None = None
     last_lint: list[str] = []
-    for idx, (use_llm, strict) in enumerate(attempts):
-        document = _document(use_llm=use_llm, strict_math=strict)
+    for idx, opts in enumerate(attempts):
+        document = _document(**opts)
         target_tex.write_text(document, encoding="utf-8")
         last_lint = latex_lint(document)
         if last_lint and hooks and hooks.on_progress:
@@ -1336,15 +1437,7 @@ def compose_and_render_pdf(
         except OpenTorusError as exc:
             last_exc = exc
             if idx + 1 < len(attempts) and hooks and hooks.on_progress:
-                nxt = attempts[idx + 1]
-                msg = (
-                    "Model LaTeX failed to compile; falling back to the deterministic template…"
-                    if use_llm
-                    else "Deterministic LaTeX failed; retrying with math neutralized to text…"
-                    if nxt[1]
-                    else "LaTeX failed to compile; retrying…"
-                )
-                hooks.on_progress(msg)
+                hooks.on_progress(_next_attempt_msg(attempts[idx + 1]))
     detail = ""
     if last_lint:
         detail = "\n\nPre-compile checks flagged (likely cause):\n" + "\n".join(
