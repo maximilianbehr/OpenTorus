@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from opentorus.errors import OpenTorusError
 from opentorus.research.dossier import claims, store
 from opentorus.research.dossier.export import export_problem
 from opentorus.research.dossier.html_export import markdown_to_html
@@ -72,3 +73,24 @@ def test_export_falls_back_to_html_without_tex(
     assert result.pdf_path is None
     assert result.html_path is not None and result.html_path.is_file()
     assert "<html" in result.html_path.read_text(encoding="utf-8")
+
+
+def test_export_falls_back_to_html_when_pdf_compile_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Even with a LaTeX toolchain present, malformed model-authored math can abort
+    # pdflatex (after both the model and deterministic LaTeX). Export must then emit
+    # HTML instead of failing with no output.
+    init_workspace(tmp_path)
+    base = workspace_dir(tmp_path)
+    d = store.create_dossier(base, "Conjecture: Y.", domain="demo")
+    claims.add_claim(base, d.id, claim_type="CONJECTURE", statement="Y holds.")
+    monkeypatch.setattr("opentorus.research.dossier.pdf_export.tex_available", lambda: True)
+
+    def _boom(*args, **kwargs):
+        raise OpenTorusError("pdflatex failed")
+
+    monkeypatch.setattr("opentorus.research.dossier.pdf_export.compose_and_render_pdf", _boom)
+    result = export_problem(base, d.id, pdf=True, compose_llm=False)
+    assert result.pdf_path is None
+    assert result.html_path is not None and result.html_path.is_file()

@@ -1191,46 +1191,64 @@ def compose_and_render_pdf(
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
 ) -> Path:
-    """Build preprint LaTeX (LLM or template), write .tex, compile PDF."""
+    """Build preprint LaTeX and compile a PDF.
+
+    The model's narrative LaTeX is occasionally structurally invalid (broken
+    lists, unbalanced math) in ways the sanitizer cannot repair, which aborts
+    pdflatex. So we try the model narrative first (when requested) and, if it
+    fails to compile, fall back to the deterministic template LaTeX, which is
+    generated from artifacts and is always well-formed.
+    """
     from opentorus.agent.prove_harvest import harvest_prove_session
 
     if hooks and hooks.on_progress:
         hooks.on_progress("Gathering artifacts from the dossier…")
     harvest_prove_session(ot_dir, problem_id, create_proof=True)
     facts = gather_dossier_facts(ot_dir, problem_id)
-    body = facts_to_latex(facts)
-    if compose_llm and _llm_usable(provider):
-        if hooks and hooks.on_progress:
-            hooks.on_progress("Composing narrative report with the model…")
-        try:
-            body = llm_compose_latex(
-                facts,
-                provider,
-                markdown_context=markdown_context,
-                hooks=hooks,
-            )
-        except Exception:
-            body = facts_to_latex(facts)
-    body = _replace_verbatim_proof_blocks(
-        body, facts, provider, compose_llm=compose_llm, hooks=hooks
-    )
-    body = _append_missing_proofs(body, facts, provider, compose_llm=compose_llm, hooks=hooks)
-    body = sanitize_latex_body(body)
-    document = wrap_preprint_document(facts, body)
+
+    def _document(*, use_llm: bool) -> str:
+        body = facts_to_latex(facts)
+        if use_llm and _llm_usable(provider):
+            if hooks and hooks.on_progress:
+                hooks.on_progress("Composing narrative report with the model…")
+            try:
+                body = llm_compose_latex(
+                    facts, provider, markdown_context=markdown_context, hooks=hooks
+                )
+            except Exception:
+                body = facts_to_latex(facts)
+        body = _replace_verbatim_proof_blocks(
+            body, facts, provider, compose_llm=use_llm, hooks=hooks
+        )
+        body = _append_missing_proofs(body, facts, provider, compose_llm=use_llm, hooks=hooks)
+        return wrap_preprint_document(facts, sanitize_latex_body(body))
+
     target_tex = tex_path or pdf_path.with_suffix(".tex")
     target_tex.parent.mkdir(parents=True, exist_ok=True)
-    target_tex.write_text(document, encoding="utf-8")
-    lint_issues = latex_lint(document)
-    if lint_issues and hooks and hooks.on_progress:
-        hooks.on_progress("LaTeX pre-check flagged: " + "; ".join(lint_issues))
-    if hooks and hooks.on_progress:
-        hooks.on_progress("Compiling PDF with LaTeX…")
-    try:
-        return compile_latex_report(target_tex, pdf_path=pdf_path)
-    except OpenTorusError as exc:
-        detail = ""
-        if lint_issues:
-            detail = "\n\nPre-compile checks flagged (likely cause):\n" + "\n".join(
-                f"  - {i}" for i in lint_issues
-            )
-        raise OpenTorusError(f"{exc}{detail}\n\nLaTeX source saved at: {target_tex}") from exc
+
+    # Model narrative first (if requested), then the deterministic template.
+    attempts = [True, False] if (compose_llm and _llm_usable(provider)) else [False]
+    last_exc: OpenTorusError | None = None
+    last_lint: list[str] = []
+    for idx, use_llm in enumerate(attempts):
+        document = _document(use_llm=use_llm)
+        target_tex.write_text(document, encoding="utf-8")
+        last_lint = latex_lint(document)
+        if last_lint and hooks and hooks.on_progress:
+            hooks.on_progress("LaTeX pre-check flagged: " + "; ".join(last_lint))
+        if hooks and hooks.on_progress:
+            hooks.on_progress("Compiling PDF with LaTeX…")
+        try:
+            return compile_latex_report(target_tex, pdf_path=pdf_path)
+        except OpenTorusError as exc:
+            last_exc = exc
+            if use_llm and idx + 1 < len(attempts) and hooks and hooks.on_progress:
+                hooks.on_progress(
+                    "Model LaTeX failed to compile; falling back to the deterministic template…"
+                )
+    detail = ""
+    if last_lint:
+        detail = "\n\nPre-compile checks flagged (likely cause):\n" + "\n".join(
+            f"  - {i}" for i in last_lint
+        )
+    raise OpenTorusError(f"{last_exc}{detail}\n\nLaTeX source saved at: {target_tex}") from last_exc
