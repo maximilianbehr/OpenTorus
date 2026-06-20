@@ -54,6 +54,31 @@ def test_config_set_negative_value(tmp_path: Path, monkeypatch) -> None:
     assert load_config(workspace_dir(tmp_path) / "config.yaml").model.num_ctx == -1
 
 
+def test_prove_gap_fill_max_steps_accepts_unlimited() -> None:
+    # Mirrors agent.max_steps: inf / unlimited / -1 mean "no separate gap-fill cap",
+    # so a user who sets max_steps inf can also uncap gap-filling.
+    import math
+
+    from opentorus.config import default_config, set_dotted
+
+    for token in ("inf", "unlimited", "-1"):
+        cfg = set_dotted(default_config(), "agent.prove_gap_fill_max_steps", token)
+        assert math.isinf(cfg.agent.prove_gap_fill_max_steps), token
+    assert (
+        set_dotted(
+            default_config(), "agent.prove_gap_fill_max_steps", "500"
+        ).agent.prove_gap_fill_max_steps
+        == 500
+    )
+    # Finite values below 1 are still rejected.
+    import pytest
+
+    from opentorus.errors import ConfigError
+
+    with pytest.raises(ConfigError):
+        set_dotted(default_config(), "agent.prove_gap_fill_max_steps", "0")
+
+
 def test_config_set_preserves_inline_documentation(tmp_path: Path) -> None:
     # `opentorus config set` must not strip the per-field documentation, so the
     # user can keep editing config.yaml by hand after changing a value.

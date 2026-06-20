@@ -85,11 +85,12 @@ class AgentConfig(BaseModel):
     # After the first primary proof_write, keep the prove loop running while gaps remain.
     prove_until_gaps_closed: bool = True
     # Extra model steps allowed for gap-filling after the first sketch (when max_steps is inf).
-    prove_gap_fill_max_steps: int = Field(default=48, ge=1)
+    # Positive integer, or inf / unlimited / -1 for no separate gap-fill cap.
+    prove_gap_fill_max_steps: float = 48
 
-    @field_validator("max_steps", mode="before")
+    @field_validator("max_steps", "prove_gap_fill_max_steps", mode="before")
     @classmethod
-    def _validate_max_steps(cls, value: object) -> float:
+    def _validate_step_count(cls, value: object) -> float:
         return parse_max_steps(value)
 
 

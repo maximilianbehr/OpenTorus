@@ -48,6 +48,7 @@ agent:
   # After proof_write, keep working while PROOF-* still lists gaps (until cap or gaps closed).
   prove_until_gaps_closed: true
   # Max extra model steps for gap-filling after the first sketch (important when max_steps: inf).
+  # Positive integer, or inf / unlimited / -1 for no separate gap-fill cap.
   prove_gap_fill_max_steps: 48
 
 # --- Permissions (see also permissions.yaml) ------------------------------------
