@@ -1,8 +1,7 @@
-# Simons workshop open problems (arXiv:2602.05394)
-
-Five small-dimensional, numerically explorable open problems from
-"Linear Systems and Eigenvalue Problems: Open Questions from a Simons Workshop".
-Each section becomes one OpenTorus dossier via `opentorus problem new --from-markdown notes.md`.
+**Simons workshop open problems (arXiv:2602.05394).** Five small-dimensional, numerically
+explorable open problems from "Linear Systems and Eigenvalue Problems: Open Questions from a
+Simons Workshop". Each `# ` heading below becomes one dossier via
+`opentorus problem new --from-markdown notes.md --structured`.
 
 # Conditioning of Ritz values from random Krylov subspaces (Problem 3.5)
 

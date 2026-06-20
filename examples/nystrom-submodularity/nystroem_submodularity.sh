@@ -1,93 +1,114 @@
-#!/bin/bash
-set -e
-# Activate your OpenTorus environment (the venv/conda where you installed it) and ensure `opentorus` is on PATH.
+#!/usr/bin/env bash
+# ============================================================================
+# OpenTorus example — Submodularity of the nuclear Nyström error (SDD/SDDM)
+# Source: open question on column subset selection for Nyström approximation
+#
+# Does submodularity of the nuclear Nyström error extend from inverse Laplacians
+# to SDD / SDDM positive-definite matrices? The agent searches for a counterexample.
+#
+# What this script does, end to end:
+#   1. reset the local .opentorus workspace and re-initialise it
+#   2. configure the model + agent (edit the model.* lines for your setup)
+#   3. build the python-sci container for the matrix experiments
+#   4. (no single source paper — the agent gathers literature during prove)
+#   5. write the problem statement to notes.md and create the dossier
+#   6. run `opentorus prove --disprove` (prioritise a counterexample search)
+#   7. build an honesty-linted report and export a PDF
+#
+# Prerequisites:
+#   - `opentorus` on PATH (activate the env where you installed it)
+#   - Docker, for the python-sci container
+#   - a tool-calling model; this script targets a local Ollama server on :11435
+#
+# WARNING: step 1 runs `rm -rf .opentorus` in this directory.
+# Usage: ./nystroem_submodularity.sh [PROBLEM-ID]   (defaults to PROBLEM-0001)
+# ============================================================================
+set -euo pipefail
+cd "$(dirname "$0")"
 
-# init
+TARGET="${1:-PROBLEM-0001}"
+
+# Activate the env where you installed OpenTorus so `opentorus` is on PATH, e.g.:
+#   source ~/GITHUB/OpenTorus/.venv/bin/activate
+
+# --- 1. Fresh workspace -----------------------------------------------------
 rm -rf .opentorus
+rm -f notes.md
 opentorus init
 
-# opentorus config
+# --- 2. Model & agent configuration -----------------------------------------
+# Edit these for your provider/model. Defaults: a local Ollama model on :11435.
 opentorus config set model.provider ollama
-opentorus config set model.name gpt-oss:120b
+opentorus config set model.name gemma4:31b              # or: gpt-oss:120b, gpt-4o-mini, …
 opentorus config set model.base_url http://localhost:11435
-opentorus config set model.timeout_seconds 600
-opentorus config set agent.style autonomous
-opentorus config set agent.max_steps 100
-opentorus config set permissions.mode trusted
+opentorus config set model.timeout_seconds 1200         # raise for large local models
+opentorus config set agent.style autonomous            # fewer prompts; destructive ops still confirmed
+opentorus config set agent.max_steps inf               # no overall step cap (Ctrl-C to stop)
+opentorus config set agent.prove_gap_fill_max_steps inf  # no separate gap-fill cap
+opentorus config set permissions.mode trusted          # auto-allow low/medium-risk actions
 
-# Scientific Python (numpy) — user-supplied Dockerfile only.
+# --- 3. Numerical experiment environment ------------------------------------
+# Experiments run in a pinned container; build a small scientific-Python image.
 mkdir -p docker
-cat > docker/Dockerfile << 'EOF'
+cat > docker/Dockerfile << 'DOCKERFILE'
 FROM python:3.11-slim
-RUN pip install --no-cache-dir numpy mpmath sympy
+RUN pip install --no-cache-dir numpy scipy mpmath sympy
 WORKDIR /work
-EOF
+DOCKERFILE
 opentorus env prepare python-sci --file docker/Dockerfile
 
-# the problem description
-# NOTE: quote the heredoc delimiter ('EOF') so the shell does NOT expand the
-# LaTeX math (\(L\), $\gamma$, ...) and corrupt the problem statement.
-cat > notes.md << 'EOF'
-Inverses of Laplacians and related matrices
+# --- 4. Source paper --------------------------------------------------------
+# (none — this problem has no single source paper; the agent gathers relevant
+#  literature during prove via lit_search.)
 
-A new (and likely important) motivation for column subset selection comes from a problem of Markov chain compression.
-In this problem, to summarize and simplify, one is presented with a large graph Laplacian \(L\),
-and one wants to compute a reduced model in an interpolative fashion,
-yielding a small graph Laplacian which approximates the original one well.
-In order to guarantee accuracy with respect to the long-timescale dynamics of the respective random walk,
-it suffices to bound the accuracy of the Nyström approximation in spectral or nuclear norm:
+# --- 5. Problem statement & dossier -----------------------------------------
+# Quote 'NOTES' so the shell does not expand the LaTeX math (\(L\), $\gamma$, …).
+cat > notes.md << 'NOTES'
+# Problem: Submodularity of the nuclear Nyström error for SDD/SDDM matrices
+
+A new (and likely important) motivation for column subset selection comes from a problem of
+Markov chain compression. One is presented with a large graph Laplacian \(L\) and wants a
+reduced model computed in an interpolative fashion. To guarantee accuracy with respect to the
+long-timescale dynamics of the random walk, it suffices to bound the Nyström approximation in
+spectral or nuclear norm:
 
 \[
 \left\| K - K_{:, \mathcal{I}} K_{\mathcal{I}, \mathcal{I}}^{-1} K_{\mathcal{I}, :} \right\|_{\{2,*\}}
 \]
 
-with respect to a chosen subset \(\mathcal{I}\), while taking
+with respect to a chosen subset \(\mathcal{I}\), where
 
 \[
-K = (L + \gamma I)^{-1}
+K = (L + \gamma I)^{-1}, \qquad \gamma > 0,
 \]
 
-with \(\gamma > 0\).
-Strictly, takes this objective in the limit \(\gamma \to 0^+\).
-We will focus on the nuclear error for simplicity and ease of derivation.
-Note that the nuclear Nyström error in may be exactly equated to the CX Frobenius error in by taking
+in the limit \(\gamma \to 0^+\). We focus on the nuclear error. For inverse Laplacians (taking
+care of null-space issues) the nuclear Nyström error is known to be a submodular function of
+\(\mathcal{I}\) (excluding the empty set), which yields a worst-case greedy-vs-optimal bound
+decaying like \(e^{-k/s}\) for \(k \geq s\). This question extends beyond Laplacians to
+positive-definite matrices that are symmetric diagonally dominant (SDD) or SDD M-matrices (SDDM).
 
-\[
-A = K^{1/2},
-\]
-
-for instance.
-
-In it is proved that the nuclear Nyström error for inverse Laplacians,
-taking care of null space issues,
-is a submodular function in \(\mathcal{I}\) if one excludes the empty set from consideration.
-Roughly speaking,
-this implies that the worst-case nuclear approximation error obtained by choosing \(k\) columns
-greedily is bounded to the one obtained by choosing \(s\) columns optimally by a factor decaying like
-
-\[
-e^{-k/s}
-\]
-
-where \(k \geq s\).
-This question may be extended beyond Laplacians to consider positive-definite matrices that are either symmetric diagonally dominant (SDD) matrices or SDD M-matrices (SDDM).
-
-### Problem
-
-**Prove or disprove the submodularity of the nuclear Nyström error when \(L\) is assumed, in contrast to the above, to be**
+**Prove or disprove** the submodularity of the nuclear Nyström error when \(L\) is assumed,
+in contrast to the above, to be
 
 1. **SDDM and positive-definite**, or
 2. **SDD and positive-definite**.
+NOTES
+# `--structured` maps the single top-level '# ' heading to one dossier (PROBLEM-0001).
+opentorus problem new --from-markdown notes.md --structured
+opentorus problem list
 
-EOF
+# --- 6. Attack the problem --------------------------------------------------
+# The prove loop reads the dossier + local papers, may write/run experiments via
+# exp_run, and records claims/evidence/attempts. Numerical evidence only *supports*
+# a claim; a verified claim requires a verification artifact. --disprove tells the
+# loop to prioritise a counterexample / refutation.
+opentorus --verbose prove "${TARGET}" --disprove
 
-# create a problem
-opentorus problem new --from-markdown notes.md
+# --- 7. Honest report + PDF -------------------------------------------------
+opentorus problem report "${TARGET}"
+opentorus problem report "${TARGET}" --lint            # honesty linter flags overclaiming
+opentorus problem export "${TARGET}" --pdf
 
-# try to prove or disprove
-opentorus --verbose prove PROBLEM-0001 --disprove
-
-# report bauen, pruefen und pdf
-opentorus problem report PROBLEM-0001
-opentorus problem report PROBLEM-0001 --lint
-opentorus problem export PROBLEM-0001 --pdf
+echo
+echo "Done. See .opentorus/problems/${TARGET}/report.md"

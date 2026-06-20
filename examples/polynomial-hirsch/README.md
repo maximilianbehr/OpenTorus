@@ -15,7 +15,7 @@ numerical experiments and asserting no resolution.
 The driver `poly_hirsch_sota.sh` runs an end-to-end OpenTorus workflow:
 
 1. **Init** — `rm -rf .opentorus`, then `opentorus init` (a fresh workspace).
-2. **Configure** — model provider/name/base URL/timeout, `agent.style autonomous`, `agent.max_steps 100`, `permissions.mode trusted`.
+2. **Configure** — model provider/name/base URL/timeout, `agent.style autonomous`, `agent.max_steps inf`, `agent.prove_gap_fill_max_steps inf`, `permissions.mode trusted`.
 3. **Create the dossier** — `opentorus problem new` with the conjecture stated inline, a domain, and the tags `hirsch` and `polytope-diameter`, then `opentorus problem show`.
 4. **Prove** — `opentorus prove PROBLEM-0001 --min-papers 10` (literature → proof draft → gap-fill); at least 10 paper artifacts must be gathered before drafting.
 5. **Report and export** — `opentorus problem report --lint` and `opentorus problem export --pdf`.
