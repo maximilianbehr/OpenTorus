@@ -1,0 +1,2 @@
+$ /definitely-not-a-command
+Unknown command: /definitely-not-a-command. Type /help for the list.

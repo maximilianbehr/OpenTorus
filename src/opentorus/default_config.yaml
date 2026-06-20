@@ -1,0 +1,229 @@
+# OpenTorus workspace configuration (.opentorus/config.yaml)
+#
+# Edit values here, or run:
+#   opentorus config show
+#   opentorus config set <dotted.key> <value>    # e.g. model.provider ollama
+#
+# Most changes apply on the next command. Invalid values raise a clear error on load.
+
+# --- Model (LLM provider) -----------------------------------------------------
+model:
+  # Provider: mock | openai | anthropic | ollama
+  #   mock      — offline default for tests and dry runs (no API key)
+  #   openai    — needs OPENAI_API_KEY
+  #   anthropic — needs ANTHROPIC_API_KEY
+  #   ollama    — local server; set base_url if not http://127.0.0.1:11434
+  provider: mock
+  # Model id / name passed to the provider (e.g. gpt-4o, claude-sonnet-4-20250514, llama3)
+  name: mock-default
+  # Sampling temperature (0.0 = deterministic, higher = more varied)
+  temperature: 0.2
+  # Optional API base URL (required for non-default Ollama/OpenAI-compatible endpoints)
+  base_url: null
+  # HTTP timeout in seconds (raise for slow local models / large contexts)
+  timeout_seconds: 300
+  # Ollama-only: context window size (e.g. 32768). null = model default.
+  num_ctx: null
+  # Ollama-only: max tokens to generate (-1 = unlimited). null = unlimited when tools are on.
+  # Set with: opentorus config set model.num_predict=-1  (or --value=-1)
+  num_predict: null
+
+# --- Project & agent behaviour ------------------------------------------------
+project:
+  # Focus hint for prompts: code | research | writing | data | mixed
+  mode: mixed
+
+agent:
+  # Operating style: cautious | normal | fast | autonomous
+  #   cautious    — more confirmations even in trusted mode
+  #   autonomous  — fewer prompts; destructive ops still confirmed
+  style: normal
+  # Session mode: normal | review  (review = read-only; also overridable via --mode review)
+  mode: normal
+  # Max tool/model round-trips per agent turn (run / chat / REPL / prove).
+  # Use a positive integer, or inf / unlimited / -1 for no cap.
+  max_steps: 12
+  # Minimum [parsed] papers before proof_write in opentorus prove (0 = no quota; use --min-papers N to override per run)
+  prove_min_papers: 0
+  # After proof_write, keep working while PROOF-* still lists gaps (until cap or gaps closed).
+  prove_until_gaps_closed: true
+  # Max extra model steps for gap-filling after the first sketch (important when max_steps: inf).
+  prove_gap_fill_max_steps: 48
+
+# --- Permissions (see also permissions.yaml) ------------------------------------
+permissions:
+  # Permission mode: safe | ask | trusted
+  #   safe    — read-only; no writes or shell commands
+  #   ask     — confirm writes, commands, and network tools (default)
+  #   trusted — auto-allow low/medium-risk actions; high-risk still gated
+  mode: ask
+
+# --- Privacy ------------------------------------------------------------------
+privacy:
+  # Block reads of sensitive paths (.env, keys, credentials) in file tools
+  sensitive_file_guard: true
+  # If false, sensitive file contents are never sent to the model provider
+  allow_sensitive_context: false
+
+# --- Terminal UI --------------------------------------------------------------
+ui:
+  # Render inline LaTeX ($...$, $$...$$) as Unicode in the terminal
+  render_math: true
+  # Desktop notifications (native toast when available; terminal bell fallback)
+  notifications_enabled: true
+  notify_on_turn_complete: true
+  notify_on_permission: true
+  # Skip notifications for interactive TTY runs; background/piped runs still notify
+  notify_only_unfocused: true
+  notify_min_elapsed_seconds: 3
+
+# --- Quality gates (opentorus check / verification) ---------------------------
+quality:
+  # Shell commands run for verification; set null to skip a gate
+  test_command: pytest -q
+  lint_command: ruff check .
+  typecheck_command: mypy
+
+# --- Experiment environment capture -------------------------------------------
+environment:
+  capture_pip_freeze: false
+  capture_os_info: true
+  capture_git_state: true
+
+# --- Context window & retrieval -----------------------------------------------
+context:
+  retrieval_enabled: true
+  top_k: 5
+  history_turns: 10
+  token_budget: 6000
+  compaction_enabled: true
+  # Persistently compact session.jsonl when history exceeds this fraction of token_budget
+  compaction_threshold: 0.85
+  # Summarize compacted turns with the chat provider when available
+  compaction_llm: true
+  # Verbatim recent history kept after a session compaction (fraction of token_budget)
+  compaction_keep_ratio: 0.5
+  # Hybrid BM25 + provider/local embeddings (OpenAI/Ollama by default when configured)
+  embeddings_enabled: true
+  embeddings_backend: auto
+  # Optional override when chat provider has no embed API (e.g. anthropic → ollama)
+  embeddings_provider: null
+  # null = provider default (text-embedding-3-small / nomic-embed-text / all-MiniLM-L6-v2)
+  embeddings_model: null
+
+# --- Tools (literature, web, MCP, datasets, code evidence) --------------------
+tools:
+  # External MCP servers (opt-in). Example:
+  # mcp:
+  #   - name: my-server
+  #     command: npx
+  #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+  #     enabled: false
+  mcp: []
+
+  literature:
+    # Master switch for lit_search / paper_fetch agent tools and opentorus lit …
+    enabled: true
+    # Free, keyless sources (each can be turned off individually)
+    openalex: true
+    arxiv: true
+    crossref: true
+    semantic_scholar: true
+    dblp: true
+    zbmath: true
+    europepmc: true
+    biorxiv: true
+    # Keyed sources (enable only after setting the matching *_api_key)
+    springer: false
+    ieee: false
+    ads: false
+    springer_api_key: null
+    ieee_api_key: null
+    semantic_scholar_api_key: null
+    ads_api_key: null
+    # Polite-pool contact for OpenAlex/Crossref (recommended for production use)
+    contact_email: null
+    # Optional institutional proxy base URL (e.g. EZproxy) for licensed PDFs
+    proxy_base_url: null
+    rate_limit_per_minute: 20
+    daily_request_budget: 500
+
+  web:
+    # fetch_url and web_search agent tools
+    enabled: true
+    fetch: true
+    search: true
+    # Max characters returned per fetched page (lower = smaller prompts)
+    max_chars: 8000
+
+  verifiers:
+    # Formal proof backends (opt-in; commands must be on PATH)
+    lean: false
+    coq: false
+    smt: false
+    lean_command: lake env lean
+    coq_command: coqc
+    smt_command: z3
+
+  datasets:
+    enabled: true
+    zenodo: true
+    huggingface: true
+    osf: true
+    # Substring match against resolved license strings (case-insensitive)
+    allowed_licenses:
+      - cc0
+      - cc-by
+      - cc-by-sa
+      - public domain
+      - pddl
+      - odbl
+      - odc-by
+      - mit
+      - apache
+      - bsd
+    allow_unknown_license: false
+    max_file_bytes: 500000000
+
+  code_evidence:
+    enabled: true
+    clone_command: git
+    max_repo_bytes: 500000000
+
+# --- Where experiments and shell tools run ------------------------------------
+execution:
+  # Backend: auto | local | docker | podman | apptainer | ssh | slurm
+  backend: auto
+  # When backend=auto, try these container runtimes in order
+  auto_preference:
+    - docker
+    - podman
+    - apptainer
+  network: false
+  memory_limit: null
+  cpu_limit: null
+  cache: true
+  remote:
+    # Required for ssh/slurm backends (credentials stay in ~/.ssh, not here)
+    host: null
+    user: null
+    remote_root: ~/opentorus-runs
+    ssh_command: ssh
+    copy_command: scp
+    partition: null
+    time_limit: null
+    account: null
+    extra_sbatch: []
+
+# --- Governance (budgets, DLP, model routing) ---------------------------------
+governance:
+  # Pre-egress scan for secrets/PII before network sends (fails closed)
+  dlp: true
+  budgets:
+    cost_budget_usd: null
+    token_budget: null
+    per_provider_usd: {}
+  routing:
+    # Map task classes (planning, narration, proof, critique, default) to model names
+    enabled: false
+    task_models: {}
