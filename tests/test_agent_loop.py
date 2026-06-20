@@ -20,12 +20,10 @@ def _loop(tmp_path: Path) -> AgentLoop:
     return AgentLoop(tmp_path, ot_dir, MockProvider(), registry, default_config())
 
 
-def test_infinite_max_steps_has_hard_ceiling(tmp_path: Path, monkeypatch) -> None:
-    # max_steps=inf must still be bounded by an absolute backstop so a provider
-    # that never returns a final message cannot loop forever.
-    import math
-
-    from opentorus.agent import loop as loop_mod
+def test_finite_max_steps_is_a_hard_cap(tmp_path: Path) -> None:
+    # A finite max_steps caps a provider that never returns a final message.
+    # (max_steps=inf is intentionally unbounded — the no-progress stall guard and
+    # Ctrl-C are the stops there; see tests/test_task_cycle_guard.py.)
     from opentorus.providers.base import BaseProvider, ProviderResponse
 
     class _NeverFinishes(BaseProvider):
@@ -34,14 +32,11 @@ def test_infinite_max_steps_has_hard_ceiling(tmp_path: Path, monkeypatch) -> Non
         def generate(self, messages, tools=None):  # type: ignore[override]
             return ProviderResponse(kind="tool_call", tool_name="status", tool_args={})
 
-    monkeypatch.setattr(loop_mod, "_INFINITE_STEP_CEILING", 5)
     init_workspace(tmp_path)
     ot_dir = workspace_dir(tmp_path)
     registry = build_default_registry(tmp_path, ot_dir)
-    loop = AgentLoop(
-        tmp_path, ot_dir, _NeverFinishes(), registry, default_config(), max_steps=math.inf
-    )
-    loop.run("loop forever")
+    loop = AgentLoop(tmp_path, ot_dir, _NeverFinishes(), registry, default_config(), max_steps=5)
+    loop.run("loop until cap")
     assert loop.hit_max_steps is True
     assert loop.steps_run == 5
 
