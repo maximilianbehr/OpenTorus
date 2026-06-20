@@ -99,6 +99,9 @@ class Experiment(BaseModel):
     command: str | None = None
     run_from: RunFrom = "experiment"
     environment: str | None = None
+    # Problem dossier this experiment was created under (attribution). None for
+    # legacy records or experiments created outside any active problem.
+    problem_id: str | None = None
     # Datasets consumed as inputs (provenance for the result manifest, M71).
     datasets: list[DatasetRef] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
@@ -128,7 +131,7 @@ def _write_summary(ot_dir: Path, experiment: Experiment) -> None:
     (ot_dir / experiment.path / "summary.md").write_text(summary, encoding="utf-8")
 
 
-def list_experiments(ot_dir: Path) -> list[Experiment]:
+def list_experiments(ot_dir: Path, *, problem_id: str | None = None) -> list[Experiment]:
     base = experiments_dir(ot_dir)
     if not base.is_dir():
         return []
@@ -138,6 +141,8 @@ def list_experiments(ot_dir: Path) -> list[Experiment]:
         if child.is_dir() and meta.is_file():
             data = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
             experiments.append(Experiment.model_validate(data))
+    if problem_id is not None:
+        return [e for e in experiments if e.problem_id == problem_id]
     return experiments
 
 
@@ -182,6 +187,7 @@ def new_experiment(
     run_body: str | None = None,
     command: str | None = None,
     run_from: RunFrom = "experiment",
+    problem_id: str | None = None,
 ) -> Experiment:
     base = experiments_dir(ot_dir)
     base.mkdir(parents=True, exist_ok=True)
@@ -229,6 +235,7 @@ def new_experiment(
         command=resolved_command,
         run_from=resolved_run_from,
         environment=environment,
+        problem_id=problem_id,
     )
     _save_meta(ot_dir, experiment)
     _write_summary(ot_dir, experiment)

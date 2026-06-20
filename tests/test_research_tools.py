@@ -106,6 +106,46 @@ def test_evidence_add_links_claim(tmp_path: Path) -> None:
     assert claim.id in result.content
 
 
+def test_agent_tools_attribute_artifacts_to_active_problem(tmp_path: Path) -> None:
+    # When a problem is active, claims/evidence/experiments the agent creates in the
+    # workspace-global store are stamped with that problem id (attribution).
+    from opentorus.research.claims import list_claims
+    from opentorus.research.dossier import store
+    from opentorus.research.evidence import list_evidence
+    from opentorus.research.experiments import list_experiments
+    from opentorus.tools.research import EvidenceAddTool, ExpNewTool
+
+    _, ot = _ws(tmp_path)
+    store.create_dossier(ot, "Prove X.", title="X")  # also sets the active problem
+
+    claim = ClaimNewTool(ot).run(ToolCall(name="claim_new", args={"statement": "Bound holds."}))
+    assert claim.ok is True
+    ExpNewTool(ot).run(ToolCall(name="exp_new", args={"title": "sweep"}))
+    EvidenceAddTool(ot).run(
+        ToolCall(
+            name="evidence_add",
+            args={"claim_id": "CLAIM-0001", "source_type": "experiment", "summary": "ok"},
+        )
+    )
+
+    assert [c.problem_id for c in list_claims(ot)] == ["PROBLEM-0001"]
+    assert [e.problem_id for e in list_evidence(ot)] == ["PROBLEM-0001"]
+    assert [x.problem_id for x in list_experiments(ot)] == ["PROBLEM-0001"]
+    # The per-problem filters return exactly those artifacts.
+    assert len(list_claims(ot, problem_id="PROBLEM-0001")) == 1
+    assert len(list_claims(ot, problem_id="PROBLEM-9999")) == 0
+
+
+def test_agent_tools_leave_problem_id_none_without_active_problem(tmp_path: Path) -> None:
+    # With no active problem, artifacts are created unattributed (problem_id None),
+    # preserving the prior behavior for non-dossier research workflows.
+    from opentorus.research.claims import list_claims
+
+    _, ot = _ws(tmp_path)
+    ClaimNewTool(ot).run(ToolCall(name="claim_new", args={"statement": "Unscoped claim."}))
+    assert list_claims(ot)[0].problem_id is None
+
+
 def test_paper_fetch_normalizes_arxiv_url(tmp_path: Path, monkeypatch) -> None:
     from opentorus.config import default_config
     from opentorus.research.papers import acquire_paper

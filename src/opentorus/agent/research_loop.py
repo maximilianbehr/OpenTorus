@@ -160,6 +160,7 @@ def _parse_search_result(stdout: str) -> CounterexampleResult | None:
 def _ensure_target_claim(ot_dir: Path, state: ResearchState) -> str:
     """Pick the claim to work on: an existing gap, else a new conjecture."""
     from opentorus.research.claims import get_claim, new_claim
+    from opentorus.research.dossier.store import get_active_problem
     from opentorus.research.knowledge import find_gaps
 
     if state.target_claim_id and get_claim(ot_dir, state.target_claim_id):
@@ -168,7 +169,7 @@ def _ensure_target_claim(ot_dir: Path, state: ResearchState) -> str:
     if gaps:
         state.target_claim_id = gaps[0].claim_id
         return state.target_claim_id
-    claim = new_claim(ot_dir, state.question)
+    claim = new_claim(ot_dir, state.question, problem_id=get_active_problem(ot_dir))
     from opentorus.research.claims import update_claim
 
     update_claim(ot_dir, claim.id, status="conjecture")
@@ -206,7 +207,14 @@ def _run_iteration(
     actions.append(f"Proposed {len(hypotheses)} hypothesis/-es; studying {claim_id}.")
 
     # (3) Experiment: run a bounded counterexample search (reproducible, M50).
-    exp = new_experiment(ot_dir, f"{state.slug} iter {iteration}", template="counterexample_search")
+    from opentorus.research.dossier.store import get_active_problem
+
+    exp = new_experiment(
+        ot_dir,
+        f"{state.slug} iter {iteration}",
+        template="counterexample_search",
+        problem_id=get_active_problem(ot_dir),
+    )
     exp, _code = run_experiment(ot_dir, exp.id, timeout=min(120, 20 * max_steps))
     stdout = (ot_dir / exp.path / "results" / "stdout.txt").read_text(encoding="utf-8")
     result = _parse_search_result(stdout)

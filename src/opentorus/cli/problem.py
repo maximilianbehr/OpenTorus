@@ -287,6 +287,36 @@ def problem_show(
     for name, n in counts.items():
         console.print(f"    {name}: {n}")
 
+    # The agent's exp_run / claim / evidence tools record to the workspace-global
+    # research store, tagged with the active problem id. Surface the counts
+    # attributed to this dossier so a productive `prove` run is reflected here.
+    from opentorus.research.claims import list_claims as _ws_list_claims
+    from opentorus.research.evidence import list_evidence as _ws_list_evidence
+    from opentorus.research.experiments import list_experiments as _ws_list_experiments
+
+    single_dossier = len(store.list_dossiers(base)) == 1
+
+    def _attributed(records: list) -> tuple[int, int]:
+        """(count attributed to this problem, count unattributed to any problem)."""
+        tagged = sum(1 for r in records if getattr(r, "problem_id", None) == problem_id)
+        untagged = sum(1 for r in records if getattr(r, "problem_id", None) is None)
+        # In a single-dossier workspace, legacy untagged artifacts can only be this one.
+        return (tagged + untagged, 0) if single_dossier else (tagged, untagged)
+
+    ws_claims = _attributed(_ws_list_claims(base))
+    ws_evidence = _attributed(_ws_list_evidence(base))
+    ws_experiments = _attributed(_ws_list_experiments(base))
+    if any(here for here, _ in (ws_claims, ws_evidence, ws_experiments)):
+        console.print("\n  research store (attributed to this problem):")
+        console.print(f"    claims: {ws_claims[0]}")
+        console.print(f"    evidence: {ws_evidence[0]}")
+        console.print(f"    experiments: {ws_experiments[0]}")
+    unattributed = ws_claims[1] + ws_evidence[1] + ws_experiments[1]
+    if unattributed:
+        console.print(
+            f"    [dim](+{unattributed} workspace artifacts not attributed to any problem)[/dim]"
+        )
+
     claims = store.list_claims(base, problem_id)
     if claims:
         table = Table(title="Claims")
