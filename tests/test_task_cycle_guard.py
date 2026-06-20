@@ -36,6 +36,35 @@ class RepeatMissingReadProvider(BaseProvider):
         )
 
 
+class AlwaysChatProvider(BaseProvider):
+    """Never calls a tool — always returns the same prose reply (like a reasoning
+    model that answers in chat instead of acting)."""
+
+    def generate(self, messages, tools=None) -> ProviderResponse:
+        return ProviderResponse(kind="message", content="Here is a structured approach: …")
+
+
+def test_chat_only_gap_fill_does_not_cycle(tmp_path: Path) -> None:
+    # Regression: during gap-fill (deliverable produced but gaps remain) the
+    # bootstrap does not re-fire, so a model that keeps replying in chat would loop
+    # to the step ceiling — especially with max_steps/prove_gap_fill set to inf.
+    # The stall backstop must stop it quickly instead.
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    registry = build_default_registry(tmp_path, ot, default_config())
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = float("inf")  # no step cap — the backstop must still stop it
+    loop = AgentLoop(tmp_path, ot, AlwaysChatProvider(), registry, config)
+    # Simulate the gap-fill state: a deliverable exists but its gaps never close.
+    loop.deliverable_bootstrap = ("status", {})
+    loop._deliverable_satisfied = True
+    loop._deliverable_complete = lambda: False
+    answer = loop.run("fill the gaps")
+    assert loop.steps_run < 12  # stopped fast, not at the 1000-step ceiling
+    assert "without calling tools" in answer
+
+
 def test_repeat_glob_files_is_blocked(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)
