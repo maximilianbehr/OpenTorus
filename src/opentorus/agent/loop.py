@@ -44,6 +44,11 @@ _logger = logging.getLogger(__name__)
 
 _MAX_TOOL_PARSE_RETRIES = 3
 _MAX_DELIVERABLE_RETRIES = 5
+# Backstop against a model that keeps replying in prose instead of calling tools
+# (common with reasoning models). After this many consecutive chat-only turns with
+# no tool executed, stop instead of cycling to the step ceiling — important during
+# gap-fill, where the deliverable bootstrap does not re-fire and caps may be inf.
+_MAX_CHAT_ONLY_STALL = 8
 
 # Absolute backstop on model iterations when ``max_steps`` is infinite. Far above
 # any real run (gap-fill budgets are dozens of steps); prevents a stuck provider
@@ -238,6 +243,8 @@ class AgentLoop:
         tool_parse_retries = 0
         deliverable_retries = 0
         recovery_hint: str | None = None
+        chat_only_streak = 0
+        last_chat_only: str | None = None
         run_started = time.monotonic()
         step_iter: Iterable[int] = (
             range(_INFINITE_STEP_CEILING)
@@ -294,6 +301,29 @@ class AgentLoop:
             self._record_usage(messages, response, time.monotonic() - started)
 
             if response.kind == "message":
+                # Stall backstop: a model that keeps answering in chat (no tool call)
+                # makes no progress. The bootstrap below resets this streak when it
+                # actually runs a tool; during gap-fill the bootstrap does not re-fire,
+                # so without this the loop would cycle to the step ceiling. Break early
+                # on a repeated identical reply once a sketch already exists.
+                content_norm = (response.content or "").strip()
+                in_gap_fill = (
+                    self._deliverable_satisfied
+                    and self._deliverable_complete is not None
+                    and not self._deliverable_complete()
+                )
+                chat_only_streak += 1
+                repeated = bool(content_norm) and content_norm == last_chat_only
+                last_chat_only = content_norm
+                if chat_only_streak >= _MAX_CHAT_ONLY_STALL or (repeated and in_gap_fill):
+                    if response.content.strip():
+                        self._append(SessionMessage(role="assistant", content=response.content))
+                    result_text = (
+                        "Stopped: the model kept replying in chat without calling tools "
+                        "(no further progress). The dossier holds the current state."
+                    )
+                    _logger.info("%s", result_text)
+                    break
                 needs_deliverable = (
                     planned_task is not None
                     or self.deliverable_bootstrap is not None
@@ -364,6 +394,8 @@ class AgentLoop:
                                     metadata={"tool_call_id": call_id, "name": name},
                                 )
                             )
+                            chat_only_streak = 0  # a tool ran → progress
+                            last_chat_only = None
                             continue
                     elif (
                         self._deliverable_satisfied
@@ -413,6 +445,8 @@ class AgentLoop:
                         metadata={"tool_call_id": cid, "name": nm},
                     )
                 )
+            chat_only_streak = 0  # a tool ran → progress
+            last_chat_only = None
         else:
             self.hit_max_steps = True
             self._append(SessionMessage(role="assistant", content=result_text))
