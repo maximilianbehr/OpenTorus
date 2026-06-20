@@ -304,6 +304,35 @@ def _normalize_unicode(text: str) -> str:
     return text.translate(_UNICODE_SPACES)
 
 
+def _neutralize_unicode_math(text: str) -> str:
+    """Map every non-ASCII character to an ASCII-safe token (strict fallback only).
+
+    The guaranteed-compile path cannot risk math mode, so instead of converting
+    Unicode math into ``$…$`` (which glues runs like ``∈C`` into the invalid
+    ``$\\inC$``) it transliterates each symbol to plain letters: ``∈``→``in``,
+    ``ρ``→``rho``, ``Σ``→``Sigma``, ``≤``→``leq``, ``√``→``sqrt``. Symbols absent
+    from the shared Unicode→LaTeX map fall back to an NFKD ASCII transliteration,
+    then to ``?``. The result is pure ASCII text that pdflatex always typesets.
+    """
+    import unicodedata
+
+    from opentorus.research.markdown_latex import _UNICODE_MATH_ALL
+
+    out: list[str] = []
+    for ch in text:
+        if ord(ch) < 128:
+            out.append(ch)
+            continue
+        cmd = _UNICODE_MATH_ALL.get(ch)
+        if cmd:
+            word = re.sub(r"[^A-Za-z]", "", cmd)
+            out.append(word or "?")
+            continue
+        ascii_form = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode()
+        out.append(ascii_form or "?")
+    return "".join(out)
+
+
 def _escape_unescaped_specials(text: str) -> str:
     """Escape LaTeX specials in inline text, skipping existing backslash sequences
     and inline math spans.
@@ -656,7 +685,7 @@ def _latex_verbatim(text: str) -> str:
 def _short_title(facts: dict[str, Any]) -> str:
     title = (facts.get("title") or facts["problem_id"]).strip()
     if len(title) > 60:
-        return title[:57].rstrip() + "…"
+        return title[:57].rstrip() + "..."
     return title
 
 
@@ -665,12 +694,21 @@ def _clean_proof_markdown(body: str) -> str:
     return body.replace("\ufffd", "?")
 
 
-def _proof_markdown_to_latex_fallback(body: str) -> str:
-    """Deterministic Markdown → LaTeX for proof sketches (no LLM)."""
+def _proof_markdown_to_latex_fallback(body: str, *, strict_math: bool = False) -> str:
+    """Deterministic Markdown → LaTeX for proof sketches (no LLM).
+
+    With ``strict_math=True`` every special character in the proof body — including
+    ``$``, ``^`` and ``_`` — is escaped to a literal, so model-authored math that
+    is malformed (bare subscripts outside math mode, ``$$…$$`` interleaved with
+    prose, ``\\timesn``-style command-eats-letter) cannot abort pdflatex. The math
+    then reads as plain text, but the PDF is *guaranteed* to compile. This backs
+    the final fallback attempt in :func:`compose_and_render_pdf`.
+    """
     from opentorus.research.markdown_latex import prepare_markdown_for_pdf
 
     body = _clean_proof_markdown(body)
-    body = prepare_markdown_for_pdf(body)
+    if not strict_math:
+        body = prepare_markdown_for_pdf(body)
     bold_re = re.compile(r"\*\*(.+?)\*\*")
     italic_re = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
     out: list[str] = []
@@ -707,11 +745,19 @@ def _proof_markdown_to_latex_fallback(body: str) -> str:
             if not in_itemize:
                 out.append("\\begin{itemize}")
                 in_itemize = True
-            item = bold_re.sub(r"\\textbf{\1}", stripped[2:].strip())
-            item = italic_re.sub(r"\\emph{\1}", item)
-            out.append(f"\\item {_latex_escape_preserving_math(item)}")
+            content = stripped[2:].strip()
+            if strict_math:
+                # Escape everything (math becomes literal text) — guaranteed to compile.
+                out.append(f"\\item {_latex_escape(content)}")
+            else:
+                item = bold_re.sub(r"\\textbf{\1}", content)
+                item = italic_re.sub(r"\\emph{\1}", item)
+                out.append(f"\\item {_latex_escape_preserving_math(item)}")
             continue
         close_list()
+        if strict_math:
+            out.append(_latex_escape(stripped))
+            continue
         text = bold_re.sub(r"\\textbf{\1}", stripped)
         text = italic_re.sub(r"\\emph{\1}", text)
         if "$" in text or "\\[" in text:
@@ -719,6 +765,11 @@ def _proof_markdown_to_latex_fallback(body: str) -> str:
         else:
             out.append(_latex_escape(text))
     close_list()
+    if strict_math:
+        # Everything is already escaped; only neutralize Unicode (no math conversion)
+        # and guard bare [GAP-n] markers. Skips the math-preserving sanitizer that
+        # would otherwise glue Unicode runs back into invalid math.
+        return _fix_gap_markers(_neutralize_unicode_math("\n".join(out)))
     return sanitize_latex_body("\n".join(out))
 
 
@@ -770,11 +821,15 @@ def proof_body_to_latex(
     *,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
+    strict_math: bool = False,
 ) -> str:
     """Render a proof sketch body as integrated LaTeX (LLM or deterministic fallback)."""
     body = proof.get("body") or ""
     if not body.strip():
         return ""
+    if strict_math:
+        # Guaranteed-compile path: never invoke the LLM, neutralize all math.
+        return _proof_markdown_to_latex_fallback(body, strict_math=True)
     if compose_llm and _llm_usable(provider):
         try:
             return llm_convert_proof_to_latex(proof, provider, hooks=hooks)
@@ -783,12 +838,22 @@ def proof_body_to_latex(
     return _proof_markdown_to_latex_fallback(body)
 
 
+def _gap_text(gap: Any) -> str:
+    """A human-readable gap label, whether a gap is a plain string or a record dict."""
+    if isinstance(gap, dict):
+        label = gap.get("id")
+        desc = gap.get("description") or gap.get("text") or ""
+        return f"{label}: {desc}" if label and desc else (desc or str(label or ""))
+    return str(gap)
+
+
 def _proofs_section_latex(
     facts: dict[str, Any],
     provider: BaseProvider | None = None,
     *,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
+    strict_math: bool = False,
 ) -> str:
     """LaTeX section with proof sketch bodies rendered as math-aware LaTeX."""
     proofs = facts.get("proofs") or []
@@ -808,9 +873,11 @@ def _proofs_section_latex(
             + "}"
         )
         if proof.get("gaps"):
-            gaps = ", ".join(_latex_escape(g) for g in proof["gaps"])
+            gaps = ", ".join(_latex_escape(_gap_text(g)) for g in proof["gaps"])
             parts.append(f"\\textit{{Recorded gaps:}} {gaps}")
-        latex_body = proof_body_to_latex(proof, provider, compose_llm=compose_llm, hooks=hooks)
+        latex_body = proof_body_to_latex(
+            proof, provider, compose_llm=compose_llm, hooks=hooks, strict_math=strict_math
+        )
         if latex_body:
             parts.append(latex_body)
         parts.append("")
@@ -824,6 +891,7 @@ def _append_missing_proofs(
     *,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
+    strict_math: bool = False,
 ) -> str:
     """Ensure every PROOF-* body appears in the LaTeX report body (LLM often omits them)."""
     proofs = facts.get("proofs") or []
@@ -833,7 +901,9 @@ def _append_missing_proofs(
     if not missing:
         return body
     partial = {**facts, "proofs": missing}
-    section = _proofs_section_latex(partial, provider, compose_llm=compose_llm, hooks=hooks)
+    section = _proofs_section_latex(
+        partial, provider, compose_llm=compose_llm, hooks=hooks, strict_math=strict_math
+    )
     return body.rstrip() + "\n\n" + section + "\n"
 
 
@@ -850,6 +920,7 @@ def _replace_verbatim_proof_blocks(
     *,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
+    strict_math: bool = False,
 ) -> str:
     """Swap LLM-emitted verbatim proof dumps for converted LaTeX proof sections."""
     proofs = {p["id"]: p for p in (facts.get("proofs") or []) if p.get("id")}
@@ -859,14 +930,21 @@ def _replace_verbatim_proof_blocks(
         proof = proofs.get(pid)
         if proof is None:
             return match.group(0)
-        latex = proof_body_to_latex(proof, provider, compose_llm=compose_llm, hooks=hooks)
+        latex = proof_body_to_latex(
+            proof, provider, compose_llm=compose_llm, hooks=hooks, strict_math=strict_math
+        )
         return latex if latex else match.group(0)
 
     return _VERBATIM_PROOF_RE.sub(repl, body)
 
 
-def facts_to_latex(facts: dict[str, Any]) -> str:
-    """Deterministic LaTeX body from local artifacts (no LLM)."""
+def facts_to_latex(facts: dict[str, Any], *, strict_math: bool = False) -> str:
+    """Deterministic LaTeX body from local artifacts (no LLM).
+
+    ``strict_math=True`` renders proof bodies with all math neutralized to literal
+    text, guaranteeing the document compiles even when stored proof sketches carry
+    malformed model-authored math. See :func:`_proof_markdown_to_latex_fallback`.
+    """
     parts: list[str] = [
         "\\section{Summary}",
         _latex_escape(
@@ -928,7 +1006,7 @@ def facts_to_latex(facts: dict[str, Any]) -> str:
     else:
         parts.extend(["\\section{Experiments}", "(none recorded)", ""])
 
-    proof_section = _proofs_section_latex(facts, compose_llm=False)
+    proof_section = _proofs_section_latex(facts, compose_llm=False, strict_math=strict_math)
     if proof_section:
         parts.extend([proof_section, ""])
     else:
@@ -1104,7 +1182,9 @@ def latex_lint(document: str) -> list[str]:
     from collections import Counter
 
     issues: list[str] = []
-    for m in re.finditer(r"\[GAP-\d+\]", document):
+    # A bare ``[GAP-n]`` is read as an optional argument and breaks compilation; a
+    # marker already guarded as ``\texttt{[GAP-n]}`` (``[`` preceded by ``{``) is safe.
+    for m in re.finditer(r"(?<!\{)\[GAP-\d+\]", document):
         issues.append(f"bare gap marker '{m.group(0)}' left in the document")
     # Inline math $...$: count '$' that are neither escaped (\$) nor display ($$).
     stripped = re.sub(r"\\\$", "", document).replace("$$", "")
@@ -1206,8 +1286,8 @@ def compose_and_render_pdf(
     harvest_prove_session(ot_dir, problem_id, create_proof=True)
     facts = gather_dossier_facts(ot_dir, problem_id)
 
-    def _document(*, use_llm: bool) -> str:
-        body = facts_to_latex(facts)
+    def _document(*, use_llm: bool, strict_math: bool = False) -> str:
+        body = facts_to_latex(facts, strict_math=strict_math)
         if use_llm and _llm_usable(provider):
             if hooks and hooks.on_progress:
                 hooks.on_progress("Composing narrative report with the model…")
@@ -1216,22 +1296,35 @@ def compose_and_render_pdf(
                     facts, provider, markdown_context=markdown_context, hooks=hooks
                 )
             except Exception:
-                body = facts_to_latex(facts)
+                body = facts_to_latex(facts, strict_math=strict_math)
         body = _replace_verbatim_proof_blocks(
-            body, facts, provider, compose_llm=use_llm, hooks=hooks
+            body, facts, provider, compose_llm=use_llm, hooks=hooks, strict_math=strict_math
         )
-        body = _append_missing_proofs(body, facts, provider, compose_llm=use_llm, hooks=hooks)
+        body = _append_missing_proofs(
+            body, facts, provider, compose_llm=use_llm, hooks=hooks, strict_math=strict_math
+        )
+        if strict_math:
+            # Guaranteed-compile finalize: neutralize Unicode to ASCII and guard gap
+            # markers, but never run the Unicode→math conversion that can re-introduce
+            # malformed spans. The body is already fully escaped by facts_to_latex.
+            return wrap_preprint_document(facts, _fix_gap_markers(_neutralize_unicode_math(body)))
         return wrap_preprint_document(facts, sanitize_latex_body(body))
 
     target_tex = tex_path or pdf_path.with_suffix(".tex")
     target_tex.parent.mkdir(parents=True, exist_ok=True)
 
-    # Model narrative first (if requested), then the deterministic template.
-    attempts = [True, False] if (compose_llm and _llm_usable(provider)) else [False]
+    # Escalating attempts: model narrative (if requested) → deterministic template
+    # (math preserved) → deterministic template with math neutralized. The last
+    # attempt escapes every special char in proof bodies, so it compiles even when
+    # stored proof sketches carry malformed model-authored math.
+    if compose_llm and _llm_usable(provider):
+        attempts = [(True, False), (False, False), (False, True)]
+    else:
+        attempts = [(False, False), (False, True)]
     last_exc: OpenTorusError | None = None
     last_lint: list[str] = []
-    for idx, use_llm in enumerate(attempts):
-        document = _document(use_llm=use_llm)
+    for idx, (use_llm, strict) in enumerate(attempts):
+        document = _document(use_llm=use_llm, strict_math=strict)
         target_tex.write_text(document, encoding="utf-8")
         last_lint = latex_lint(document)
         if last_lint and hooks and hooks.on_progress:
@@ -1242,10 +1335,16 @@ def compose_and_render_pdf(
             return compile_latex_report(target_tex, pdf_path=pdf_path)
         except OpenTorusError as exc:
             last_exc = exc
-            if use_llm and idx + 1 < len(attempts) and hooks and hooks.on_progress:
-                hooks.on_progress(
+            if idx + 1 < len(attempts) and hooks and hooks.on_progress:
+                nxt = attempts[idx + 1]
+                msg = (
                     "Model LaTeX failed to compile; falling back to the deterministic template…"
+                    if use_llm
+                    else "Deterministic LaTeX failed; retrying with math neutralized to text…"
+                    if nxt[1]
+                    else "LaTeX failed to compile; retrying…"
                 )
+                hooks.on_progress(msg)
     detail = ""
     if last_lint:
         detail = "\n\nPre-compile checks flagged (likely cause):\n" + "\n".join(

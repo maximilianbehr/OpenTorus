@@ -5,6 +5,12 @@ gets a clean, self-contained HTML rendering of the honest report instead of an
 error. The converter is intentionally small (headings, lists, fenced code,
 blockquotes, bold/inline-code, paragraphs) — enough for the report's structure,
 with no third-party dependency.
+
+Math is typeset client-side by MathJax (loaded from a CDN): ``$…$`` / ``\\(…\\)``
+inline and ``$$…$$`` / ``\\[…\\]`` display spans render as typeset mathematics in
+the browser. The MathJax library is the only external fetch; the report content
+itself never leaves the machine. With no network (or scripting disabled) the page
+degrades gracefully to the raw ``$…$`` source text.
 """
 
 from __future__ import annotations
@@ -14,6 +20,23 @@ import re
 
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _INLINE_CODE = re.compile(r"`([^`]+)`")
+
+# Client-side math typesetting. inlineMath enables single ``$`` (off by default in
+# MathJax v3); processEscapes keeps ``\$`` a literal dollar; code/pre are skipped
+# so verbatim spans are left untouched.
+_MATHJAX = (
+    "<script>\n"
+    "MathJax = {\n"
+    "  tex: {\n"
+    "    inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],\n"
+    "    displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],\n"
+    "    processEscapes: true\n"
+    "  },\n"
+    "  options: {skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']}\n"
+    "};\n"
+    "</script>\n"
+    '<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>\n'
+)
 
 
 def _inline(text: str) -> str:
@@ -94,5 +117,6 @@ def markdown_to_html(markdown: str, *, title: str = "OpenTorus report") -> str:
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>{html.escape(title)}</title>\n<style>{style}</style>\n"
+        f"{_MATHJAX}"
         "</head>\n<body>\n" + "\n".join(body) + "\n</body>\n</html>\n"
     )
