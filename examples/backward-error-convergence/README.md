@@ -17,7 +17,7 @@ f(k) \to 0$ with $f$ independent of both $\kappa(A)$ and $n$, or whether a lower
 The driver `minberr_backward_error.sh` runs an end-to-end OpenTorus workflow:
 
 1. **Init** — `rm -rf .opentorus`, then `opentorus init` (a fresh workspace).
-2. **Configure** — model provider/name/base URL/timeout, `agent.style autonomous`, `agent.max_steps inf`, `permissions.mode trusted`.
+2. **Configure** — model provider/name/base URL/timeout, `agent.style autonomous`, `agent.max_steps inf`, `agent.prove_gap_fill_max_steps inf`, `permissions.mode trusted`.
 3. **Prepare environment** — write `docker/Dockerfile` (numpy, scipy, mpmath, sympy) and register the `python-sci` container via `opentorus env prepare`.
 4. **Add the source paper** — `opentorus paper add https://arxiv.org/abs/2604.16075`.
 5. **Create the dossier** — `opentorus problem new --from-markdown notes.md` (the statement is written inline by the script via a heredoc).
