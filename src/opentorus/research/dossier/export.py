@@ -100,18 +100,36 @@ def export_problem(
         else:
             target = pdf_path or md_path.with_suffix(".pdf")
             tex_target = tex_path or md_path.with_suffix(".tex")
-            compose_and_render_pdf(
-                ot_dir,
-                pid,
-                pdf_path=target,
-                tex_path=tex_target,
-                markdown_context=markdown,
-                provider=provider,
-                compose_llm=compose_llm,
-                hooks=hooks,
-            )
-            written_pdf = target
-            written_tex = tex_target
+            try:
+                compose_and_render_pdf(
+                    ot_dir,
+                    pid,
+                    pdf_path=target,
+                    tex_path=tex_target,
+                    markdown_context=markdown,
+                    provider=provider,
+                    compose_llm=compose_llm,
+                    hooks=hooks,
+                )
+                written_pdf = target
+                written_tex = tex_target
+            except OpenTorusError as exc:
+                # Even the deterministic template LaTeX failed to compile → emit an
+                # HTML rendering so the report is always produced, rather than
+                # failing the export with no output.
+                from opentorus.research.dossier.html_export import markdown_to_html
+
+                written_html = md_path.with_suffix(".html")
+                written_html.write_text(
+                    markdown_to_html(markdown, title=f"{pid} — OpenTorus report"),
+                    encoding="utf-8",
+                )
+                if tex_target.exists():
+                    written_tex = tex_target
+                if hooks and hooks.on_progress:
+                    hooks.on_progress(
+                        f"PDF compile failed ({exc}); wrote HTML instead: {written_html}"
+                    )
 
     return ProblemExportResult(
         problem_id=pid,
