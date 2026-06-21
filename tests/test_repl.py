@@ -32,6 +32,16 @@ def test_unknown_command_is_reported() -> None:
     assert any("unknown command" in m.lower() for m in result.messages)
 
 
+def test_tab_completion_covers_dispatched_commands() -> None:
+    # /report, /problem, /why are dispatched and documented; TAB completion must
+    # offer them too (the completion list drifted from the dispatch surface).
+    from opentorus.repl import _SLASH_COMMANDS
+
+    for cmd in ("/report", "/problem", "/why"):
+        assert cmd in _SLASH_COMMANDS
+        assert cmd in complete_repl(cmd[:4], cmd[:4])
+
+
 def test_status_command(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     result = dispatch("/status", start=tmp_path)
