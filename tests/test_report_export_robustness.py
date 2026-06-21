@@ -12,10 +12,8 @@ from opentorus.research.dossier.export import export_problem
 from opentorus.research.dossier.html_export import markdown_to_html
 from opentorus.research.dossier.pdf_export import (
     _gap_text,
-    _neutralize_unicode_math,
     _proof_markdown_to_latex_fallback,
     latex_lint,
-    tex_available,
 )
 from opentorus.workspace import init_workspace, workspace_dir
 
@@ -92,25 +90,8 @@ def test_export_falls_back_to_html_without_tex(
     assert "<html" in result.html_path.read_text(encoding="utf-8")
 
 
-def test_neutralize_unicode_math_transliterates_to_ascii() -> None:
-    out = _neutralize_unicode_math("A∈C, ρ>1, Σ(A), m≤k, √x")
-    assert all(ord(c) < 128 for c in out)  # pure ASCII
-    assert "in" in out and "rho" in out and "Sigma" in out  # readable transliteration
-
-
-def test_strict_proof_fallback_neutralizes_malformed_math() -> None:
-    # The guaranteed-compile path must leave no raw math and no Unicode that could
-    # abort pdflatex: every '$' is escaped, every char is ASCII, no bare gap marker.
-    out = _proof_markdown_to_latex_fallback(_MALFORMED_PROOF_BODY, strict_math=True)
-    assert all(ord(c) < 128 for c in out)  # no bare Unicode
-    assert "$" not in out.replace("\\$", "")  # every dollar is escaped
-    assert "\\inC" not in out and "\\cdotN" not in out  # no command-eats-letter survives
-    assert "[GAP-1]" not in out.replace("\\texttt{[GAP-1]}", "")  # gap marker guarded
-    assert latex_lint(out) == []  # balanced math, no bare markers
-
-
-def test_non_strict_proof_fallback_preserves_intended_math() -> None:
-    # Without strict mode, well-formed inline math is still preserved (not escaped).
+def test_proof_fallback_preserves_intended_math() -> None:
+    # The per-proof deterministic fallback preserves well-formed inline math.
     out = _proof_markdown_to_latex_fallback("The rate is $\\rho^{-m}$ per cycle.\n")
     assert "$\\rho^{-m}$" in out
 
@@ -166,20 +147,20 @@ def test_facts_to_latex_uses_llm_proofs_with_cache(tmp_path: Path) -> None:
     assert calls["n"] == 1  # second render reuses the cache, no extra model call
 
 
-@pytest.mark.skipif(not tex_available(), reason="no LaTeX toolchain on PATH")
-def test_export_pdf_compiles_despite_malformed_proof_math(tmp_path: Path) -> None:
-    # End-to-end gold test: a dossier whose proof sketch carries malformed math must
-    # still yield a compiled PDF (the deterministic attempt fails, the math-neutralized
-    # attempt compiles), not an HTML fallback.
+def test_export_pdf_without_model_falls_back_to_html(tmp_path: Path) -> None:
+    # PDF export requires a model to render mathematics; with --no-llm there is no
+    # deterministic math PDF (it rendered math as literal text), so export emits the
+    # MathJax HTML report instead of a math-broken PDF.
     init_workspace(tmp_path)
     base = workspace_dir(tmp_path)
-    d = store.create_dossier(base, "Conjecture: Z.", domain="demo", title="A long " + "x" * 70)
+    d = store.create_dossier(base, "Conjecture: Z.", domain="demo")
     claims.add_proof_attempt(
         base, d.id, title="Sketch with bad math", body=_MALFORMED_PROOF_BODY, gaps=["GAP-1"]
     )
     result = export_problem(base, d.id, pdf=True, compose_llm=False)
-    assert result.pdf_path is not None and result.pdf_path.is_file()
-    assert result.html_path is None  # PDF succeeded, so no HTML fallback was needed
+    assert result.pdf_path is None  # no deterministic math PDF
+    assert result.html_path is not None and result.html_path.is_file()
+    assert "mathjax@3" in result.html_path.read_text(encoding="utf-8")
 
 
 def test_export_falls_back_to_html_when_pdf_compile_fails(

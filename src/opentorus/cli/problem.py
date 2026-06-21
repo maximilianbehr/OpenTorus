@@ -683,7 +683,8 @@ def problem_export(
     no_llm: bool = typer.Option(
         False,
         "--no-llm",
-        help="Skip LLM narrative; use deterministic LaTeX from artifacts only.",
+        help="Skip the model; emit the MathJax HTML report instead of a PDF "
+        "(a model is required to render mathematics in the PDF).",
     ),
     out: str | None = typer.Option(
         None,

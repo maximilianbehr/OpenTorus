@@ -413,7 +413,7 @@ def test_llm_compose_fallback_to_template(tmp_path: Path) -> None:
     class emptyProvider(BaseProvider):  # noqa: N801
         @property
         def name(self) -> str:
-            return "mock"
+            return "ollama"  # usable model that returns empty → falls to template structure
 
         def generate(self, messages, tools=None):
             return ProviderResponse(kind="message", content="")
