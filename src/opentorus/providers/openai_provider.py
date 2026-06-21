@@ -50,8 +50,11 @@ class OpenAIProvider(BaseProvider):
 
         client = OpenAI()
         completion = client.chat.completions.create(**kwargs)
-        response = parse_openai_message(completion.choices[0].message)
+        choice = completion.choices[0]
+        response = parse_openai_message(choice.message)
         response.usage = _openai_usage(completion)
+        # finish_reason "length" means the output hit the token ceiling (truncated).
+        response.truncated = getattr(choice, "finish_reason", None) == "length"
         return response
 
 

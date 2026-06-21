@@ -56,7 +56,8 @@ class AnthropicProvider(BaseProvider):
         if tools:
             kwargs["tools"] = to_anthropic_tools(tools)
 
-        client = anthropic.Anthropic()
+        timeout = self.config.model.timeout_seconds
+        client = anthropic.Anthropic(timeout=timeout) if timeout else anthropic.Anthropic()
         message = client.messages.create(**kwargs)
         return parse_anthropic_message(message)
 
@@ -148,6 +149,7 @@ def _anthropic_usage(message: object) -> TokenUsage | None:
 
 def parse_anthropic_message(message: object) -> ProviderResponse:
     usage = _anthropic_usage(message)
+    truncated = getattr(message, "stop_reason", None) == "max_tokens"
     blocks = getattr(message, "content", []) or []
     # Extended-thinking blocks are billed within ``output_tokens``; Anthropic does
     # not break them out, so apportion the exact total by character share.
@@ -180,8 +182,9 @@ def parse_anthropic_message(message: object) -> ProviderResponse:
             tool_call_id=first.tool_call_id,
             tool_calls=parsed,
             usage=usage,
+            truncated=truncated,
         )
     text = "".join(
         getattr(block, "text", "") for block in blocks if getattr(block, "type", "") == "text"
     )
-    return ProviderResponse(kind="message", content=text, usage=usage)
+    return ProviderResponse(kind="message", content=text, usage=usage, truncated=truncated)

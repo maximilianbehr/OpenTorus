@@ -88,6 +88,9 @@ class ProviderResponse(BaseModel):
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     # Exact token usage from the provider, when available (else None → estimate).
     usage: TokenUsage | None = None
+    # True when the provider stopped at the token ceiling (stop/finish reason
+    # "max_tokens"/"length"): the output is cut off, not a complete answer.
+    truncated: bool = False
 
     def iter_tool_calls(self) -> list[ToolCallRequest]:
         """Normalized list of tool calls to execute (handles the scalar fallback)."""
