@@ -133,6 +133,7 @@ _DOSSIER_MANAGED_ARTIFACTS: frozenset[str] = frozenset(
         "related_papers.jsonl",
         "theorem_refs.jsonl",
         "failed_attempts.jsonl",
+        "citation_failures.txt",
     }
 )
 

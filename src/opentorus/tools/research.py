@@ -857,14 +857,26 @@ class ProofWriteTool(Tool):
                 "theorem/definitions/main_proof sections.",
             )
 
-        from opentorus.research.paper_citations import validate_proof_citations
+        from opentorus.research.paper_citations import (
+            known_bad_citations,
+            record_citation_failures,
+            validate_proof_citations,
+        )
 
         cite_errors, cite_warnings = validate_proof_citations(self._ot_dir, body)
         if cite_errors:
-            return self.fail(
-                call,
-                "Paper citation check failed:\n- " + "\n- ".join(cite_errors),
-            )
+            # Persist the fabricated citations and re-surface the full known-bad set so
+            # the model stops re-inventing the same theorem numbers after a compaction.
+            record_citation_failures(self._ot_dir, problem_id, cite_errors)
+            msg = "Paper citation check failed:\n- " + "\n- ".join(cite_errors)
+            known = known_bad_citations(self._ot_dir, problem_id)
+            if known:
+                msg += (
+                    "\n\nKnown nonexistent citations for this dossier — do NOT cite any of "
+                    "these again; cite only results that appear in the parsed reading note:\n- "
+                    + "\n- ".join(known)
+                )
+            return self.fail(call, msg)
 
         from opentorus.research.dossier import store
         from opentorus.research.dossier.nl_proof import validate_proof_relevance

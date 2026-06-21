@@ -137,10 +137,20 @@ def problem_new(
                 tags=list(tag or []),
             )
             console.print(f"[green]{dossier.id}[/green] — {dossier.title}")
-        console.print(
-            f"[dim]Created {len(sections)} dossier(s) 1:1 from headings. "
-            f"Active: {store.get_active_problem(base)}.[/dim]"
-        )
+        if len(sections) > 1:
+            # Bulk creation must not leave one dossier arbitrarily "active" — that is
+            # how a later run/research mis-attributes its artifacts to an unrelated
+            # problem. Clear it and make the user choose explicitly.
+            store.clear_active_problem(base)
+            console.print(
+                f"[dim]Created {len(sections)} dossiers. No active problem set — pick one "
+                "with `opentorus problem use PROBLEM-XXXX`, or pass the id explicitly "
+                "(e.g. `opentorus prove PROBLEM-0001`).[/dim]"
+            )
+        else:
+            console.print(
+                f"[dim]Created 1 dossier. Active: {store.get_active_problem(base)}.[/dim]"
+            )
         return
     if from_markdown:
         _run_problem_extraction(
