@@ -12,8 +12,19 @@ The neutral representation is a list of :class:`SessionMessage`:
 from __future__ import annotations
 
 import json
+import re
 
 from opentorus.agent.session import SessionMessage
+
+# OpenAI requires tool/function names to match this pattern. A name from another
+# provider's output (e.g. a gpt-oss "harmony" channel marker like
+# ``assistant<|channel|>commentary`` mis-parsed into a tool call and persisted) would
+# otherwise reach the API and be rejected with a 400.
+_OPENAI_TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _valid_openai_tool_name(name: object) -> bool:
+    return isinstance(name, str) and bool(_OPENAI_TOOL_NAME_RE.match(name))
 
 
 def _user_message_content(message: SessionMessage) -> str | list[dict]:
@@ -41,7 +52,13 @@ def to_openai_messages(messages: list[SessionMessage]) -> list[dict]:
             out.append({"role": "user", "content": _user_message_content(message)})
         elif message.role == "assistant":
             tool_calls = message.metadata.get("tool_calls")
-            if tool_calls:
+            # Drop tool calls whose name is not a valid OpenAI function name (garbage
+            # leaked from another provider's output); their orphan tool results are
+            # then dropped by the pairing repair below.
+            valid_calls = [
+                tc for tc in (tool_calls or []) if _valid_openai_tool_name(tc.get("name"))
+            ]
+            if valid_calls:
                 out.append(
                     {
                         "role": "assistant",
@@ -55,12 +72,16 @@ def to_openai_messages(messages: list[SessionMessage]) -> list[dict]:
                                     "arguments": json.dumps(tc.get("args", {})),
                                 },
                             }
-                            for tc in tool_calls
+                            for tc in valid_calls
                         ],
                     }
                 )
             else:
-                out.append({"role": "assistant", "content": message.content})
+                # No valid tool calls remain → a plain assistant turn (content must be
+                # non-empty for OpenAI, so fall back to a marker).
+                out.append(
+                    {"role": "assistant", "content": message.content or "(tool call omitted)"}
+                )
         elif message.role == "tool":
             out.append(
                 {

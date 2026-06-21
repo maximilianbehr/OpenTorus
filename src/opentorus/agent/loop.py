@@ -644,7 +644,12 @@ class AgentLoop:
         tool = self.registry.get(name)
         if tool is None:
             log_action(self.ot_dir, name, ok=False, args=args, stderr_summary="unknown tool")
-            return f"Unknown tool: {name}"
+            available = ", ".join(sorted(self.registry.names()))
+            return (
+                f"Unknown tool: '{name}'. It does not exist — do not call it again. "
+                f"Available tools: {available}. "
+                "To search files use glob_files/list_files; to read use read_file."
+            )
 
         if self._tool_gate is not None:
             blocked = self._tool_gate(name, args)

@@ -83,6 +83,66 @@ def test_orphan_tool_message_dropped() -> None:
     assert not any(m["role"] == "tool" for m in msgs)
 
 
+def test_invalid_tool_name_is_dropped() -> None:
+    # A harmony-format marker leaked into a tool name (from a prior gpt-oss run)
+    # violates OpenAI's ^[a-zA-Z0-9_-]+$ pattern and caused a 400. It must be dropped
+    # so the request stays valid; its orphan tool result is dropped too.
+    import re
+
+    from opentorus.providers._convert import _OPENAI_TOOL_NAME_RE
+
+    msgs = to_openai_messages(
+        [
+            SessionMessage(role="user", content="prove it"),
+            SessionMessage(
+                role="assistant",
+                content="thinking",
+                metadata={
+                    "tool_calls": [
+                        {"id": "c1", "name": "assistant<|channel|>commentary", "args": {}}
+                    ]
+                },
+            ),
+            _tool_result("c1", "leftover"),
+            SessionMessage(role="user", content="continue"),
+        ]
+    )
+    # No tool_calls with an OpenAI-invalid name survive the conversion.
+    for m in msgs:
+        for tc in m.get("tool_calls") or []:
+            assert _OPENAI_TOOL_NAME_RE.match(tc["function"]["name"]) is not None
+    # The garbage call left no orphan tool message either.
+    assert not any(m["role"] == "tool" for m in msgs)
+    # The assistant turn is preserved as plain content.
+    assert any(m["role"] == "assistant" and not m.get("tool_calls") for m in msgs)
+    assert re.search(r"thinking", str(msgs))
+
+
+def test_mixed_valid_and_invalid_tool_calls() -> None:
+    # An assistant turn with one valid and one garbage tool call keeps the valid one
+    # (with its result) and drops the garbage one.
+    msgs = to_openai_messages(
+        [
+            SessionMessage(
+                role="assistant",
+                content="",
+                metadata={
+                    "tool_calls": [
+                        {"id": "good", "name": "read_file", "args": {}},
+                        {"id": "bad", "name": "x<|y|>z", "args": {}},
+                    ]
+                },
+            ),
+            _tool_result("good", "contents"),
+            _tool_result("bad", "garbage"),
+            SessionMessage(role="user", content="ok"),
+        ]
+    )
+    _assert_valid_pairing(msgs)
+    ids = [m["tool_call_id"] for m in msgs if m["role"] == "tool"]
+    assert ids == ["good"]  # only the valid call's result remains
+
+
 def test_partial_multicall_completed() -> None:
     # Two calls in one turn, only one answered → the other gets a synthetic result.
     msgs = to_openai_messages(
