@@ -18,24 +18,21 @@ def _normalize_hyphens(text: str) -> str:
 
 _PAPER_ID = re.compile(r"PAPER-\d{4}", re.I)
 _THM_NUM = re.compile(r"(\d+(?:\.\d+)*)")
-_THM_LABEL = re.compile(
-    r"\b(Theorem|Lemma|Proposition|Corollary)\s+(\d+(?:\.\d+)*)",
-    re.I,
-)
-_THM_IN_TEXT = re.compile(
-    r"\b(theorem|lemma|proposition|corollary)\s+(\d+(?:\.\d+)*)",
-    re.I,
-)
+# Numbered environments recognised both in proof text (citations) and in parsed paper
+# corpora. Definition / Remark / Corollary / Lemma / Theorem / Equation / Example are all
+# included because a proof legitimately cites any of them by number (e.g. relying on
+# "Definition 1.1"); recognising only theorem-like keywords rejected valid citations
+# whose number exists in the source only as, say, a Definition or Remark.
+_RESULT_KW = r"(?:theorem|lemma|proposition|corollary|definition|remark|equation|example)"
+_THM_LABEL = re.compile(rf"\b({_RESULT_KW})\s+(\d+(?:\.\d+)*)", re.I)
 # "Theorem 3.1 in PAPER-0005", "PAPER-0005 ... Theorem 3.1", "PAPER-0005-THM-3.1"
 _CITE_PATTERNS = (
     re.compile(
-        r"(?:Theorem|Lemma|Proposition|Corollary)\s+(\d+(?:\.\d+)*)"
-        rf"[^.\n]{{0,120}}{_PAPER_ID.pattern}",
+        rf"{_RESULT_KW}\s+(\d+(?:\.\d+)*)[^.\n]{{0,120}}{_PAPER_ID.pattern}",
         re.I,
     ),
     re.compile(
-        rf"{_PAPER_ID.pattern}[^.\n]{{0,120}}"
-        r"(?:Theorem|Lemma|Proposition|Corollary)\s+(\d+(?:\.\d+)*)",
+        rf"{_PAPER_ID.pattern}[^.\n]{{0,120}}{_RESULT_KW}\s+(\d+(?:\.\d+)*)",
         re.I,
     ),
     re.compile(rf"{_PAPER_ID.pattern}-THM-(\d+(?:\.\d+)*)", re.I),
@@ -97,15 +94,12 @@ def theorem_context(corpus_raw: str, number: str, *, width: int = 220) -> str | 
     """
     if not corpus_raw or not number:
         return None
-    m = re.search(rf"\b{_THEOREM_KW}\s*{_flex_number_pattern(number)}\b", corpus_raw, re.I)
+    m = re.search(rf"\b{_RESULT_KW}\s*{_flex_number_pattern(number)}\b", corpus_raw, re.I)
     if m is None:
         return None
     start = max(0, m.start() - 20)
     snippet = " ".join(corpus_raw[start : m.start() + width].split())
     return snippet[:width].strip()
-
-
-_THEOREM_KW = r"(?:theorem|lemma|proposition|corollary)"
 
 
 def _normalize_corpus(corpus: str) -> str:
@@ -129,7 +123,7 @@ def theorem_in_corpus(corpus: str, number: str) -> bool:
         return False
     return bool(
         re.search(
-            rf"\b{_THEOREM_KW}\s*{_flex_number_pattern(number)}(?:\b|[\s,.;)]|$)",
+            rf"\b{_RESULT_KW}\s*{_flex_number_pattern(number)}(?:\b|[\s,.;)]|$)",
             _normalize_corpus(corpus),
             re.I,
         )
@@ -146,7 +140,7 @@ def available_theorem_numbers(corpus: str) -> list[str]:
         return []
     found: set[str] = set()
     for m in re.finditer(
-        rf"\b{_THEOREM_KW}\s*(\d+(?:\s*\.\s*\d+)*)", _normalize_corpus(corpus), re.I
+        rf"\b{_RESULT_KW}\s*(\d+(?:\s*\.\s*\d+)*)", _normalize_corpus(corpus), re.I
     ):
         found.add(re.sub(r"\s*\.\s*", ".", m.group(1)))
     return sorted(found, key=lambda s: [int(p) for p in s.split(".")])
@@ -161,7 +155,7 @@ def corpus_has_numbered_theorems(corpus: str) -> bool:
     """
     if not corpus:
         return False
-    return bool(re.search(rf"\b{_THEOREM_KW}\s*\d", _normalize_corpus(corpus), re.I))
+    return bool(re.search(rf"\b{_RESULT_KW}\s*\d", _normalize_corpus(corpus), re.I))
 
 
 def cited_theorems_for_paper(body: str, paper_id: str) -> set[str]:
@@ -226,14 +220,15 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
                     else:
                         present = ""
                     errors.append(
-                        f"{pid} does not contain Theorem/Lemma {thm}.{present} "
+                        f"{pid} does not contain a numbered result {thm} "
+                        f"(theorem/lemma/corollary/definition/remark/…).{present} "
                         "Cite one of those numbers, describe the result in prose, or mark "
-                        "the step [GAP-n] — do not invent theorem numbers."
+                        "the step [GAP-n] — do not invent numbers."
                     )
                 else:
                     warnings.append(
-                        f"{pid}: cannot verify Theorem/Lemma {thm} — the parsed text has no "
-                        "extractable theorem numbering (likely incomplete PDF extraction). "
+                        f"{pid}: cannot verify result {thm} — the parsed text has no "
+                        "extractable numbering (likely incomplete PDF extraction). "
                         "Cite the result by content/section or mark a [GAP] instead of a bare "
                         "number; re-fetch a cleaner copy if precise numbering matters."
                     )
@@ -245,13 +240,13 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
             context = theorem_context(corpus_raw, thm)
             if context:
                 warnings.append(
-                    f"{pid} Theorem/Lemma {thm} source context (verify the cited statement "
+                    f"{pid} result {thm} source context (verify the cited statement "
                     f"matches): “{context}”"
                 )
 
         if pid in body and not theorems:
             warnings.append(
-                f"{pid} is mentioned without a specific theorem/lemma number — "
+                f"{pid} is mentioned without a specific result number — "
                 "prefer citing a parsed result (e.g. Theorem 2.1, p.5)."
             )
 
@@ -279,7 +274,7 @@ def known_bad_citations(ot_dir: Path, problem_id: str) -> list[str]:
 def record_citation_failures(ot_dir: Path, problem_id: str, errors: list[str]) -> list[str]:
     """Persist the fabricated-citation errors for a dossier; return the merged list.
 
-    Only "does not contain Theorem/Lemma N" errors are recorded (a genuinely
+    Only "does not contain a numbered result N" errors are recorded (a genuinely
     nonexistent citation), deduplicated and shortened, so the prove loop can re-feed
     them on later attempts instead of letting the model re-invent the same numbers
     after a compaction drops the earlier rejection.
@@ -301,7 +296,7 @@ def record_citation_failures(ot_dir: Path, problem_id: str, errors: list[str]) -
 
 
 def _short_citation_failure(error: str) -> str:
-    """Reduce a verbose citation error to the load-bearing 'PAPER-X has no Theorem N'."""
+    """Reduce a verbose citation error to the load-bearing 'PAPER-X has no result N'."""
     text = error.strip()
     for sep in (" in parsed text", " — ", " - "):
         if sep in text:
