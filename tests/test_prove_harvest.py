@@ -114,3 +114,57 @@ def test_harvest_counterexample_from_exp_run(tmp_path: Path) -> None:
     body = (ot / "problems" / "PROBLEM-0001" / proofs[0].body_path).read_text()
     assert "EXP-0001" in body
     assert "refuted" in body.lower()
+
+
+def _run_shell_session(ot: Path, command: str, stdout: str, session_id: str) -> None:
+    append_message(
+        ot,
+        SessionMessage(
+            role="assistant",
+            content="",
+            metadata={
+                "tool_calls": [{"id": "c1", "name": "run_shell", "args": {"command": command}}],
+                "session_id": session_id,
+            },
+        ),
+    )
+    append_message(
+        ot,
+        SessionMessage(
+            role="tool",
+            content=f"exit_code=0\nstdout:\n{stdout}",
+            metadata={"name": "run_shell", "session_id": session_id},
+        ),
+    )
+
+
+def test_harvest_is_domain_agnostic_off_submodularity(tmp_path: Path) -> None:
+    # A non-submodularity dossier must NOT get a fabricated SDDM/Nyström refutation.
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Does every d-polytope have polynomial diameter?", title="Hirsch")
+
+    _run_shell_session(
+        ot, "python search.py", "Counterexample found! offending object recorded.", "sess3"
+    )
+    outcome = harvest_prove_session(ot, "PROBLEM-0001", session_id="sess3")
+    assert outcome.harvested
+    claim = store.list_claims(ot, "PROBLEM-0001")[0]
+    assert claim.type == "COUNTEREXAMPLE_CANDIDATE"
+    # No invented domain vocabulary leaks into an unrelated problem.
+    assert "SDDM" not in claim.statement and "Nyström" not in claim.statement
+    proof = store.list_proof_attempts(ot, "PROBLEM-0001")[0]
+    proof_body = (ot / "problems" / "PROBLEM-0001" / proof.body_path).read_text()
+    assert "NOT verified" in proof_body
+    assert "SDDM" not in proof_body
+
+
+def test_harvest_ignores_no_counterexample(tmp_path: Path) -> None:
+    # "No counterexample found" must not trigger a harvest (substring false positive).
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Submodularity question.", title="Nyström error")
+    _run_shell_session(ot, "python search.py", "No counterexample found after 10^6 trials.", "s4")
+    outcome = harvest_prove_session(ot, "PROBLEM-0001", session_id="s4")
+    assert not outcome.harvested
+    assert not store.list_claims(ot, "PROBLEM-0001")

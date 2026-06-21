@@ -27,11 +27,42 @@ class HarvestOutcome:
     proof_ids: list[str] = field(default_factory=list)
 
 
+# Affirmative counterexample signals only. The negative lookbehinds stop a "no
+# counterexample found" / "not a violation" line from triggering a harvest.
 _COUNTEREXAMPLE_RE = re.compile(
-    r"(counterexample\s+found|submodularity\s+violation|violation\s+details|"
+    r"(?<!no\s)(?<!not\s)(?<!zero\s)(?:"
+    r"counterexample\s+found|submodularity\s+violation|violation\s+details|"
     r"found\s+submodularity\s+violation|\"violation\"\s*:\s*true)",
     re.IGNORECASE,
 )
+
+# The hardcoded SDDM/Nyström/submodularity claim+proof bodies are only honest for a
+# dossier actually in that domain; for any other problem the harvest must stay
+# domain-agnostic rather than fabricate a refutation of the wrong object.
+_SUBMODULARITY_DOMAIN_RE = re.compile(r"submodular|nystr|sddm|nuclear\s+norm", re.IGNORECASE)
+
+
+def _is_submodularity_domain(statement: str) -> bool:
+    return bool(_SUBMODULARITY_DOMAIN_RE.search(statement))
+
+
+def _generic_candidate_body(*, statement: str, exp_id: str, command: str, stdout: str) -> str:
+    """A domain-agnostic candidate-refutation sketch: quotes the artifacts, invents nothing."""
+    return (
+        "## Candidate refutation (NOT verified)\n\n"
+        "Dossier conjecture:\n\n"
+        f"> {statement.strip()}\n\n"
+        f"An automated search (`{command}`, {exp_id}) reported a potential counterexample. "
+        "The raw output is included below as evidence. This is a CANDIDATE: it is not "
+        "verified, the search domain is finite, and the reported violation has not been "
+        "independently certified.\n\n"
+        "## Gaps and limitations\n\n"
+        "- [GAP-1] The candidate counterexample is not independently verified.\n"
+        "- [GAP-2] The search domain is finite / script-bounded; no general claim follows.\n\n"
+        "## Supporting evidence (not proof)\n\n"
+        f"- {exp_id} stdout (harvested):\n\n"
+        f"```\n{stdout.strip()[:4000]}\n```\n"
+    )
 
 
 def _session_messages(ot_dir: Path, session_id: str | None) -> list[SessionMessage]:
@@ -229,6 +260,8 @@ def harvest_prove_session(
         return outcome
 
     run = runs[-1]
+    statement = store.read_statement(ot_dir, pid)
+    domain_match = _is_submodularity_domain(statement)
     matrix = _matrix_from_stdout(run.stdout)
     violation = _violation_from_stdout(run.stdout)
     exp_id = _record_experiment_stdout(
@@ -240,16 +273,37 @@ def harvest_prove_session(
     )
     outcome.experiment_ids.append(exp_id)
 
-    claim = add_claim(
-        ot_dir,
-        pid,
-        claim_type="COUNTEREXAMPLE_CANDIDATE",
-        statement=(
-            "The nuclear Nyström error is not submodular for SDDM positive-definite "
-            f"matrices; counterexample matrix L = {matrix or 'see EXP stdout'}."
-        ),
-        source_artifacts=[exp_id],
-    )
+    if domain_match:
+        claim = add_claim(
+            ot_dir,
+            pid,
+            claim_type="COUNTEREXAMPLE_CANDIDATE",
+            statement=(
+                "The nuclear Nyström error is not submodular for SDDM positive-definite "
+                f"matrices; counterexample matrix L = {matrix or 'see EXP stdout'}."
+            ),
+            source_artifacts=[exp_id],
+        )
+        evidence_summary = (
+            f"{exp_id} found a submodularity violation for an SDDM PD matrix "
+            f"({violation or 'see stdout'})."
+        )
+    else:
+        # Domain-agnostic: state only that a search reported a candidate; invent nothing.
+        claim = add_claim(
+            ot_dir,
+            pid,
+            claim_type="COUNTEREXAMPLE_CANDIDATE",
+            statement=(
+                "An automated search reported a potential counterexample to the dossier "
+                f"conjecture; see {exp_id}. This is a candidate requiring verification."
+            ),
+            source_artifacts=[exp_id],
+        )
+        evidence_summary = (
+            f"{exp_id} reported a potential counterexample ({violation or 'see stdout'}); "
+            "unverified, finite search domain."
+        )
     outcome.claim_ids.append(claim.id)
 
     evidence, _ = add_evidence(
@@ -257,25 +311,19 @@ def harvest_prove_session(
         pid,
         claim.id,
         evidence_type="COMPUTATION",
-        summary=(
-            f"{exp_id} found a submodularity violation for an SDDM PD matrix "
-            f"({violation or 'see stdout'})."
-        ),
+        summary=evidence_summary,
         direction="supports",
         source_artifacts=[exp_id],
         limitations=[
             "Finite search in script domain only",
-            "SDD (non-M) case not covered by this run",
+            "Candidate is not independently verified",
         ],
     )
     outcome.evidence_ids.append(evidence.id)
 
     if create_proof and not store.list_proof_attempts(ot_dir, pid):
-        proof = add_proof_attempt(
-            ot_dir,
-            pid,
-            title="Refutation sketch — SDDM counterexample (harvested)",
-            body=_refutation_proof_body(
+        if domain_match:
+            body = _refutation_proof_body(
                 statement=(
                     "The nuclear Nyström error is **not** submodular on column subsets "
                     "when L is SDDM and positive-definite."
@@ -285,11 +333,21 @@ def harvest_prove_session(
                 matrix=matrix,
                 violation=violation,
                 stdout=run.stdout,
-            ),
+            )
+            title = "Refutation sketch — SDDM counterexample (harvested)"
+        else:
+            body = _generic_candidate_body(
+                statement=statement, exp_id=exp_id, command=run.command, stdout=run.stdout
+            )
+            title = "Candidate counterexample (harvested, unverified)"
+        proof = add_proof_attempt(
+            ot_dir,
+            pid,
+            title=title,
+            body=body,
             gaps=[
-                "SDD positive-definite case still open",
+                "Candidate counterexample not independently verified",
                 "Search domain is finite / script-bounded",
-                "No formal SDDM/PD certificate separate from script",
             ],
             claim_links=[claim.id],
         )
