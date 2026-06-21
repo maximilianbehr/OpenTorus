@@ -703,11 +703,28 @@ def prove(
         "Review with: opentorus problem show "
         f"{pid} ; opentorus problem report {pid} --lint[/dim]"
     )
+    if outcome.referee_verdict == "block":
+        console.print(f"[red]Referee verdict: BLOCK[/red] — see `opentorus problem referee {pid}`.")
+
     if outcome.lint_issues:
-        console.print(
-            f"[yellow]Report honesty linter: {outcome.lint_issues} warning(s) — "
-            f"run `opentorus problem report {pid} --lint`[/yellow]"
-        )
+        # The autonomous path must not pass overclaiming language silently. Regenerate
+        # the report once (artifacts may have changed) and re-lint; if warnings remain,
+        # gate with a non-zero exit so a script/CI run does not treat it as clean.
+        from opentorus.research.dossier.report import build_report, lint_dossier_report
+
+        try:
+            build_report(ot_dir, pid)
+        except OpenTorusError:
+            pass
+        remaining = lint_dossier_report(ot_dir, pid)
+        if remaining:
+            console.print(
+                f"[red]Report honesty linter: {len(remaining)} unresolved warning(s).[/red] "
+                f"The report overclaims relative to its artifacts; fix the wording or back the "
+                f"claims, then re-run. See `opentorus problem report {pid} --lint`."
+            )
+            raise typer.Exit(code=1)
+        console.print("[green]Report honesty linter: clean after regeneration.[/green]")
 
 
 @app.command("doctor")
