@@ -145,6 +145,11 @@ def run(
 
     try:
         provider = get_provider(config)
+        from opentorus.providers.tool_support import require_tool_calling_provider
+
+        require_tool_calling_provider(
+            provider, config, warn=lambda m: console.print(f"[yellow]{m}[/yellow]")
+        )
         registry = build_default_registry(root, ot_dir, config)
         if plan:
             indicator = ActivityIndicator(console)
@@ -434,6 +439,11 @@ def research(
     root = base.parent
     config = _load_workspace_config(base)
     provider = get_provider(config)
+    from opentorus.providers.tool_support import require_tool_calling_provider
+
+    require_tool_calling_provider(
+        provider, config, warn=lambda m: console.print(f"[yellow]{m}[/yellow]")
+    )
     # Explicit target wins; otherwise findings attach to the active problem (or stay
     # unattributed) — they are never silently filed under an arbitrary dossier.
     if problem is not None:
@@ -601,6 +611,11 @@ def prove(
     outcome = None
     try:
         provider = get_provider(config)
+        from opentorus.providers.tool_support import require_tool_calling_provider
+
+        require_tool_calling_provider(
+            provider, config, warn=lambda m: console.print(f"[yellow]{m}[/yellow]")
+        )
         stream_llm = stream_llm and provider.supports_streaming
         if indicator is not None:
             indicator.update("Thinking")

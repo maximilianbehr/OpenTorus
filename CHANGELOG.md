@@ -7,6 +7,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Tool-calling capability check** (`model.verify_tool_calling`, default true): before
+  an agent run (`run`, `prove`, `research`) OpenTorus verifies the model can call tools,
+  since every deliverable is a tool call. It refuses with a clear message when an Ollama
+  model authoritatively lacks the `tools` capability (`/api/show`); for other providers
+  a one-shot probe *confirms* tool support and otherwise emits a non-fatal warning
+  (the probe never refuses a model on an unforced sample, so a tool-capable model is
+  never wrongly blocked). If a run executes zero tool calls despite tools being
+  available, it now stops with a message naming the likely tool-calling cause.
 - **Gap-fill no-progress backstop** (`agent.prove_gap_fill_no_progress_steps`,
   default 16): `opentorus prove` now ends gap-filling after a window of steps that do
   not reduce the proof's gap count — even when `max_steps` and
