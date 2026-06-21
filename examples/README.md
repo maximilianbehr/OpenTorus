@@ -25,6 +25,7 @@ and builds an honesty-linted report.
 | [backward-error-convergence](backward-error-convergence/) | Is randomness necessary for condition-number-independent backward-error convergence in general linear-system solvers? (arXiv:2604.16075) | no | `bash minberr_backward_error.sh` |
 | [nystrom-submodularity](nystrom-submodularity/) | Is the nuclear-norm Nyström approximation error submodular for SDD/SDDM positive-definite matrices? | no | `bash nystroem_submodularity.sh` |
 | [matrix-sign-approximation](matrix-sign-approximation/) | Asymptotic minimax error of the best degree-`2^m`-computable polynomial approximating the matrix sign function on `[-1,-δ] ∪ [δ,1]` (arXiv:2504.01500). | no | `bash sign.sh` |
+| [random-nla](random-nla/) | Adaptive sketch size for randomized low-rank approximation: an a posteriori error estimate driving an adaptive `ℓ = k + p` in the randomized SVD / range finder, and the oversampling each spectral-decay profile needs (Martinsson & Tropp survey, arXiv:2002.01387). | yes (agent-written, containerized) | `bash adaptive_sketch_size.sh` |
 
 Each directory has its own README with the full problem statement, a step-by-step
 description of the workflow, and prerequisites.
