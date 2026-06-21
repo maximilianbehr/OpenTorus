@@ -35,11 +35,19 @@ _CLAIM_TYPE_LABEL = {
     "REFERENCE_FACT": "reference fact",
     "FORMAL_PROOF_VERIFIED": "formally verified",
     "FORMAL_PROOF_FAILED": "formal proof attempt (failed)",
+    "HEURISTIC": "heuristic (plausible, NOT proven)",
+    "EXPERIMENTAL_OBSERVATION": "experimental observation (evidence, not proof)",
+    "OPEN_GAP": "open gap (unresolved sub-question)",
 }
 
 
-def honesty_context(ot_dir: Path, problem_id: str) -> tuple[bool, bool]:
-    """Return (has_verified_proof, has_reference) for the dossier."""
+def honesty_context(ot_dir: Path, problem_id: str) -> tuple[bool, bool, bool]:
+    """Return (has_verified_proof, has_reference, has_supported_theorem) for the dossier.
+
+    These three booleans license, respectively: strong proof-claim language, "it is
+    known that …" knowledge claims, and result-assertion language ("we proved",
+    "provably", "the problem is solved").
+    """
     claims = store.list_claims(ot_dir, problem_id)
     proofs = store.list_proof_attempts(ot_dir, problem_id)
     has_verified_proof = any(p.status == "verified" for p in proofs) or any(
@@ -51,7 +59,12 @@ def honesty_context(ot_dir: Path, problem_id: str) -> tuple[bool, bool]:
         or any(p.paper_artifact for p in store.list_related_papers(ot_dir, problem_id))
         or any(c.type == "REFERENCE_FACT" for c in claims)
     )
-    return has_verified_proof, has_reference
+    has_supported_theorem = any(
+        c.type in ("THEOREM", "LEMMA_ATTEMPT")
+        and c.status in ("supported", "verified", "formally_verified")
+        for c in claims
+    )
+    return has_verified_proof, has_reference, has_supported_theorem
 
 
 def _bullets(items: list[str]) -> str:
@@ -72,6 +85,13 @@ def _settle_hint(claim: ClaimRecord) -> str | None:
             "Open: experiments and sketches can support but never verify it; only an "
             "accepted proof artifact settles it."
         )
+    if claim.type in ("HEURISTIC", "EXPERIMENTAL_OBSERVATION"):
+        return (
+            "Heuristic/empirical: it motivates a precise CONJECTURE or LEMMA_ATTEMPT but "
+            "does not settle anything; a proof artifact would be needed to verify."
+        )
+    if claim.type == "OPEN_GAP":
+        return "Unresolved sub-question: close it with a lemma, an experiment, or a citation."
     return None
 
 
@@ -94,6 +114,7 @@ def _claim_block(  # noqa: ANN001
     *,
     has_proof: bool = False,
     has_ref: bool = False,
+    has_thm: bool = False,
 ) -> str:
     type_label = _CLAIM_TYPE_LABEL.get(claim.type, claim.type)
     ev_list = evidence_by_claim.get(claim.id, [])
@@ -123,7 +144,12 @@ def _claim_block(  # noqa: ANN001
         lines.append(f"- **To settle:** {hint}")
     # Inline honesty check on the claim's own wording (statement + notes).
     claim_text = f"{claim.statement}\n{claim.notes or ''}"
-    claim_issues = lint_report(claim_text, has_verified_proof=has_proof, has_reference=has_ref)
+    claim_issues = lint_report(
+        claim_text,
+        has_verified_proof=has_proof,
+        has_reference=has_ref,
+        has_supported_theorem=has_thm,
+    )
     if claim_issues:
         flagged = "; ".join(f"'{i.phrase}' — {i.suggestion}" for i in claim_issues)
         lines.append(f"- ⚠ **Honesty:** {flagged}")
@@ -314,6 +340,77 @@ def _next_actions(
     return actions
 
 
+def _latest_referee_verdict(ot_dir: Path, problem_id: str) -> str:
+    """Return a short referee-verdict line for the header, or a 'not run' note."""
+    try:
+        from opentorus.research.dossier.referee import latest_referee
+    except Exception:  # noqa: BLE001 - referee is optional; never break the report
+        return "not run"
+    rep = latest_referee(ot_dir, problem_id)
+    if rep is None:
+        return "not run"
+    return f"{rep.verdict} ({rep.id})"
+
+
+def _status_header(
+    ot_dir: Path,
+    problem_id: str,
+    dossier: ProblemDossier,
+    claims: list[ClaimRecord],
+    proofs: list,  # noqa: ANN001
+    experiments: list,  # noqa: ANN001
+) -> str:
+    """A scannable, machine-derived header: status + what actually backs it.
+
+    Built only from artifact counts/statuses and a deterministic status gate, so it
+    cannot overstate the work. It is the first thing a reader sees.
+    """
+    from opentorus.research.dossier.status_gate import derive_status
+
+    verdict = derive_status(ot_dir, problem_id)
+    verified_theorems = [
+        c for c in claims if c.type == "THEOREM" and c.status in ("verified", "formally_verified")
+    ]
+    heuristics = [c for c in claims if c.type in ("HEURISTIC", "EXPERIMENTAL_OBSERVATION")]
+    sketches = [p for p in proofs if p.status != "verified"]
+    ran = [e for e in experiments if e.status in ("succeeded", "failed", "inconclusive")]
+    planned = [e for e in experiments if e.status == "planned"]
+    open_gaps = [c for c in claims if c.type == "OPEN_GAP"]
+    gap_total = verdict.open_gap_count
+
+    if verified_theorems:
+        thm_line = ", ".join(c.id for c in verified_theorems)
+    else:
+        thm_line = "none — no theorem has reached a verified status"
+
+    heur_line = (
+        f"{len(sketches)} proof sketch(es), {len(heuristics)} heuristic/empirical claim(s)"
+        if (sketches or heuristics)
+        else "none recorded"
+    )
+    exp_line = f"{len(ran)} executed, {len(planned)} planned"
+    if gap_total:
+        gap_line = f"{gap_total} recorded ({len(open_gaps)} OPEN_GAP claim(s) + sketch gaps)"
+    else:
+        gap_line = "none explicitly recorded"
+
+    next_actions = _next_actions(ot_dir, problem_id, dossier, claims)
+    next_step = next_actions[0] if next_actions else "Review claims and update status."
+
+    lines = [
+        "## Status Summary\n",
+        f"- **Status:** {verdict.status} — {verdict.rationale}",
+        f"- **Verified theorems:** {thm_line}",
+        f"- **Heuristics / sketches:** {heur_line}",
+        f"- **Experiments run:** {exp_line}",
+        f"- **Main gaps:** {gap_line}",
+        f"- **Referee verdict:** {_latest_referee_verdict(ot_dir, problem_id)}",
+        f"- **Recommended next step:** {next_step}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def build_report(ot_dir: Path, problem_id: str, *, harvest_session: bool = True) -> str:
     """Assemble report.md from local artifacts and persist it."""
     if harvest_session:
@@ -336,11 +433,13 @@ def build_report(ot_dir: Path, problem_id: str, *, harvest_session: bool = True)
         evidence_by_claim.setdefault(ev.claim_id, []).append(ev)
 
     # Honesty context is needed early so per-claim inline checks can use it.
-    has_proof, has_ref = honesty_context(ot_dir, problem_id)
+    has_proof, has_ref, has_thm = honesty_context(ot_dir, problem_id)
 
     parts: list[str] = []
     parts.append(f"# {dossier.id} — {dossier.title}\n")
     parts.append("> Auto-generated from local artifacts. Evidence is not proof.\n")
+
+    parts.append(_status_header(ot_dir, problem_id, dossier, claims, proofs, experiments))
 
     parts.append(
         _executive_summary(dossier, claims, evidence_by_claim, proofs, experiments, failed)
@@ -421,6 +520,7 @@ def build_report(ot_dir: Path, problem_id: str, *, harvest_session: bool = True)
                     evidence_by_claim,
                     has_proof=has_proof,
                     has_ref=has_ref,
+                    has_thm=has_thm,
                 )
             )
     else:
@@ -518,7 +618,12 @@ def build_report(ot_dir: Path, problem_id: str, *, harvest_session: bool = True)
     report_text = "\n".join(parts)
 
     # Lint the report we just generated and append any remaining warnings.
-    issues = lint_report(report_text, has_verified_proof=has_proof, has_reference=has_ref)
+    issues = lint_report(
+        report_text,
+        has_verified_proof=has_proof,
+        has_reference=has_ref,
+        has_supported_theorem=has_thm,
+    )
     parts.append("## Honesty Warnings\n")
     if issues:
         parts.append(
@@ -546,5 +651,10 @@ def lint_dossier_report(ot_dir: Path, problem_id: str) -> list[ReportIssue]:
     store.require_dossier(ot_dir, problem_id)
     report_path = store.dossier_dir(ot_dir, problem_id) / "report.md"
     text = report_path.read_text("utf-8") if report_path.is_file() else ""
-    has_proof, has_ref = honesty_context(ot_dir, problem_id)
-    return lint_report(text, has_verified_proof=has_proof, has_reference=has_ref)
+    has_proof, has_ref, has_thm = honesty_context(ot_dir, problem_id)
+    return lint_report(
+        text,
+        has_verified_proof=has_proof,
+        has_reference=has_ref,
+        has_supported_theorem=has_thm,
+    )

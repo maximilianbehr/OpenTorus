@@ -72,6 +72,12 @@ ClaimType = Literal[
     "REFERENCE_FACT",
     "FORMAL_PROOF_VERIFIED",
     "FORMAL_PROOF_FAILED",
+    # A plausibility argument or empirical regularity that is *not* claimed proven.
+    "HEURISTIC",
+    # A regularity read off experiments — evidence, never a settled result.
+    "EXPERIMENTAL_OBSERVATION",
+    # An explicitly recorded unresolved sub-question; tracked, never hidden.
+    "OPEN_GAP",
 ]
 CLAIM_TYPES: tuple[ClaimType, ...] = (
     "OBSERVATION",
@@ -84,6 +90,9 @@ CLAIM_TYPES: tuple[ClaimType, ...] = (
     "REFERENCE_FACT",
     "FORMAL_PROOF_VERIFIED",
     "FORMAL_PROOF_FAILED",
+    "HEURISTIC",
+    "EXPERIMENTAL_OBSERVATION",
+    "OPEN_GAP",
 )
 
 ClaimStatus = Literal[
@@ -91,6 +100,7 @@ ClaimStatus = Literal[
     "supported",
     "contradicted",
     "refuted",
+    "needs_review",
     "verified",
     "formally_verified",
 ]
@@ -99,6 +109,7 @@ CLAIM_STATUSES: tuple[ClaimStatus, ...] = (
     "supported",
     "contradicted",
     "refuted",
+    "needs_review",
     "verified",
     "formally_verified",
 )

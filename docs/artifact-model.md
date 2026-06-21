@@ -94,3 +94,54 @@ Artifacts carry provenance (where a paper/dataset/repo came from, which commit,
 which license). Reports and drafts may only cite artifacts that exist locally,
 and the honesty linter flags language that overclaims relative to an artifact's
 actual rigor.
+
+## Dossier claim ledger
+
+The per-problem dossier uses its own typed `ClaimRecord` ledger (distinct from the
+workspace-global claims ladder above). A claim carries a `type` and a `status`:
+
+- **types:** `OBSERVATION`, `CLAIM`, `CONJECTURE`, `LEMMA_ATTEMPT`, `THEOREM`,
+  `COUNTEREXAMPLE_CANDIDATE`, `COUNTEREXAMPLE_VERIFIED`, `REFERENCE_FACT`,
+  `FORMAL_PROOF_VERIFIED`, `FORMAL_PROOF_FAILED`, plus `HEURISTIC` (a plausibility
+  argument, never claimed proven), `EXPERIMENTAL_OBSERVATION` (a regularity read
+  off experiments), and `OPEN_GAP` (an explicitly tracked unresolved
+  sub-question). `DEFINITION` and `ASSUMPTION` remain separate record types.
+- **statuses:** `unverified` → `supported` → (`contradicted` / `refuted` /
+  `needs_review`) and the verified tier `verified` / `formally_verified`. New
+  types default to `unverified`; `needs_review` is a review flag and never
+  requires a verification artifact. The verified tier still requires one — adding
+  these values does not weaken EVAL-001/EVAL-002.
+
+A claim type may only ever be **weakened** programmatically
+(`downgrade_claim_type`, e.g. `THEOREM → CONJECTURE`), which sets the status to
+`needs_review` and logs the change; promotion to a settled result still requires
+the verification CRUD.
+
+## Report status gate
+
+`status_gate.derive_status` derives, from the artifacts alone, a separate
+**report status** — `SOLVED`, `PARTIALLY_SOLVED`, `HEURISTIC_ONLY`,
+`EXPERIMENTAL_ONLY`, `UNSOLVED`, or `INVALID` — so a pile of proof sketches can
+never read as a solution. It is additive and does not overload the dossier's own
+`ProblemStatus`. The report header surfaces it (Status / Verified theorems /
+Heuristics / Experiments run / Main gaps / Referee verdict / Recommended next
+step).
+
+## Referee
+
+`referee.referee_review` is a hostile, deterministic post-proof stage. It
+classifies every theorem-like claim (`proved` / `cited` / `heuristic` /
+`unsupported` / `refuted`), recommends `THEOREM → CONJECTURE` downgrades for
+claims that are neither proved nor cited, flags cross-claim contradictions, and
+runs the honesty linter over every claim and proof body. It persists a
+machine-readable `REFEREE-*.json` plus a human `.md` under `<dossier>/referee/`
+and returns a `pass` / `revise` / `block` verdict. A reusable prompt lives at
+`prompts/referee.md`.
+
+## Experiment-citation integrity
+
+An experiment citation must point at a real `EXP-*` manifest: citing an id that
+was never created is rejected, and citing a real but not-yet-run experiment is
+recorded with an advisory (its results do not exist yet). Both the dossier and the
+workspace-global evidence paths enforce this, mirroring the `PAPER-*` citation
+grounding.

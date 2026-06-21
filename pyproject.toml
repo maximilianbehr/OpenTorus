@@ -38,6 +38,8 @@ papers = ["pypdf>=4.0"]
 embeddings = ["sentence-transformers>=2.2"]
 # Validated numerics: rigorous interval-arithmetic verification of inequalities.
 validated-numerics = ["mpmath>=1.3"]
+# Symbolic algebra checks (opentorus check-algebra): derivative / optimum sanity.
+algebra = ["sympy>=1.12"]
 dev = [
     "pytest>=8.0",
     # Pin ruff exactly: its formatter output changes between releases, so an
