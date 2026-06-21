@@ -42,8 +42,8 @@ _CITE_PATTERNS = (
 )
 
 
-def _paper_corpus(ot_dir: Path, paper_id: str) -> str | None:
-    """Return lowercased searchable text for a parsed PAPER-* or None."""
+def _paper_corpus(ot_dir: Path, paper_id: str, *, lower: bool = True) -> str | None:
+    """Return searchable text for a parsed PAPER-* (lowercased by default) or None."""
     from opentorus.research.papers import get_paper, is_paper_parsed
 
     paper = get_paper(ot_dir, paper_id.upper())
@@ -84,7 +84,26 @@ def _paper_corpus(ot_dir: Path, paper_id: str) -> str | None:
                 pass
 
     joined = "\n".join(parts).strip()
-    return joined.lower() if joined else None
+    if not joined:
+        return None
+    return joined.lower() if lower else joined
+
+
+def theorem_context(corpus_raw: str, number: str, *, width: int = 220) -> str | None:
+    """Return a short readable snippet around 'Theorem <number>' in the raw corpus.
+
+    Lets a reviewer/referee check that a cited statement actually matches the source,
+    rather than only that the theorem *number* exists. Non-blocking and best-effort.
+    """
+    if not corpus_raw or not number:
+        return None
+    num = re.escape(number.strip())
+    m = re.search(rf"\b(?:theorem|lemma|proposition|corollary)\s+{num}\b", corpus_raw, re.I)
+    if m is None:
+        return None
+    start = max(0, m.start() - 20)
+    snippet = " ".join(corpus_raw[start : m.start() + width].split())
+    return snippet[:width].strip()
 
 
 def theorem_in_corpus(corpus: str, number: str) -> bool:
@@ -147,11 +166,23 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
             continue
 
         theorems = cited_theorems_for_paper(body, pid)
+        corpus_raw: str | None = None
         for thm in sorted(theorems):
             if not theorem_in_corpus(corpus, thm):
                 errors.append(
                     f"{pid} does not contain Theorem/Lemma {thm} in parsed text — "
                     "do not invent theorem numbers; cite what the reading note shows."
+                )
+                continue
+            # The number exists; surface the source sentence as a non-blocking advisory
+            # so a reviewer can confirm the cited *statement* matches (not just the id).
+            if corpus_raw is None:
+                corpus_raw = _paper_corpus(ot_dir, pid, lower=False) or ""
+            context = theorem_context(corpus_raw, thm)
+            if context:
+                warnings.append(
+                    f"{pid} Theorem/Lemma {thm} source context (verify the cited statement "
+                    f"matches): “{context}”"
                 )
 
         if pid in body and not theorems:

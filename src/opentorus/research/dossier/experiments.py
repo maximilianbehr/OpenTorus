@@ -169,8 +169,20 @@ def run_experiment(
     (edir / "stdout.log").write_text(proc.stdout, encoding="utf-8")
     (edir / "stderr.log").write_text(proc.stderr, encoding="utf-8")
     exp.status = "succeeded" if proc.returncode == 0 else "failed"
+    # Reproducibility: hash stdout. The first successful run sets the baseline; a
+    # later run diffs against it and reports drift rather than silently overwriting.
+    repro_note = ""
+    if proc.returncode == 0:
+        new_sha = hashlib.sha256(proc.stdout.encode("utf-8")).hexdigest()
+        if exp.stdout_sha256 is None:
+            exp.stdout_sha256 = new_sha
+        elif new_sha != exp.stdout_sha256:
+            repro_note = " NON-REPRODUCIBLE: stdout differs from the recorded baseline."
+        else:
+            repro_note = " reproducible (stdout matches baseline)."
     exp.result_summary = (
-        f"exit={proc.returncode}; stdout {len(proc.stdout)} chars, stderr {len(proc.stderr)} chars."
+        f"exit={proc.returncode}; stdout {len(proc.stdout)} chars, "
+        f"stderr {len(proc.stderr)} chars.{repro_note}"
     )
     (edir / "result.md").write_text(
         f"# {exp_id} — {exp.title}\n\n"

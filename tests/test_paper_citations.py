@@ -52,7 +52,9 @@ def test_validate_proof_citations_accepts_parsed_theorem(tmp_path: Path) -> None
     body = "Apply Theorem 2.1 in PAPER-0001 to bound the sign-function error."
     errors, warnings = validate_proof_citations(ot, body)
     assert not errors
-    assert not any("2.1" in w for w in warnings)
+    # A valid parsed theorem citation is accepted, and now gets a non-blocking
+    # source-context advisory so a reviewer can confirm the statement matches.
+    assert any("source context" in w for w in warnings)
 
 
 def test_literature_tool_gate_blocks_proof_write() -> None:

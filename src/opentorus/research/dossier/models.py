@@ -348,6 +348,9 @@ class ExperimentRecord(BaseModel):
     created_at: datetime = Field(default_factory=utcnow)
     result_summary: str = ""
     status: ExperimentStatus = "planned"
+    # sha256 of the first successful run's stdout, the reproducibility baseline.
+    # A later replay diffs against it and reports drift instead of overwriting it.
+    stdout_sha256: str | None = None
 
 
 class ProofAttempt(BaseModel):

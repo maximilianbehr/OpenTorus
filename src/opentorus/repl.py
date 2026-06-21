@@ -51,7 +51,8 @@ Available slash commands:
   /replay [last|<id>]  Summarize a session for review.
   /usage    Show the local token usage and estimated cost ledger.
   /check    Run the configured quality gates (test/lint/typecheck).
-  /checkpoint create <label>  Record a recoverable checkpoint.
+  /doctor   Check workspace, provider, verifier, and execution backends.
+  /checkpoint create <label>  Record a recoverable checkpoint (restore via the CLI).
   /context  Show the context summary sent to the model.
   /model    Show the model config, or `/model set <key> <value>`.
   /clear    Clear the screen.
@@ -145,6 +146,8 @@ def dispatch(line: str, start: Path | None = None) -> ReplResult:
             return ReplResult(messages=[_handle_execute(args.strip(), start)])
         if command == "check":
             return ReplResult(messages=[_format_check(start)])
+        if command == "doctor":
+            return ReplResult(messages=[_format_doctor()])
         if command == "checkpoint":
             return ReplResult(messages=[_handle_checkpoint(args.strip(), start)])
         if command == "context":
@@ -159,6 +162,18 @@ def dispatch(line: str, start: Path | None = None) -> ReplResult:
 
     # Natural-language input is handled by the agent loop in run_repl.
     return ReplResult(messages=[])
+
+
+def _format_doctor() -> str:
+    """Render the workspace/provider/backend health checks in-session."""
+    from opentorus.doctor import doctor_for_cwd
+
+    _root, _ot, checks = doctor_for_cwd()
+    lines = ["Doctor:"]
+    for c in checks:
+        mark = "ok" if c.ok else "FAIL"
+        lines.append(f"  [{mark}] {c.name}: {c.detail}")
+    return "\n".join(lines)
 
 
 def _format_suggest(start: Path | None) -> str:
@@ -756,6 +771,7 @@ _SLASH_COMMANDS = (
     "/replay",
     "/usage",
     "/check",
+    "/doctor",
     "/checkpoint",
     "/context",
     "/model",
