@@ -6,6 +6,7 @@ from pathlib import Path
 
 from opentorus.agent.literature_gate import literature_tool_gate
 from opentorus.research.paper_citations import (
+    corpus_has_numbered_theorems,
     theorem_in_corpus,
     validate_proof_citations,
 )
@@ -55,6 +56,44 @@ def test_validate_proof_citations_accepts_parsed_theorem(tmp_path: Path) -> None
     # A valid parsed theorem citation is accepted, and now gets a non-blocking
     # source-context advisory so a reviewer can confirm the statement matches.
     assert any("source context" in w for w in warnings)
+
+
+def test_theorem_in_corpus_tolerates_extraction_noise() -> None:
+    # PDF extraction often drops the space ("Theorem2.1") or splits the dot ("1 . 3").
+    assert theorem_in_corpus("see Theorem2.1 here", "2.1")
+    assert theorem_in_corpus("see Theorem 1 . 3 here", "1.3")
+    assert corpus_has_numbered_theorems("intro Theorem 4 results")
+    assert not corpus_has_numbered_theorems("only prose, no numbered results here")
+
+
+def test_missing_theorem_warns_when_extraction_has_no_numbering(tmp_path: Path) -> None:
+    # The root cause of the random_nla stall: a paper whose extraction captured no
+    # numbered theorems must NOT hard-block every citation as "invented" — the
+    # grounding cannot verify it either way, so it warns instead.
+    ot = _ot(tmp_path)
+    record = SourceRecord(source="arxiv", title="Survey", arxiv_id="2401.00003")
+    paper = acquire_paper(ot, record, downloader=lambda u: b"%PDF")
+    pages = ["Abstract\nThis survey discusses sketching and error estimation in prose only.\n"]
+    read_paper(ot, paper.id, page_extractor=lambda path: pages)
+
+    body = "By Theorem 4.2 of PAPER-0001 the adaptive sketch error is bounded."
+    errors, warnings = validate_proof_citations(ot, body)
+    assert not errors  # unverifiable, not invented → does not block proof writing
+    assert any("cannot verify" in w and "4.2" in w for w in warnings)
+
+
+def test_missing_theorem_blocks_when_paper_has_other_numbers(tmp_path: Path) -> None:
+    # When the paper DOES have numbered results but not the cited one, it is a genuine
+    # invention and is still blocked.
+    ot = _ot(tmp_path)
+    record = SourceRecord(source="arxiv", title="Sparse JL", arxiv_id="2401.00004")
+    paper = acquire_paper(ot, record, downloader=lambda u: b"%PDF")
+    pages = ["Results\nTheorem 1 holds. Lemma 6 follows. Lemma 9 too.\n"]
+    read_paper(ot, paper.id, page_extractor=lambda path: pages)
+
+    body = "By Theorem 1.3 of PAPER-0001 the projection preserves norms."
+    errors, _ = validate_proof_citations(ot, body)
+    assert any("1.3" in e for e in errors)
 
 
 def test_literature_tool_gate_blocks_proof_write() -> None:
