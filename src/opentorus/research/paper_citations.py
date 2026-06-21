@@ -97,8 +97,7 @@ def theorem_context(corpus_raw: str, number: str, *, width: int = 220) -> str | 
     """
     if not corpus_raw or not number:
         return None
-    num = re.escape(number.strip())
-    m = re.search(rf"\b(?:theorem|lemma|proposition|corollary)\s+{num}\b", corpus_raw, re.I)
+    m = re.search(rf"\b{_THEOREM_KW}\s*{_flex_number_pattern(number)}\b", corpus_raw, re.I)
     if m is None:
         return None
     start = max(0, m.start() - 20)
@@ -106,18 +105,47 @@ def theorem_context(corpus_raw: str, number: str, *, width: int = 220) -> str | 
     return snippet[:width].strip()
 
 
+_THEOREM_KW = r"(?:theorem|lemma|proposition|corollary)"
+
+
+def _normalize_corpus(corpus: str) -> str:
+    """Collapse whitespace so PDF-extraction noise does not defeat matching."""
+    return re.sub(r"\s+", " ", corpus)
+
+
+def _flex_number_pattern(number: str) -> str:
+    """A number pattern tolerant of extraction noise in the dot (e.g. ``1 . 3``)."""
+    parts = [re.escape(p) for p in number.strip().split(".")]
+    return r"\s*\.\s*".join(parts)
+
+
 def theorem_in_corpus(corpus: str, number: str) -> bool:
-    """True when ``Theorem <number>`` (or lemma/…) appears in parsed text."""
+    """True when ``Theorem <number>`` (or lemma/…) appears in parsed text.
+
+    Tolerant of common PDF-extraction noise: ``\\s*`` between the keyword and the
+    number ("Theorem1.3") and optional spaces around dots ("Theorem 1 . 3").
+    """
     if not corpus or not number:
         return False
-    num = re.escape(number.strip())
     return bool(
         re.search(
-            rf"\b(?:theorem|lemma|proposition|corollary)\s+{num}(?:\b|[\s,.;)]|$)",
-            corpus,
+            rf"\b{_THEOREM_KW}\s*{_flex_number_pattern(number)}(?:\b|[\s,.;)]|$)",
+            _normalize_corpus(corpus),
             re.I,
         )
     )
+
+
+def corpus_has_numbered_theorems(corpus: str) -> bool:
+    """Whether the parsed text contains *any* numbered theorem/lemma environment.
+
+    When False, the extraction lost (or never captured) theorem numbering, so a
+    citation can be neither confirmed nor refuted — the grounding must not then
+    reject every citation as "invented" (that punishes the model for a bad parse).
+    """
+    if not corpus:
+        return False
+    return bool(re.search(rf"\b{_THEOREM_KW}\s*\d", _normalize_corpus(corpus), re.I))
 
 
 def cited_theorems_for_paper(body: str, paper_id: str) -> set[str]:
@@ -167,12 +195,25 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
 
         theorems = cited_theorems_for_paper(body, pid)
         corpus_raw: str | None = None
+        # Whether the parse captured ANY numbered results. If not, the extraction is
+        # incomplete and a citation can be neither confirmed nor refuted — so a
+        # missing number is a non-blocking warning, not a hard "you invented it".
+        has_numbering = corpus_has_numbered_theorems(corpus)
         for thm in sorted(theorems):
             if not theorem_in_corpus(corpus, thm):
-                errors.append(
-                    f"{pid} does not contain Theorem/Lemma {thm} in parsed text — "
-                    "do not invent theorem numbers; cite what the reading note shows."
-                )
+                if has_numbering:
+                    errors.append(
+                        f"{pid} does not contain Theorem/Lemma {thm} (its parsed text lists "
+                        "other numbered results) — do not invent theorem numbers; cite a "
+                        "result that appears in the reading note."
+                    )
+                else:
+                    warnings.append(
+                        f"{pid}: cannot verify Theorem/Lemma {thm} — the parsed text has no "
+                        "extractable theorem numbering (likely incomplete PDF extraction). "
+                        "Cite the result by content/section or mark a [GAP] instead of a bare "
+                        "number; re-fetch a cleaner copy if precise numbering matters."
+                    )
                 continue
             # The number exists; surface the source sentence as a non-blocking advisory
             # so a reviewer can confirm the cited *statement* matches (not just the id).
