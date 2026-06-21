@@ -531,10 +531,14 @@ def _cache_key_for(ot_dir: Path, experiment: Experiment, exp_dir: Path) -> str:
 
     run_py = exp_dir / "run.py"
     run_source = run_py.read_text(encoding="utf-8") if run_py.is_file() else ""
+    # Attached datasets are inputs: fold their (id, sha256) into the key so a run with
+    # the same script but different data does not restore the wrong cached result.
+    datasets = sorted((d.dataset_id, d.sha256 or "") for d in experiment.datasets)
     return cache_key(
         run_source=run_source,
         image_ref=_resolve_image_ref(ot_dir, experiment),
         command=experiment.command or "python run.py",
+        inputs={"datasets": datasets} if datasets else None,
     )
 
 

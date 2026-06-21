@@ -39,12 +39,26 @@ _PACK_DIRS = (
 _EXCLUDED_SUFFIXES = (".pdf",)
 
 
+class PaperRef(BaseModel):
+    """Enough to re-acquire a cited paper's legal copy and verify its content hash."""
+
+    id: str
+    title: str = ""
+    doi: str = ""
+    arxiv_id: str = ""
+    sha256: str = ""
+    license: str = ""
+
+
 class PackManifest(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     opentorus_version: str = opentorus.__version__
     files: list[str] = Field(default_factory=list)
     pinned_environments: list[str] = Field(default_factory=list)
     experiment_count: int = 0
+    # Copyrighted PDFs are excluded from the pack; this index lets a reviewer
+    # re-acquire the open-access copy and verify it against the recorded hash.
+    papers: list[PaperRef] = Field(default_factory=list)
 
 
 def _pack_clean(path: Path) -> bool:
@@ -71,16 +85,34 @@ def export_pack(ot_dir: Path, out_path: Path | None = None) -> Path:
                 entries.append((arc, file.read_bytes()))
 
     pinned = [env.image for env in list_environments(ot_dir).values() if env.image is not None]
+    from opentorus.research.papers import list_papers
+
+    papers = [
+        PaperRef(
+            id=p.id,
+            title=p.title or "",
+            doi=p.doi or "",
+            arxiv_id=p.arxiv_id or "",
+            sha256=p.sha256 or "",
+            license=p.license or "",
+        )
+        for p in list_papers(ot_dir)
+    ]
     manifest = PackManifest(
         files=sorted(name for name, _ in entries),
         pinned_environments=sorted(pinned),
         experiment_count=len(list_experiments(ot_dir)),
+        papers=papers,
     )
 
     out_path = out_path or ot_dir / "packs" / "research-pack.zip"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("pack.json", manifest.model_dump_json(indent=2))
+        # A standalone, human-readable re-acquisition index alongside the manifest.
+        zf.writestr(
+            "pack/papers-manifest.json", json.dumps([p.model_dump() for p in papers], indent=2)
+        )
         for name, data in entries:
             zf.writestr(name, data)
     return out_path

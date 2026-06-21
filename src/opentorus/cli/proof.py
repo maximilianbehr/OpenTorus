@@ -16,13 +16,15 @@ from opentorus.cli._base import (
 )
 from opentorus.errors import OpenTorusError
 
-proof_app = typer.Typer(cls=SortedGroup, help="Formal verification (opt-in Lean/Coq backends).")
+proof_app = typer.Typer(
+    cls=SortedGroup, help="Formal verification (Lean/Coq/SMT/interval/sympy backends)."
+)
 app.add_typer(proof_app, name="proof")
 
 
 @proof_app.command("submit")
 def proof_submit(
-    backend: str = typer.Argument(..., help="Backend name: lean4 | coq."),
+    backend: str = typer.Argument(..., help="Backend name: lean4 | coq | smt | interval | sympy."),
     source_file: str = typer.Argument(..., help="Path to the formal source file."),
     claim: str | None = typer.Option(None, "--claim", help="Claim id this proof targets."),
 ) -> None:

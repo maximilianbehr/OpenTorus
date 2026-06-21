@@ -7,6 +7,7 @@ from opentorus.research.verifiers.backends import CoqBackend, Lean4Backend
 from opentorus.research.verifiers.base import Verifier
 from opentorus.research.verifiers.interval import IntervalVerifier
 from opentorus.research.verifiers.smt import SMTVerifier
+from opentorus.research.verifiers.sympy_backend import SymPyVerifier
 
 
 def available_verifiers(config: Config) -> dict[str, Verifier]:
@@ -29,6 +30,10 @@ def available_verifiers(config: Config) -> dict[str, Verifier]:
         interval: Verifier = IntervalVerifier()
         if interval.is_available():
             verifiers[interval.name] = interval
+    if getattr(cfg, "sympy", False):
+        sympy_v: Verifier = SymPyVerifier()
+        if sympy_v.is_available():
+            verifiers[sympy_v.name] = sympy_v
     return verifiers
 
 
@@ -43,4 +48,6 @@ def get_verifier(config: Config, name: str) -> Verifier | None:
         return SMTVerifier(cfg.smt_command)
     if name in {"interval", "validated_numerical"} and getattr(cfg, "interval", False):
         return IntervalVerifier()
+    if name in {"sympy", "symbolic"} and getattr(cfg, "sympy", False):
+        return SymPyVerifier()
     return None

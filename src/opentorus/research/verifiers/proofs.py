@@ -21,7 +21,14 @@ if TYPE_CHECKING:
     from opentorus.config import Config
     from opentorus.research.verifiers.base import Verifier
 
-_SUFFIX = {"lean4": ".lean", "lean": ".lean", "coq": ".v", "smt": ".smt2", "z3": ".smt2"}
+_SUFFIX = {
+    "lean4": ".lean",
+    "lean": ".lean",
+    "coq": ".v",
+    "smt": ".smt2",
+    "z3": ".smt2",
+    "sympy": ".json",
+}
 
 
 def _utcnow() -> datetime:
