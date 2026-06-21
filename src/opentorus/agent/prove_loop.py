@@ -80,11 +80,26 @@ def build_proof_gap_recovery_hint(ot_dir: Path, problem_id: str) -> str:
     preview = "; ".join(latest.gaps[:3])
     if gap_n > 3:
         preview = f"{preview}; … (+{gap_n - 3} more)"
-    return (
+    hint = (
         f"{latest.id} still has {gap_n} recorded gap(s): {preview}. "
         "Read that proof and relevant PAPER-* notes; use paper_read, lit_search, "
         "paper_fetch, or exp_run as needed; then proof_write(scope=primary) to fill "
         "[GAP-n] or shrink the gap list. Do not stop with a chat-only summary."
+    )
+    return _append_known_bad_citations(ot_dir, pid, hint)
+
+
+def _append_known_bad_citations(ot_dir: Path, problem_id: str, text: str) -> str:
+    """Re-inject the dossier's known-nonexistent citations so they survive compaction."""
+    from opentorus.research.paper_citations import known_bad_citations
+
+    bad = known_bad_citations(ot_dir, problem_id)
+    if not bad:
+        return text
+    return (
+        text
+        + "\n\nDo NOT cite these (already shown nonexistent in the parsed sources):\n- "
+        + "\n- ".join(bad[:12])
     )
 
 
@@ -693,6 +708,8 @@ def run_prove(
         statement_focus=statement_focus,
         extra=proof_extra,
     )
+    # On a resumed run, re-feed citations a prior run already proved nonexistent.
+    proof_prompt = _append_known_bad_citations(ot_dir, pid, proof_prompt)
     proof_answer = proof_loop.run(proof_prompt)
     answer = proof_answer if not answer else f"{answer}\n\n---\n\n{proof_answer}"
     total_tool_calls += proof_loop.tool_calls_this_run

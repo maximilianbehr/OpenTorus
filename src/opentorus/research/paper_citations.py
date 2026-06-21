@@ -194,6 +194,58 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
     return errors, warnings
 
 
+# --- Persisted citation-failure memory (so a fabricated theorem number is not
+# re-invented after the context is compacted away). -----------------------------
+
+
+def _citation_failures_path(ot_dir: Path, problem_id: str) -> Path:
+    from opentorus.research.dossier import store
+
+    return store.dossier_dir(ot_dir, problem_id.strip().upper()) / "citation_failures.txt"
+
+
+def known_bad_citations(ot_dir: Path, problem_id: str) -> list[str]:
+    """Citations a prior proof_write tried that the parsed sources do not contain."""
+    path = _citation_failures_path(ot_dir, problem_id)
+    if not path.is_file():
+        return []
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def record_citation_failures(ot_dir: Path, problem_id: str, errors: list[str]) -> list[str]:
+    """Persist the fabricated-citation errors for a dossier; return the merged list.
+
+    Only "does not contain Theorem/Lemma N" errors are recorded (a genuinely
+    nonexistent citation), deduplicated and shortened, so the prove loop can re-feed
+    them on later attempts instead of letting the model re-invent the same numbers
+    after a compaction drops the earlier rejection.
+    """
+    from opentorus.research.dossier import store
+
+    pid = problem_id.strip().upper()
+    if store.get_dossier(ot_dir, pid) is None:
+        return []
+    fresh = [_short_citation_failure(e) for e in errors if "does not contain" in e]
+    fresh = [f for f in fresh if f]
+    if not fresh:
+        return known_bad_citations(ot_dir, pid)
+    merged = list(dict.fromkeys(known_bad_citations(ot_dir, pid) + fresh))
+    from opentorus.atomicio import atomic_write_text
+
+    atomic_write_text(_citation_failures_path(ot_dir, pid), "\n".join(merged) + "\n")
+    return merged
+
+
+def _short_citation_failure(error: str) -> str:
+    """Reduce a verbose citation error to the load-bearing 'PAPER-X has no Theorem N'."""
+    text = error.strip()
+    for sep in (" in parsed text", " — ", " - "):
+        if sep in text:
+            text = text.split(sep)[0]
+            break
+    return text.strip()[:140]
+
+
 # A year token attached to a PAPER-* mention, e.g. "PAPER-0001 (Kressner, 2020)".
 _YEAR_NEAR = re.compile(r"(?:19|20)\d{2}")
 

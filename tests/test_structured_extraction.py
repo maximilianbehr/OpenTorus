@@ -55,4 +55,6 @@ def test_cli_structured_creates_one_dossier_per_heading(tmp_path: Path, monkeypa
     assert len(dossiers) == 2
     assert "PROBLEM-0001" in res.stdout and "PROBLEM-0002" in res.stdout
     # Deterministic: statements match the headings, no model involved.
-    assert store.get_active_problem(base) == "PROBLEM-0002"
+    # Bulk creation leaves NO arbitrary active problem (so a later run/research cannot
+    # silently mis-attribute its artifacts to whichever was created last).
+    assert store.get_active_problem(base) is None

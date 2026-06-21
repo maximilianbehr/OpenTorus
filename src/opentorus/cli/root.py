@@ -418,15 +418,32 @@ def research(
     token_budget: int | None = typer.Option(
         None, "--token-budget", help="Stop when estimated total tokens reach this."
     ),
+    problem: str | None = typer.Option(
+        None,
+        "--problem",
+        help="Attribute findings to this dossier (PROBLEM-XXXX). Default: the active "
+        "problem, or unattributed if none — never silently a mismatched one.",
+    ),
 ) -> None:
     """Pursue a research question autonomously within budgets (start or resume)."""
     from opentorus.agent.research_loop import run_research
     from opentorus.providers.registry import get_provider
+    from opentorus.research.dossier import store
 
     base = _require_workspace_dir()
     root = base.parent
     config = _load_workspace_config(base)
     provider = get_provider(config)
+    # Explicit target wins; otherwise findings attach to the active problem (or stay
+    # unattributed) — they are never silently filed under an arbitrary dossier.
+    if problem is not None:
+        store.set_active_problem(base, _resolve_problem_id(base, problem))
+    active = store.get_active_problem(base)
+    if active is None:
+        console.print(
+            "[dim]No target problem; findings will be unattributed. Pass --problem "
+            "PROBLEM-XXXX to attribute them to a dossier.[/dim]"
+        )
     outcome = run_research(
         root,
         base,

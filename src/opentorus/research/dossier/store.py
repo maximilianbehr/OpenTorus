@@ -87,6 +87,18 @@ def get_active_problem(ot_dir: Path) -> str | None:
     return pid
 
 
+def clear_active_problem(ot_dir: Path) -> None:
+    """Unset the active problem.
+
+    Used after bulk creation of several dossiers: leaving one of them arbitrarily
+    "active" makes a later ``run``/``research`` silently attribute its claims and
+    experiments to an unrelated problem. Clearing forces an explicit choice.
+    """
+    path = _active_problem_path(ot_dir)
+    if path.is_file():
+        path.unlink()
+
+
 def _problem_yaml(ot_dir: Path, problem_id: str) -> Path:
     return dossier_dir(ot_dir, problem_id) / "problem.yaml"
 
