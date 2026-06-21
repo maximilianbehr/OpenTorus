@@ -228,6 +228,7 @@ def run_repo_tests(
     _save_meta(ot_dir, repo)
 
     if claim_id is not None:
+        from opentorus.research.dossier.store import get_active_problem
         from opentorus.research.evidence import add_evidence
         from opentorus.research.graph import add_edge
 
@@ -247,6 +248,7 @@ def run_repo_tests(
                 "Observed result of running the authors' own tests; "
                 "this is not a verification of the claim itself.",
             ],
+            problem_id=get_active_problem(ot_dir),
         )
         add_edge(
             ot_dir,

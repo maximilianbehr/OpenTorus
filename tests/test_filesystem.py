@@ -200,3 +200,16 @@ def test_read_file_paper_pdf_points_to_paper_read(tmp_path: Path) -> None:
     (papers / "paper.pdf").write_bytes(b"%PDF-1.4 fake")
     with pytest.raises(OpenTorusError, match=r'paper_read\("PAPER-0002"\)'):
         read_file(tmp_path, ".opentorus/papers/PAPER-0002/paper.pdf")
+
+
+def test_write_file_blocks_internal_opentorus(tmp_path: Path) -> None:
+    # M3: write_file must refuse the papers cache / internal state, like the read guard.
+    (tmp_path / ".opentorus" / "papers" / "PAPER-0001").mkdir(parents=True)
+    with pytest.raises(OpenTorusError, match="internal OpenTorus"):
+        write_file(tmp_path, ".opentorus/papers/PAPER-0001/paper.pdf", "x")
+
+
+def test_write_file_allows_dossier_and_project_files(tmp_path: Path) -> None:
+    (tmp_path / ".opentorus" / "problems" / "PROBLEM-0001").mkdir(parents=True)
+    write_file(tmp_path, ".opentorus/problems/PROBLEM-0001/notes.md", "ok")  # dossier file
+    write_file(tmp_path, "analysis.md", "ok")  # project file outside .opentorus

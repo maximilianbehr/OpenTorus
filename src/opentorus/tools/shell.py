@@ -57,6 +57,11 @@ def run_argv(
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
+            # Tools such as pdflatex emit non-UTF-8 bytes (e.g. Latin-1 in error
+            # messages); decode leniently so reading their output never raises a
+            # UnicodeDecodeError that would mask the real (non-zero) exit status.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
             env=run_env,
@@ -66,8 +71,8 @@ def run_argv(
     except subprocess.TimeoutExpired as exc:
         out = exc.stdout or ""
         err = exc.stderr or ""
-        stdout = out.decode() if isinstance(out, bytes) else out
-        stderr = err.decode() if isinstance(err, bytes) else err
+        stdout = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
+        stderr = err.decode("utf-8", "replace") if isinstance(err, bytes) else err
         return ShellResult(
             command=command,
             stdout=stdout,

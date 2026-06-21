@@ -249,14 +249,31 @@ def assemble_nl_proof_body(
     return "\n\n".join(parts) + "\n"
 
 
+def _gap_marker_key(text: str) -> str | None:
+    """Comparable key for a [GAP-n] marker (hyphen/whitespace/case normalized)."""
+    match = _GAP_MARKER.search(text)
+    if not match:
+        return None
+    return re.sub(rf"[{_HYPHENS}\s]", "-", match.group(0)).upper()
+
+
 def explicit_gaps(*, gaps: list[str], body: str) -> list[str]:
-    """Merge explicit gap strings with [GAP-n] markers found in the body."""
-    found = sorted(set(_GAP_MARKER.findall(body)))
+    """Merge explicit gap strings with [GAP-n] markers found in the body.
+
+    A gap that appears both as an explicit string (e.g. "[GAP-1] derive bound") and as
+    a bare body marker ("[GAP-1]") is counted once: the explicit string already carries
+    the marker, so the auto-detected body marker is not appended again. Without this the
+    gap count is doubled, which confuses the model and inflates gap-fill budgeting.
+    """
     merged = [g.strip() for g in gaps if g.strip()]
-    for marker in found:
-        label = f"Marked in text: {marker}"
-        if label not in merged:
-            merged.append(label)
+    seen = {key for g in merged if (key := _gap_marker_key(g))}
+    for marker in sorted(set(_GAP_MARKER.findall(body))):
+        key = _gap_marker_key(marker)
+        if key is not None and key in seen:
+            continue
+        if key is not None:
+            seen.add(key)
+        merged.append(f"Marked in text: {marker}")
     return merged
 
 

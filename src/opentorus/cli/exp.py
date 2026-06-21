@@ -42,6 +42,7 @@ def exp_new(
     ),
 ) -> None:
     """Create a new experiment folder with a safe run.py template."""
+    from opentorus.research.dossier.store import get_active_problem
     from opentorus.research.experiments import new_experiment
 
     base = _require_workspace_dir()
@@ -56,6 +57,7 @@ def exp_new(
             environment=environment,
             command=command,
             run_from=run_from,  # type: ignore[arg-type]
+            problem_id=get_active_problem(base),
         )
     except OpenTorusError as exc:
         console.print(f"[red]{exc}[/red]")

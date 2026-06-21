@@ -132,6 +132,7 @@ def submit_proof(
     # contradicting evidence (M50/M59) and link it as such. ``unknown`` is
     # inconclusive and records nothing.
     if not attempt.accepted and result.outcome == "sat" and result.model and claim_id:
+        from opentorus.research.dossier.store import get_active_problem
         from opentorus.research.evidence import add_evidence
         from opentorus.research.graph import add_edge
 
@@ -143,6 +144,7 @@ def submit_proof(
             summary=f"{result.backend} found a counterexample model:\n{result.model}",
             direction="contradicts",
             strength="strong",
+            problem_id=get_active_problem(ot_dir),
         )
         add_edge(
             ot_dir,

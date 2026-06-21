@@ -22,9 +22,10 @@ app.add_typer(claim_app, name="claim")
 def claim_new(statement: str = typer.Argument(..., help="The claim statement.")) -> None:
     """Create a new claim (status: idea)."""
     from opentorus.research.claims import new_claim
+    from opentorus.research.dossier.store import get_active_problem
 
     base = _require_workspace_dir()
-    claim = new_claim(base, statement)
+    claim = new_claim(base, statement, problem_id=get_active_problem(base))
     console.print(f"[green]{claim.id}[/green] ({claim.status}): {claim.statement}")
 
 

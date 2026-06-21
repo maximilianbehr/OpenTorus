@@ -31,6 +31,7 @@ def evidence_add(
     summary: str = typer.Option("", "--summary", help="What the evidence shows."),
 ) -> None:
     """Add an evidence record for a claim (never auto-upgrades the claim)."""
+    from opentorus.research.dossier.store import get_active_problem
     from opentorus.research.evidence import add_evidence
 
     base = _require_workspace_dir()
@@ -43,6 +44,7 @@ def evidence_add(
             summary=summary,
             direction=direction,
             strength=strength,
+            problem_id=get_active_problem(base),
         )
     except OpenTorusError as exc:
         console.print(f"[red]{exc}[/red]")

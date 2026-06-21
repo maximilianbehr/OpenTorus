@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 
 from opentorus.research.authoring import UNICODE_MATH, UNICODE_TEXT
 
@@ -91,11 +92,37 @@ def _normalize_tex_math_delimiters(text: str) -> str:
     return text
 
 
+# Display ($$…$$) and inline ($…$) math already present in the text. Used to apply
+# ASCII-math wrapping ONLY outside existing math, so a delimited span (e.g. from
+# \(x^{(r)}\)) is not re-split into "$x^{(r)}$$" by the wrappers below.
+_MATH_SPAN = re.compile(r"\$\$[\s\S]*?\$\$|\$[^$\n]+\$")
+
+
+def _map_outside_math(text: str, fn: Callable[[str], str]) -> str:
+    out: list[str] = []
+    last = 0
+    for match in _MATH_SPAN.finditer(text):
+        out.append(fn(text[last : match.start()]))
+        out.append(match.group(0))  # preserve the math span verbatim
+        last = match.end()
+    out.append(fn(text[last:]))
+    return "".join(out)
+
+
 def _protect_ascii_latex(text: str) -> str:
-    """Wrap common ASCII math fragments so Unicode heuristics do not split them."""
-    text = _BRACE_EXPONENT_RE.sub(r"$\1^{\2}$", text)
-    text = _BRACE_SUBSCRIPT_RE.sub(r"$\1_{\2}$", text)
-    return _LATEX_CMD_RE.sub(lambda m: f"${m.group(0)}$", text)
+    """Wrap common ASCII math fragments so Unicode heuristics do not split them.
+
+    Only fragments *outside* existing ``$…$`` / ``$$…$$`` spans are wrapped, so math
+    that is already delimited (e.g. converted from ``\\(…\\)``) is left intact rather
+    than corrupted into nested ``$$…$$``.
+    """
+
+    def _wrap(seg: str) -> str:
+        seg = _BRACE_EXPONENT_RE.sub(r"$\1^{\2}$", seg)
+        seg = _BRACE_SUBSCRIPT_RE.sub(r"$\1_{\2}$", seg)
+        return _LATEX_CMD_RE.sub(lambda m: f"${m.group(0)}$", seg)
+
+    return _map_outside_math(text, _wrap)
 
 
 def _char_to_latex(ch: str) -> str | None:
@@ -185,9 +212,8 @@ def _convert_unicode_runs(segment: str) -> str:
     # Only Unicode symbols start new math runs — not ASCII ^ { ( ) etc.
     math_chars = set(_UNICODE_MATH_ALL) - _TYPOGRAPHY_DASHES | set("⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉")
 
-    def convert_plain(text: str) -> str:
-        text = _normalize_tex_math_delimiters(text)
-        text = _protect_ascii_latex(text)
+    def wrap_unicode_runs(text: str) -> str:
+        """Wrap Unicode-math runs in this (math-span-free) segment."""
         text = _convert_frobenius_norms(text)
         text = _apply_combining(text)
         out: list[str] = []
@@ -221,6 +247,14 @@ def _convert_unicode_runs(segment: str) -> str:
             i += 1
         flush()
         return "".join(out)
+
+    def convert_plain(text: str) -> str:
+        # Create $…$ / $$…$$ from \(…\) / \[…\] and bare ASCII math, then wrap the
+        # remaining Unicode runs ONLY outside those spans — so delimited math is never
+        # re-split into unbalanced "$$…$$". (_protect_ascii_latex is itself span-safe.)
+        text = _normalize_tex_math_delimiters(text)
+        text = _protect_ascii_latex(text)
+        return _map_outside_math(text, wrap_unicode_runs)
 
     parts = re.split(r"(\$[^$]+\$)", segment)
     return "".join(part if idx % 2 == 1 else convert_plain(part) for idx, part in enumerate(parts))
