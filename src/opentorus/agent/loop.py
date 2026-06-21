@@ -257,6 +257,7 @@ class AgentLoop:
                 self.registry.names(),
                 planned_task=planned_task,
                 recovery_hint=recovery_hint,
+                goal=task,
                 provider=self.provider,
             )
             recovery_hint = None

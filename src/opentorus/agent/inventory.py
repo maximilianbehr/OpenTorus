@@ -27,6 +27,7 @@ class ArtifactInventory(BaseModel):
     failed_tasks: list[str] = Field(default_factory=list)
     task_counts: dict[str, int] = Field(default_factory=dict)
     workspace_claims: int = 0
+    claim_lines: list[str] = Field(default_factory=list)
     experiments: int = 0
     experiment_lines: list[str] = Field(default_factory=list)
     hypotheses: int = 0
@@ -87,6 +88,17 @@ def gather_artifact_inventory(root: Path, ot_dir: Path) -> ArtifactInventory:
     def _task_line(task) -> str:
         return f"{task.id} ({task.category}): {_short(task.goal, _GOAL_LIMIT)}"
 
+    # Surface recent claims with their id, status, and statement so the agent does
+    # not lose track of what it has already created (the context window only keeps
+    # the last few turns) and re-create or doubt its own claims.
+    claims = list_claims(ot_dir)
+    claim_sample = 6
+    claim_lines = [
+        f"{c.id} [{c.status}]: {_short(c.statement, _GOAL_LIMIT)}" for c in claims[-claim_sample:]
+    ]
+    if len(claims) > claim_sample:
+        claim_lines.insert(0, f"… +{len(claims) - claim_sample} older")
+
     return ArtifactInventory(
         num_papers=len(papers),
         papers=paper_lines,
@@ -95,7 +107,8 @@ def gather_artifact_inventory(root: Path, ot_dir: Path) -> ArtifactInventory:
         pending_tasks=[_task_line(t) for t in pending[:_MAX_SAMPLE]],
         failed_tasks=[_task_line(t) for t in failed[:_MAX_SAMPLE]],
         task_counts=batch_task_summary(ot_dir),
-        workspace_claims=len(list_claims(ot_dir)),
+        workspace_claims=len(claims),
+        claim_lines=claim_lines,
         experiments=len(experiments),
         experiment_lines=exp_lines,
         hypotheses=len(list_memory(ot_dir, "hypotheses")),
@@ -148,6 +161,8 @@ def format_artifact_inventory(
         f"experiments (EXP-*): {inventory.experiments} | "
         f"hypotheses in memory: {inventory.hypotheses}"
     )
+    if inventory.claim_lines:
+        lines.append("  CLAIM: " + "; ".join(inventory.claim_lines))
     if inventory.experiment_lines:
         lines.append("  EXP: " + "; ".join(inventory.experiment_lines))
     if inventory.has_python_project:

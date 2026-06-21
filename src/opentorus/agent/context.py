@@ -8,6 +8,7 @@ heuristics later without touching the loop.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from opentorus.actions import list_actions
@@ -15,6 +16,12 @@ from opentorus.agent.session import SessionMessage, read_messages
 from opentorus.config import Config
 from opentorus.tools.git import git_status
 from opentorus.workspace import gather_status
+
+_logger = logging.getLogger(__name__)
+
+# Process-level circuit breaker: once retrieval fails (e.g. the embeddings endpoint
+# times out), skip it for the rest of the run rather than pay the timeout every step.
+_retrieval_disabled = False
 
 
 def latest_user_query(ot_dir: Path) -> str | None:
@@ -32,13 +39,25 @@ def select_relevant(ot_dir: Path, config: Config, query: str | None):
     API or optional local sentence-transformers), degrading transparently to
     BM25-only otherwise.
     """
-    if not config.context.retrieval_enabled or not query:
+    global _retrieval_disabled
+    if not config.context.retrieval_enabled or not query or _retrieval_disabled:
         return []
     from opentorus.research.embeddings import load_embedder
     from opentorus.research.index import hybrid_search
 
-    embedder = load_embedder(config)
-    return hybrid_search(ot_dir, query, k=config.context.top_k, embedder=embedder)
+    # Retrieval is an optional enhancement: a flaky embeddings endpoint (e.g. an
+    # Ollama timeout while a large chat model occupies the server) must never abort
+    # the agent run. Degrade to no retrieval on any failure, and trip a circuit
+    # breaker so the rest of the run does not pay the timeout on every step.
+    try:
+        embedder = load_embedder(config)
+        return hybrid_search(ot_dir, query, k=config.context.top_k, embedder=embedder)
+    except Exception as exc:  # noqa: BLE001 — retrieval is best-effort, never fatal
+        _retrieval_disabled = True
+        _logger.warning(
+            "Context retrieval failed (%s); disabling it for the rest of this run.", exc
+        )
+        return []
 
 
 def format_relevant(selected) -> str:
@@ -111,6 +130,7 @@ def build_messages(
     include_history: int | None = None,
     planned_task=None,
     recovery_hint: str | None = None,
+    goal: str | None = None,
     provider=None,
 ) -> list[SessionMessage]:
     """Assemble the message list for a provider call.
@@ -146,6 +166,21 @@ def build_messages(
                     goal=planned_task.goal,
                     result_contract=planned_task.result_contract,
                     verification_requirements=planned_task.verification_requirements,
+                ),
+            )
+        )
+
+    # Anchor the run's task as a persistent system instruction. The history below is
+    # windowed to the last few turns, so on a long autonomous run the original task
+    # (and the deliverable it asks for) would otherwise scroll out of context and the
+    # agent would re-derive or forget it.
+    if goal and goal.strip():
+        messages.append(
+            SessionMessage(
+                role="system",
+                content=(
+                    "Current task — keep working toward it until its deliverable exists; "
+                    "do not re-derive it or treat it as unasked:\n" + goal.strip()
                 ),
             )
         )

@@ -117,10 +117,12 @@ def _read_blocked_message(user_path: str, parts: tuple[str, ...]) -> str | None:
     if _path_has_ignored_dir(parts):
         if parts[0] == WORKSPACE_DIRNAME and _read_allowed_under_opentorus(parts):
             return None
-        return (
-            f"Refusing to read '{user_path}' under a cache or internal directory. "
-            "Use status, paper_fetch, or a concrete project file path."
-        )
+        hint = "Use status, paper_fetch, or a concrete project file path."
+        if len(parts) >= 2 and parts[1] == "papers":
+            # A cached paper PDF — read its parsed note, not the binary under .opentorus/.
+            pid = parts[2] if len(parts) >= 3 and parts[2].startswith("PAPER-") else "PAPER-XXXX"
+            hint = f'Use paper_read("{pid}") for the parsed reading note (not the PDF).'
+        return f"Refusing to read '{user_path}' under a cache or internal directory. {hint}"
     return None
 
 

@@ -176,8 +176,12 @@ class LiteratureConfig(BaseModel):
     # Additional free, field-specific connectors (Phase 23 / M70).
     dblp: bool = True
     zbmath: bool = True
-    europepmc: bool = True
-    biorxiv: bool = True
+    # Biomedical preprint/literature servers — off by default since OpenTorus targets
+    # open mathematical problems; querying them for math/CS topics only adds 503s and
+    # timeouts. Enable explicitly for biomedical work:
+    #   opentorus config set tools.literature.europepmc true
+    europepmc: bool = False
+    biorxiv: bool = False
     # Keyed sources stay off until both enabled and keyed.
     springer: bool = False
     ieee: bool = False

@@ -95,3 +95,38 @@ def test_ingest_inbox_empty_returns_no_papers(tmp_path: Path) -> None:
     root = tmp_path / "proj"
     base = _ws(root)
     assert ingest_inbox(base, root) == []
+
+
+def test_add_paper_parses_arxiv_id_from_url(tmp_path: Path) -> None:
+    # `paper add <arxiv URL>` must record the arXiv id (and type) so a later
+    # paper_fetch of the same id deduplicates instead of creating a second record.
+    base = _ws(tmp_path)
+    paper = add_paper(base, "https://arxiv.org/abs/2002.01682")
+    assert paper.arxiv_id == "2002.01682"
+    assert paper.source_type == "arxiv"
+
+
+def test_add_paper_strips_version_and_pdf_suffix(tmp_path: Path) -> None:
+    base = _ws(tmp_path)
+    assert add_paper(base, "https://arxiv.org/abs/2002.01682v3").arxiv_id == "2002.01682"
+    # A pdf URL for the same id reuses the existing record (no duplicate).
+    before = len(list_papers(base))
+    again = add_paper(base, "http://arxiv.org/pdf/2002.01682.pdf")
+    assert again.arxiv_id == "2002.01682"
+    assert len(list_papers(base)) == before  # deduplicated
+
+
+def test_add_paper_then_fetch_deduplicates(tmp_path: Path) -> None:
+    # The exact run scenario: paper add URL, then the agent fetches the same id.
+    from opentorus.research.papers import acquire_paper
+    from opentorus.research.sources.base import SourceRecord
+
+    base = _ws(tmp_path)
+    added = add_paper(base, "https://arxiv.org/abs/2002.01682")
+    fetched = acquire_paper(
+        base,
+        SourceRecord(source="arxiv", title="arXiv:2002.01682", arxiv_id="2002.01682"),
+        downloader=lambda u: b"%PDF fake",
+    )
+    assert fetched.id == added.id  # same record, not a duplicate PAPER-0002
+    assert len(list_papers(base)) == 1
