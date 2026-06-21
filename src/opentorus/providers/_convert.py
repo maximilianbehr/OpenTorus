@@ -69,7 +69,60 @@ def to_openai_messages(messages: list[SessionMessage]) -> list[dict]:
                     "content": message.content,
                 }
             )
-    return out
+    return _repair_openai_tool_pairing(out)
+
+
+_INTERRUPTED_TOOL_RESULT = (
+    "[no result recorded — the previous run was interrupted before this tool returned]"
+)
+
+
+def _repair_openai_tool_pairing(out: list[dict]) -> list[dict]:
+    """Make the message list satisfy OpenAI's strict tool-call/result pairing.
+
+    OpenAI requires every assistant ``tool_calls`` message to be immediately
+    followed by one ``tool`` message per ``tool_call_id``. A stopped/resumed run or
+    a compaction that split a call from its result can leave a dangling tool call
+    (HTTP 400) or an orphan tool result. This repairs both: a missing result gets a
+    synthetic placeholder; a stray/orphan ``tool`` message is dropped.
+    """
+    repaired: list[dict] = []
+    i, n = 0, len(out)
+    while i < n:
+        msg = out[i]
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            repaired.append(msg)
+            ids = [tc["id"] for tc in msg["tool_calls"]]
+            seen: set[str] = set()
+            j = i + 1
+            # Consume the immediately-following tool results for these ids, in order.
+            while (
+                j < n
+                and out[j].get("role") == "tool"
+                and out[j].get("tool_call_id") in ids
+                and out[j].get("tool_call_id") not in seen
+            ):
+                repaired.append(out[j])
+                seen.add(out[j]["tool_call_id"])
+                j += 1
+            for call_id in ids:
+                if call_id not in seen:
+                    repaired.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": _INTERRUPTED_TOOL_RESULT,
+                        }
+                    )
+            i = j
+        elif msg.get("role") == "tool":
+            # A tool message not consumed above is orphaned/misplaced — drop it
+            # (a valid one was already paired with its assistant tool_calls).
+            i += 1
+        else:
+            repaired.append(msg)
+            i += 1
+    return repaired
 
 
 def to_ollama_messages(messages: list[SessionMessage]) -> list[dict]:

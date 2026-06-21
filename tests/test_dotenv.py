@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
+
 from opentorus.dotenv import _parse_env, load_dotenv_file, load_project_dotenv
+
+
+@pytest.fixture(autouse=True)
+def _restore_environ():  # noqa: ANN202
+    """Fully restore os.environ after each test.
+
+    These tests mutate os.environ directly (via the loader), and monkeypatch.delenv
+    on an already-absent key does not track it for restoration — so without this the
+    loaded keys would leak into later tests.
+    """
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 def test_parse_env_handles_quotes_export_comments() -> None:
