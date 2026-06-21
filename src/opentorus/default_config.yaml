@@ -104,7 +104,9 @@ environment:
 context:
   retrieval_enabled: true
   top_k: 5
-  history_turns: 10
+  # Recent session turns replayed verbatim into each request (less amnesia about earlier
+  # papers/claims/proof steps); bounded by token_budget, which triggers compaction.
+  history_turns: 50
   # History token budget before compaction. Hold the system head + a few paper reading
   # notes (~900 tokens each) + the current proof; too small (e.g. 6000) forces a
   # compaction nearly every turn during proof work. Lower it for small local models.

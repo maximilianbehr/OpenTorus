@@ -6,6 +6,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Raised the default `context.history_turns` 10 → 50, so more recent session turns are
+  replayed into each request (less amnesia about earlier papers/claims/proof steps). It
+  remains bounded by `context.token_budget`, which triggers compaction.
+
 ## [0.0.5] — 2026-06-21
 
 This release hardens `opentorus prove` and provider handling for real local/OpenAI-compatible
