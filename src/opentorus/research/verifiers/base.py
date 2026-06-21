@@ -21,12 +21,18 @@ class VerificationResult(BaseModel):
     accepted: bool
     output: str = ""
     available: bool = True
+    # True when the checker neither accepted nor cleanly rejected: a timeout, a
+    # crash, or a source that failed to parse. Distinguishing this from a genuine
+    # rejection keeps "the tool gave up" from being read as "the proof is wrong".
+    inconclusive: bool = False
     outcome: str | None = None  # SMT: "unsat" | "sat" | "unknown"
     model: str | None = None  # SMT "sat": the counterexample model
 
     def status_line(self) -> str:
         if not self.available:
             return f"{self.backend}: unavailable"
+        if self.inconclusive:
+            return f"{self.backend}: inconclusive"
         if self.outcome is not None:
             return f"{self.backend}: {self.outcome}"
         return f"{self.backend}: {'accepted' if self.accepted else 'rejected'}"

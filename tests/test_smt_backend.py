@@ -87,6 +87,10 @@ def test_sat_goal_yields_counterexample_evidence(tmp_path: Path) -> None:
     assert any(e.direction == "contradicts" and "x 1" in e.summary for e in evidence)
     edges = related(ot, proof.id)
     assert any(e.relation == "contradicts" and e.target_id == claim.id for e in edges)
+    # The sat model is a candidate, not a validated refutation: weak + flagged.
+    contra = [e for e in evidence if e.direction == "contradicts"][0]
+    assert contra.strength == "weak"
+    assert "UNVALIDATED" in contra.summary
 
 
 def test_unknown_is_inconclusive_not_a_proof(tmp_path: Path) -> None:

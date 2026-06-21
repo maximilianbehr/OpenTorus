@@ -55,6 +55,19 @@ class _CommandBackend:
             src.write_text(source, encoding="utf-8")
             result = run_shell(f"{self.command} {shlex.quote(str(src))}", timeout=self.timeout)
         output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()
+        # A timeout is "the checker gave up", not "the proof is wrong": report it as
+        # inconclusive (not accepted, but not a clean rejection either) so a slow
+        # proof is never recorded as refuted.
+        if result.timed_out:
+            return VerificationResult(
+                backend=self.name,
+                backend_version=self.version(),
+                accepted=False,
+                inconclusive=True,
+                output=output
+                or f"Timed out after {self.timeout}s (inconclusive, not a rejection).",
+                available=True,
+            )
         return VerificationResult(
             backend=self.name,
             backend_version=self.version(),

@@ -128,8 +128,10 @@ def submit_proof(
             + (f" {result.backend_version}" if result.backend_version else ""),
         )
 
-    # An SMT ``sat`` verdict is a concrete refutation: record the model as
-    # contradicting evidence (M50/M59) and link it as such. ``unknown`` is
+    # An SMT ``sat`` verdict is a *candidate* refutation: the model may be spurious
+    # if the goal was mis-encoded. Until it is round-trip-validated against the
+    # un-negated goal, record it as WEAK, explicitly unvalidated, contradicting
+    # evidence — never strong enough to refute a claim on its own. ``unknown`` is
     # inconclusive and records nothing.
     if not attempt.accepted and result.outcome == "sat" and result.model and claim_id:
         from opentorus.research.dossier.store import get_active_problem
@@ -141,9 +143,13 @@ def submit_proof(
             claim_id,
             source_type="external",
             source_id=proof_id,
-            summary=f"{result.backend} found a counterexample model:\n{result.model}",
+            summary=(
+                f"{result.backend} returned a candidate counterexample model "
+                "(UNVALIDATED — not round-tripped against the un-negated goal; a "
+                f"mis-encoded goal can yield a spurious model):\n{result.model}"
+            ),
             direction="contradicts",
-            strength="strong",
+            strength="weak",
             problem_id=get_active_problem(ot_dir),
         )
         add_edge(
