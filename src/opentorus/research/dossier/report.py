@@ -67,6 +67,32 @@ def honesty_context(ot_dir: Path, problem_id: str) -> tuple[bool, bool, bool]:
     return has_verified_proof, has_reference, has_supported_theorem
 
 
+def _claim_honesty_context(
+    claim: ClaimRecord,
+    ev_list: list,
+    proofs: list,  # noqa: ANN001
+) -> tuple[bool, bool, bool]:
+    """Per-claim honesty license (has_verified_proof, has_reference, has_supported_theorem).
+
+    Scoped to a single claim so that a verified proof of one claim cannot license
+    overclaiming language about a *different*, unproven claim — the licensing must
+    be local to the claim whose wording is being checked.
+    """
+    has_proof = (
+        claim.status == "formally_verified"
+        or claim.type == "FORMAL_PROOF_VERIFIED"
+        or any(e.direction == "supports" and evidence_can_verify(e.type) for e in ev_list)
+        or any(p.status == "verified" and claim.id in (p.claim_links or []) for p in proofs)
+    )
+    has_ref = bool(claim.source_artifacts) or claim.type == "REFERENCE_FACT"
+    has_thm = claim.type in ("THEOREM", "LEMMA_ATTEMPT") and claim.status in (
+        "supported",
+        "verified",
+        "formally_verified",
+    )
+    return has_proof, has_ref, has_thm
+
+
 def _bullets(items: list[str]) -> str:
     return "\n".join(f"- {x}" for x in items) if items else "- (none)"
 
@@ -512,15 +538,20 @@ def build_report(ot_dir: Path, problem_id: str, *, harvest_session: bool = True)
     parts.append("## Claims and Evidence\n")
     if claims:
         for claim in claims:
+            # Per-claim licensing: a verified proof of another claim must not license
+            # overclaiming language in this claim's block.
+            c_proof, c_ref, c_thm = _claim_honesty_context(
+                claim, evidence_by_claim.get(claim.id, []), proofs
+            )
             parts.append(
                 _claim_block(
                     str(ot_dir),
                     problem_id,
                     claim,
                     evidence_by_claim,
-                    has_proof=has_proof,
-                    has_ref=has_ref,
-                    has_thm=has_thm,
+                    has_proof=c_proof,
+                    has_ref=c_ref,
+                    has_thm=c_thm,
                 )
             )
     else:
