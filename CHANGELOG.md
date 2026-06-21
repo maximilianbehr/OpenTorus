@@ -6,6 +6,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.3] — 2026-06-21
+
+This release turns the integrity scaffolding into enforced behavior: the documented
+epistemic and governance guarantees are now backed by code rather than convention.
+
 ### Added
 - **Claim ledger** extensions: claim types `HEURISTIC`, `EXPERIMENTAL_OBSERVATION`,
   `OPEN_GAP` and the `needs_review` status; a logged-only `downgrade_claim_type`.

@@ -5,7 +5,7 @@
 > recording every step as inspectable artifacts on your own machine, and never
 > mistaking evidence for proof.
 
-**v0.0.2 — early release. Inspect it, run it, and report issues.**
+**v0.0.3 — early release. Inspect it, run it, and report issues.**
 
 ---
 
