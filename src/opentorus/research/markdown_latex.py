@@ -44,6 +44,48 @@ _EXTRA_UNICODE_MATH: dict[str, str] = {
     "κ": r"\kappa",
     "ϵ": r"\epsilon",
     "ε": r"\varepsilon",
+    # Relations / operators commonly emitted in proofs (absent above → bare Unicode
+    # would abort pdflatex, e.g. "∝ not set up for use with LaTeX").
+    "∝": r"\propto",
+    "√": r"\surd",
+    "≅": r"\cong",
+    "≲": r"\lesssim",
+    "≳": r"\gtrsim",
+    "≈": r"\approx",
+    "≜": r"\triangleq",
+    "≐": r"\doteq",
+    "≍": r"\asymp",
+    "∘": r"\circ",
+    "⋅": r"\cdot",
+    "∖": r"\setminus",
+    "⊙": r"\odot",
+    "∉": r"\notin",
+    "∋": r"\ni",
+    "⊂": r"\subset",
+    "⊃": r"\supset",
+    "≺": r"\prec",
+    "≻": r"\succ",
+    "⪯": r"\preceq",
+    "⪰": r"\succeq",
+    "⇔": r"\Leftrightarrow",
+    "↔": r"\leftrightarrow",
+    "↦": r"\mapsto",
+    "⟶": r"\longrightarrow",
+    "⟹": r"\Longrightarrow",
+    "⟺": r"\Longleftrightarrow",
+    "↑": r"\uparrow",
+    "↓": r"\downarrow",
+    "⊢": r"\vdash",
+    "⊨": r"\models",
+    "∎": r"\blacksquare",
+    # Blackboard-bold number sets (very common in NL proofs).
+    "ℝ": r"\mathbb{R}",
+    "ℂ": r"\mathbb{C}",
+    "ℕ": r"\mathbb{N}",
+    "ℤ": r"\mathbb{Z}",
+    "ℚ": r"\mathbb{Q}",
+    "ℙ": r"\mathbb{P}",
+    "𝔼": r"\mathbb{E}",
     "−": "-",
     "–": "--",
     "—": "---",
@@ -260,6 +302,27 @@ def _convert_unicode_runs(segment: str) -> str:
     return "".join(part if idx % 2 == 1 else convert_plain(part) for idx, part in enumerate(parts))
 
 
+def _neutralize_residual_unicode(text: str) -> str:
+    """Last-resort handling for non-ASCII left outside math by the run converter.
+
+    pdflatex aborts on an undeclared Unicode char ("not set up for use with LaTeX").
+    A symbol in the map is wrapped as ``$\\cmd$``; anything else is transliterated to
+    ASCII (NFKD) and otherwise dropped, so no bare Unicode can reach the engine. This
+    runs only outside existing math spans, so intended math is untouched.
+    """
+    out: list[str] = []
+    for ch in text:
+        if ord(ch) < 128:
+            out.append(ch)
+            continue
+        mapped = _UNICODE_MATH_ALL.get(ch)
+        if mapped:
+            out.append(f"${mapped}$")
+            continue
+        out.append(unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode())
+    return "".join(out)
+
+
 def prepare_markdown_for_pdf(markdown: str) -> str:
     """Normalize Unicode math/typography so pandoc+xelatex render cleanly."""
     markdown = _normalize_tex_math_delimiters(markdown)
@@ -267,9 +330,12 @@ def prepare_markdown_for_pdf(markdown: str) -> str:
     converted: list[str] = []
     for idx, part in enumerate(parts):
         if idx % 2 == 1:
-            converted.append(part)
+            converted.append(part)  # fenced/inline code — leave verbatim
         else:
-            converted.append(_convert_unicode_runs(part))
+            seg = _convert_unicode_runs(part)
+            # Safety net: neutralize any Unicode the run converter left bare outside
+            # math, so an unmapped symbol cannot abort pdflatex.
+            converted.append(_map_outside_math(seg, _neutralize_residual_unicode))
     return "".join(converted)
 
 

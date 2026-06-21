@@ -182,3 +182,18 @@ def test_export_falls_back_to_html_when_pdf_compile_fails(
     result = export_problem(base, d.id, pdf=True, compose_llm=False)
     assert result.pdf_path is None
     assert result.html_path is not None and result.html_path.is_file()
+
+
+def test_sanitize_makes_unicode_and_tag_pdflatex_safe() -> None:
+    # Regression: bare Unicode (∝, √, ℝ) aborted pdflatex "not set up for use with
+    # LaTeX" even inside math; \tag{GAP-n} (model misuse) aborted amsmath. sanitize
+    # must leave no bare non-ASCII and no stray \tag.
+    from opentorus.research.dossier.pdf_export import sanitize_latex_body
+
+    out = sanitize_latex_body(
+        "rate (∝ $m$), $e^{-\\beta√m}$, A∈ℝ; cases. \\tag{GAP-2} weird 🜨 char"
+    )
+    assert all(ord(c) < 128 for c in out)  # no bare Unicode anywhere
+    assert "\\propto" in out and "\\surd" in out and "\\mathbb{R}" in out
+    assert "\\tag" not in out and "(GAP-2)" in out
+    assert "\\surdm" not in out  # control word separated from following letter
