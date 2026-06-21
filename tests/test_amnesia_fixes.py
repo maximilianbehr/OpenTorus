@@ -90,6 +90,26 @@ def test_clip_title_truncates_at_word_boundary() -> None:
     assert "kernel" not in clipped or clipped.rstrip("…").split()[-1] != "ker"
 
 
+def test_write_guard_blocks_managed_dossier_artifacts(tmp_path: Path) -> None:
+    # A raw write into a dossier's tool-managed artifacts is refused (this is how the
+    # live agent clobbered its own PROOF-0001.md); free-form notes stay writable.
+    from opentorus.tools.filesystem import write_file
+
+    base, pid = _problem(tmp_path)  # noqa: F841 - ensures the dossier exists
+    root = tmp_path
+    for managed in (
+        f".opentorus/problems/{pid}/proof_attempts/PROOF-0001.md",
+        f".opentorus/problems/{pid}/claims.jsonl",
+        f".opentorus/problems/{pid}/report.md",
+        f".opentorus/problems/{pid}/evidence/E.json",
+    ):
+        with pytest.raises(OpenTorusError):
+            write_file(root, managed, "clobber")
+    # A free-form note in the dossier is still allowed.
+    written = write_file(root, f".opentorus/problems/{pid}/notes.md", "scratch")
+    assert written.read_text() == "scratch"
+
+
 def test_unmodified_counterexample_template_cannot_back_a_claim(tmp_path: Path) -> None:
     from opentorus.research.claims import new_claim
     from opentorus.research.evidence import add_evidence
