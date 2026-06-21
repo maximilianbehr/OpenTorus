@@ -70,6 +70,10 @@ class ModelConfig(BaseModel):
     # Hard cap on output tokens for providers that require one (e.g. Anthropic).
     # Unset falls back to a provider default; raise it for long proofs.
     max_tokens: int | None = None
+    # Before an agent run, verify the model can call tools (a one-shot capability probe;
+    # also reads Ollama /api/show). OpenTorus is useless without tool calling, so a model
+    # that cannot is refused with a clear message. Set false to skip the check.
+    verify_tool_calling: bool = True
 
 
 class ProjectConfig(BaseModel):

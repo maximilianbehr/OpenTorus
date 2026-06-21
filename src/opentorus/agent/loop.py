@@ -333,10 +333,21 @@ class AgentLoop:
                 if chat_only_streak >= _MAX_CHAT_ONLY_STALL or (repeated and in_gap_fill):
                     if response.content.strip():
                         self._append(SessionMessage(role="assistant", content=response.content))
-                    result_text = (
-                        "Stopped: the model kept replying in chat without calling tools "
-                        "(no further progress). The dossier holds the current state."
-                    )
+                    if self.tool_calls_this_run == 0:
+                        # The model never called a single tool despite tools being
+                        # available — a strong sign it does not support tool calling,
+                        # which OpenTorus requires for every deliverable.
+                        result_text = (
+                            "Stopped: the model produced no tool calls at all despite tools "
+                            "being available — it likely does not support tool calling, which "
+                            "OpenTorus requires. Configure a tool-calling model (e.g. a recent "
+                            "OpenAI/Claude chat model, or `ollama pull qwen3`)."
+                        )
+                    else:
+                        result_text = (
+                            "Stopped: the model kept replying in chat without calling tools "
+                            "(no further progress). The dossier holds the current state."
+                        )
                     _logger.info("%s", result_text)
                     break
                 needs_deliverable = (

@@ -62,7 +62,9 @@ def test_chat_only_gap_fill_does_not_cycle(tmp_path: Path) -> None:
     loop._deliverable_complete = lambda: False
     answer = loop.run("fill the gaps")
     assert loop.steps_run < 12  # stopped fast, not at the 1000-step ceiling
-    assert "without calling tools" in answer
+    # This provider never calls a tool at all, so the stall message flags tool-calling
+    # support (a model that calls tools then chats gets the "without calling tools" form).
+    assert "tool calling" in answer.lower()
 
 
 def test_repeat_glob_files_is_blocked(tmp_path: Path) -> None:
