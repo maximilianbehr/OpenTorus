@@ -741,6 +741,9 @@ _SLASH_COMMANDS = (
     "/graph",
     "/related",
     "/evidence",
+    "/why",
+    "/report",
+    "/problem",
     "/patches",
     "/patch",
     "/memory",
@@ -971,15 +974,21 @@ def run_repl(console: Console | None = None, start: Path | None = None) -> None:
                     save_history()
                     continue
 
-                _run_agent_turn(
-                    console,
-                    root,
-                    base,
-                    stripped,
-                    session_id=session_id,
-                    confirm=_confirm,
-                    start=start,
-                )
+                try:
+                    _run_agent_turn(
+                        console,
+                        root,
+                        base,
+                        stripped,
+                        session_id=session_id,
+                        confirm=_confirm,
+                        start=start,
+                    )
+                except KeyboardInterrupt:
+                    # Ctrl-C cancels the current turn, not the whole session.
+                    from opentorus.ux import format_interrupt_message
+
+                    console.print("\n" + format_interrupt_message("Turn"))
                 save_history()
                 continue
 
