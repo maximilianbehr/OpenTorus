@@ -127,7 +127,9 @@ def _record_turn(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 latency_ms=round(elapsed * 1000),
-                cost_usd=estimate_cost(provider_name, model, prompt_tokens, completion_tokens),
+                cost_usd=estimate_cost(
+                    provider_name, model, prompt_tokens, completion_tokens, config.model.base_url
+                ),
                 task_class=decision.task_class,
             ),
         )

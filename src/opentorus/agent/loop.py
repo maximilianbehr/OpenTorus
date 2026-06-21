@@ -510,7 +510,7 @@ class AgentLoop:
 
         if not self.config.governance.dlp:
             return None
-        if is_local_provider(getattr(self.provider, "name", "unknown")):
+        if is_local_provider(getattr(self.provider, "name", "unknown"), self.config.model.base_url):
             return None
         from opentorus.governance import DlpBlocked, assert_egress_safe
 
@@ -539,6 +539,7 @@ class AgentLoop:
 
         provider_name = getattr(self.provider, "name", "unknown")
         model = self.config.model.name
+        base_url = self.config.model.base_url
         usage = getattr(response, "usage", None)
         thinking_tokens = 0
         if usage is not None:
@@ -570,7 +571,9 @@ class AgentLoop:
                     completion_tokens=completion_tokens,
                     thinking_tokens=thinking_tokens,
                     latency_ms=round(elapsed * 1000),
-                    cost_usd=estimate_cost(provider_name, model, prompt_tokens, completion_tokens),
+                    cost_usd=estimate_cost(
+                        provider_name, model, prompt_tokens, completion_tokens, base_url
+                    ),
                     tokens_estimated=tokens_estimated,
                 ),
             )
@@ -586,6 +589,7 @@ class AgentLoop:
                 completion_tokens,
                 thinking_tokens=thinking_tokens,
                 tokens_estimated=tokens_estimated,
+                base_url=base_url,
             ),
         )
 

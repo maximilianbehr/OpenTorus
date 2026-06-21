@@ -656,7 +656,24 @@ def run_prove(
         proof_kw["pre_deliverable_gate_detail"] = lambda: _literature_ready()[1]
 
     proof_loop_holder: list = []
-    _gap_fill: dict[str, int | None] = {"anchor": None, "best": None, "best_step": None}
+    _gap_fill: dict[str, int | None] = {
+        "anchor": None,
+        "best": None,
+        "best_step": None,
+        "evidence": None,
+    }
+
+    def _evidence_count() -> int:
+        # Genuine progress signals beyond the gap count: a parsed paper or a recorded
+        # experiment is new evidence the model can fold into the proof. Counting these
+        # lets the no-progress window credit active evidence-gathering (a model that runs
+        # experiments toward closing a gap is NOT stuck) without letting bare re-reads or
+        # re-writes of the same sketch reset it.
+        from opentorus.research.dossier.experiments import list_experiments
+        from opentorus.research.papers import is_paper_parsed, list_papers
+
+        parsed = sum(1 for p in list_papers(ot_dir) if is_paper_parsed(ot_dir, p))
+        return parsed + len(list_experiments(ot_dir, pid))
 
     def _proof_deliverable_complete() -> bool:
         # A proof must actually exist for THIS dossier; otherwise the model may have
@@ -671,25 +688,33 @@ def run_prove(
         if not proof_loop_holder:
             return False
         loop = proof_loop_holder[0]
+        evidence = _evidence_count()
         if _gap_fill["anchor"] is None:
             _gap_fill["anchor"] = loop.steps_run
             _gap_fill["best"] = gaps
             _gap_fill["best_step"] = loop.steps_run
+            _gap_fill["evidence"] = evidence
             # The draft now exists with open gaps: reflect the gap-fill phase in the
             # trace banner instead of leaving it on "Proof draft".
             if on_status is not None:
                 on_status("phase", "Proof gap-fill")
             return False
-        # Track the best (lowest) gap count and when it was last improved.
-        if _gap_fill["best"] is None or gaps < int(_gap_fill["best"]):
+        # Progress = the gap count dropped OR new evidence (experiment/paper) was gathered.
+        # Either resets the no-progress window so productive work is never cut off.
+        gaps_improved = _gap_fill["best"] is None or gaps < int(_gap_fill["best"])
+        new_evidence = _gap_fill["evidence"] is None or evidence > int(_gap_fill["evidence"])
+        if gaps_improved:
             _gap_fill["best"] = gaps
+        if new_evidence:
+            _gap_fill["evidence"] = evidence
+        if gaps_improved or new_evidence:
             _gap_fill["best_step"] = loop.steps_run
         spent = loop.steps_run - int(_gap_fill["anchor"])
         if spent >= config.agent.prove_gap_fill_max_steps:
             return True
-        # No-progress backstop: stop if the gap count has not dropped for a whole window,
-        # even when the caps are inf — otherwise a model that cannot close gaps grinds
-        # forever (re-reading papers, re-declaring "done").
+        # No-progress backstop: stop if neither gaps nor evidence advanced for a whole
+        # window, even when the caps are inf — otherwise a model that cannot close gaps
+        # grinds forever (re-reading the same sketch, re-declaring "done").
         no_progress = loop.steps_run - int(_gap_fill["best_step"] or _gap_fill["anchor"])
         return no_progress >= config.agent.prove_gap_fill_no_progress_steps
 

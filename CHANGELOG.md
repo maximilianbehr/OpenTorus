@@ -28,12 +28,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   actually contains, so the model can cite a real result (or mark a `[GAP-n]`) instead
   of guessing numbers and having the whole `proof_write` rejected. The prove prompt
   also instructs the model not to invent theorem numbers.
+- The gap-fill no-progress window now also resets when the model gathers **new evidence**
+  (a completed experiment or newly parsed paper), not only when the gap count drops — so
+  a model actively running experiments toward a gap is no longer cut off mid-work, while
+  bare re-reads / re-writes of the same sketch still stop it.
 
 ### Fixed
 - `read_file` / `list_files` / `glob_files` recover a bare dossier-artifact path
   (e.g. `proof_attempts/PROOF-0001.md`) against the active dossier, so the agent can
   read back a proof it just wrote without the full `.opentorus/problems/PROBLEM-XXXX/`
   prefix.
+- **Local OpenAI-compatible endpoints are no longer billed as "price unknown".** Cost
+  reporting now treats a provider whose `base_url` is a loopback/private host
+  (`localhost`, `127.0.0.1`, `192.168.*`, `10.*`, `172.16–31.*`, `*.local`) as local
+  inference: the per-step line reads `$0 (local)` instead of `$? (price unknown)` for a
+  model name not in the price table, and pre-egress DLP is skipped for it. Genuinely
+  remote endpoints with an unknown model name still read `$? (price unknown)`.
 - **Ollama gpt-oss harmony tool-name leak fixed at the source.** When Ollama's harmony
   parser leaks channel framing into `function.name`
   (e.g. `assistant<|channel|>commentary`), the Ollama provider now sanitizes it: a real

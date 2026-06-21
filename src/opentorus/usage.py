@@ -69,23 +69,57 @@ def _price_for(model: str) -> tuple[float, float] | None:
     return None
 
 
-def is_local_provider(provider: str) -> bool:
-    """A local provider (mock/ollama) genuinely costs nothing."""
-    return provider.lower() in {"mock", "ollama"}
+def _is_local_base_url(base_url: str | None) -> bool:
+    """True when an OpenAI-compatible endpoint is a loopback/private host (no API cost).
+
+    Running an OpenAI-compatible server locally (llama.cpp, vLLM, LM Studio, Ollama's
+    OpenAI shim, …) incurs no per-token cloud cost, so cost should read ``$0 (local)``
+    rather than ``$? (price unknown)`` just because the model name is not in the price
+    table.
+    """
+    if not base_url:
+        return False
+    from urllib.parse import urlparse
+
+    host = (urlparse(base_url).hostname or "").lower()
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or host.endswith(".local"):
+        return True
+    # RFC 1918 private ranges (a LAN inference box is still not a cloud API).
+    if host.startswith("10.") or host.startswith("192.168."):
+        return True
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) >= 2 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
+            return True
+    return False
 
 
-def cost_known(provider: str, model: str) -> bool:
+def is_local_provider(provider: str, base_url: str | None = None) -> bool:
+    """A local provider genuinely costs nothing: mock/ollama, or any provider whose
+    ``base_url`` points at a loopback/private host (a local OpenAI-compatible server)."""
+    return provider.lower() in {"mock", "ollama"} or _is_local_base_url(base_url)
+
+
+def cost_known(provider: str, model: str, base_url: str | None = None) -> bool:
     """Whether the cost can be priced: local (free) or a model with a known rate."""
-    return is_local_provider(provider) or _price_for(model) is not None
+    return is_local_provider(provider, base_url) or _price_for(model) is not None
 
 
-def estimate_cost(provider: str, model: str, prompt_tokens: int, completion_tokens: int) -> float:
+def estimate_cost(
+    provider: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    base_url: str | None = None,
+) -> float:
     """Estimate cost in USD. Local providers cost $0; an unknown paid model returns 0.0.
 
     A 0.0 here is ambiguous (free local vs unknown-price paid); callers that render
     cost should consult :func:`cost_known` to distinguish the two honestly.
     """
-    if is_local_provider(provider):
+    if is_local_provider(provider, base_url):
         return 0.0
     price = _price_for(model)
     if price is None:
@@ -155,19 +189,20 @@ def format_usage_line(
     thinking_tokens: int = 0,
     session_cost: float | None = None,
     tokens_estimated: bool = True,
+    base_url: str | None = None,
 ) -> str:
     """A compact per-step token/cost line for the verbose trace.
 
-    Cost is the same estimate written to the ledger; local providers read ``$0``.
-    Tokens are tagged ``~`` when locally estimated and ``=`` when they are the
-    provider's exact counts. Reasoning models also show how many output tokens
-    were thinking (a subset of ``out``).
+    Cost is the same estimate written to the ledger; local providers (incl. a
+    localhost ``base_url``) read ``$0``. Tokens are tagged ``~`` when locally estimated
+    and ``=`` when they are the provider's exact counts. Reasoning models also show how
+    many output tokens were thinking (a subset of ``out``).
     """
     total = prompt_tokens + completion_tokens
-    cost = estimate_cost(provider, model, prompt_tokens, completion_tokens)
-    if is_local_provider(provider):
+    cost = estimate_cost(provider, model, prompt_tokens, completion_tokens, base_url)
+    if is_local_provider(provider, base_url):
         cost_str = "$0 (local)"
-    elif not cost_known(provider, model):
+    elif not cost_known(provider, model, base_url):
         # A paid cloud model with no known rate must not read as free.
         cost_str = "$? (price unknown)"
     else:
