@@ -26,7 +26,8 @@ Available slash commands:
   /replay [last|<id>]  Summarize a session for review.
   /usage    Show the local token usage and estimated cost ledger.
   /check    Run the configured quality gates (test/lint/typecheck).
-  /checkpoint create <label>  Record a recoverable checkpoint.
+  /doctor   Check workspace, provider, verifier, and execution backends.
+  /checkpoint create <label>  Record a recoverable checkpoint (restore via the CLI).
   /context  Show the context summary sent to the model.
   /model    Show the model config, or `/model set <key> <value>`.
   /clear    Clear the screen.
