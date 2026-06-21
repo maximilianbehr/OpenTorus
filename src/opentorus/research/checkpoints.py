@@ -49,6 +49,81 @@ def list_checkpoints(ot_dir: Path) -> list[Checkpoint]:
     return read_jsonl(_index_path(ot_dir), Checkpoint)
 
 
+def get_checkpoint(ot_dir: Path, checkpoint_id: str) -> Checkpoint | None:
+    target = checkpoint_id.strip().upper()
+    for cp in list_checkpoints(ot_dir):
+        if cp.id == target:
+            return cp
+    return None
+
+
+class RestoreResult(BaseModel):
+    """What a restore did (or would do): a git checkout, or a manifest diff."""
+
+    checkpoint_id: str
+    kind: Literal["git", "manifest"]
+    applied: bool
+    message: str
+    added: list[str] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+
+
+def restore_checkpoint(
+    root: Path, ot_dir: Path, checkpoint_id: str, *, force: bool = False
+) -> RestoreResult:
+    """Restore a recorded checkpoint.
+
+    For a ``git`` checkpoint, check out the recorded commit (refusing on a dirty
+    tree unless ``force``). For a ``manifest`` checkpoint there is no stored content
+    to roll back to, so report the difference between the recorded file set and the
+    current one (added/removed) rather than silently doing nothing.
+    """
+    cp = get_checkpoint(ot_dir, checkpoint_id)
+    if cp is None:
+        raise OpenTorusError(f"No checkpoint with id '{checkpoint_id}'.")
+
+    if cp.kind == "git":
+        if not _is_repo(root):
+            raise OpenTorusError("Checkpoint is git-based but this is no longer a git repository.")
+        if not cp.git_commit:
+            raise OpenTorusError(f"{cp.id} has no recorded commit to restore.")
+        _branch, _commit, dirty = _git_state(root)
+        if dirty and not force:
+            raise OpenTorusError(
+                "Working tree has uncommitted changes; commit/stash them or pass --force "
+                "to discard and check out the checkpoint commit."
+            )
+        ref = cp.git_commit
+        proc = _git(["checkout", *(["--force"] if force else []), ref], root)
+        if proc is None or proc.returncode != 0:
+            detail = (proc.stderr.strip() if proc else "git unavailable") or "unknown error"
+            raise OpenTorusError(f"Could not check out {ref[:8]}: {detail}")
+        return RestoreResult(
+            checkpoint_id=cp.id,
+            kind="git",
+            applied=True,
+            message=f"Checked out checkpoint commit {ref[:8]} (was {cp.git_branch}).",
+        )
+
+    # Manifest checkpoint: no stored bytes, so report the diff for the user to act on.
+    recorded = set(cp.manifest)
+    current = set(_file_manifest(root))
+    added = sorted(current - recorded)
+    removed = sorted(recorded - current)
+    return RestoreResult(
+        checkpoint_id=cp.id,
+        kind="manifest",
+        applied=False,
+        message=(
+            "Manifest checkpoints record a file list, not contents, so they cannot be "
+            f"rolled back automatically. Since {cp.id}: {len(added)} added, {len(removed)} "
+            "removed file(s)."
+        ),
+        added=added,
+        removed=removed,
+    )
+
+
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(

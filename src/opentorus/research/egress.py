@@ -94,9 +94,10 @@ class EgressGuard:
     def _persist_budget(self) -> None:
         if not self._ledger_path:
             return
-        self._ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        self._ledger_path.write_text(
-            json.dumps({"day": self._day, "count": self._day_count}), encoding="utf-8"
+        from opentorus.atomicio import atomic_write_text
+
+        atomic_write_text(
+            self._ledger_path, json.dumps({"day": self._day, "count": self._day_count})
         )
 
     def authorize(self, url_or_host: str) -> str:

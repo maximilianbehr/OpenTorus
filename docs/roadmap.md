@@ -1,9 +1,9 @@
 # Roadmap
 
 OpenTorus was developed incrementally across **Milestones 0–75**. The first
-public release, **v0.0.1**, bundles that work into one coherent agent and starts
+public release, **v0.0.2**, bundles that work into one coherent agent and starts
 the versioned history fresh. The milestones group into three capability bands,
-all present in v0.0.1:
+all present in v0.0.2:
 
 - **Core (M0–M22)** — the inspectable, local-first foundation: workspace, memory,
   the permission policy, tools, claims/evidence/experiments, the agent loop,
@@ -24,4 +24,4 @@ report that never upgrades evidence into proof. The live design notes are in
 [design-problem-model.md](design-problem-model.md).
 
 Each milestone is a small, reviewable step: run the tests, show the diff,
-summarize the changes, stop. Post-v0.0.1 work continues in that style.
+summarize the changes, stop. Post-v0.0.2 work continues in that style.
