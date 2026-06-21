@@ -66,6 +66,8 @@ def lint_text(
     accepted the result); ``has_rigorous_bound`` licenses only the bound tier (a
     validated-numerics enclosure, M61).
     """
+    from opentorus.textnorm import normalize_for_scan
+
     active: list[tuple[re.Pattern[str], str]] = []
     if not has_formal_proof:
         active.extend(_PROOF_PATTERNS)
@@ -73,8 +75,10 @@ def lint_text(
             active.extend(_BOUND_PATTERNS)
     issues: list[HonestyIssue] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
+        # Fold zero-width splits / homoglyphs so evasions cannot slip an overclaim past.
+        line = normalize_for_scan(raw)
         for pattern, suggestion in active:
-            match = pattern.search(raw)
+            match = pattern.search(line)
             if match:
                 issues.append(
                     HonestyIssue(line=lineno, phrase=match.group(0), suggestion=suggestion)

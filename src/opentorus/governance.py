@@ -72,7 +72,15 @@ def _excerpt(match: re.Match[str]) -> str:
 
 
 def scan_secrets(text: str, *, scan_pii: bool = True) -> list[SecretFinding]:
-    """Return secret/PII findings in ``text`` (excerpts are redacted, never raw)."""
+    """Return secret/PII findings in ``text`` (excerpts are redacted, never raw).
+
+    The text is normalized first (zero-width removal, homoglyph folding) so a secret
+    split by a zero-width character or disguised with look-alike letters is still
+    detected — the scanner fails closed against trivial evasion.
+    """
+    from opentorus.textnorm import normalize_for_scan
+
+    text = normalize_for_scan(text)
     findings: list[SecretFinding] = []
     for kind, pattern in _SECRET_PATTERNS:
         for match in pattern.finditer(text):

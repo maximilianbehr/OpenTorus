@@ -99,11 +99,20 @@ def lint_report(
     dossier carries at least one supported (or stronger) THEOREM. A verified proof
     artifact additionally licenses the stronger proof-claim phrases.
     """
+    from opentorus.textnorm import normalize_for_scan
+
     issues: list[ReportIssue] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
+        # Fold zero-width splits / homoglyphs so evasions cannot slip an overclaim past.
+        line = normalize_for_scan(raw).strip()
+        if not line:
             continue
+        # Lint heading *text* too: an overclaim in "# We prove the conjecture" must
+        # not get a free pass just for being a heading. Strip the leading markers.
+        if line.startswith("#"):
+            line = line.lstrip("#").strip()
+            if not line:
+                continue
 
         if _EXPERIMENT_PROOF.search(line) or _NUMERICALLY_PROVEN.search(line):
             m = _EXPERIMENT_PROOF.search(line) or _NUMERICALLY_PROVEN.search(line)
