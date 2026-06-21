@@ -278,6 +278,67 @@ def test_run_prove_stops_early_when_gaps_disabled(tmp_path: Path) -> None:
     assert len(store.list_proof_attempts(ot, "PROBLEM-0001")) == 1
 
 
+def test_run_prove_no_progress_backstop_stops_unbounded_gap_fill(tmp_path: Path) -> None:
+    # A model that writes a gapped sketch and never reduces the gap count must not grind
+    # forever, even with inf caps (the random_nla workspace config). The no-progress
+    # backstop ends gap-fill after a window of steps with no gap reduction. The model
+    # alternates proof_write/message so the chat-only stall guard never fires — only the
+    # no-progress guard can terminate the run.
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    root = tmp_path
+    store.create_dossier(ot, "Is P=NP?", title="P vs NP")
+
+    stuck_proof = {
+        "problem_id": "PROBLEM-0001",
+        "title": "Sketch",
+        "theorem": "P=NP.",
+        "main_proof": "Consider a reduction. [GAP-1] the hard direction is unresolved.",
+        "gaps_markdown": "[GAP-1] hard direction.",
+        "gaps": ["hard direction"],
+    }
+
+    class StuckProvider:
+        def __init__(self) -> None:
+            self._n = 0
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            self._n += 1
+            if self._n % 2 == 1:  # odd: rewrite the same gapped sketch (no progress)
+                return ProviderResponse(
+                    kind="tool_call", content="", tool_name="proof_write", tool_args=stuck_proof
+                )
+            return ProviderResponse(kind="message", content="Still working on the gap.")
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+    from opentorus.config import default_config
+
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = float("inf")  # the unbounded config that caused the 80-min grind
+    config.agent.prove_gap_fill_max_steps = float("inf")
+    config.agent.prove_gap_fill_no_progress_steps = 4
+    config.agent.prove_until_gaps_closed = True
+    # If the backstop is broken this run never returns (inf caps). It returning is the test.
+    outcome = run_prove(root, ot, StuckProvider(), config, "PROBLEM-0001", literature_first=False)
+    assert outcome.gaps_remaining >= 1  # stopped with the gap still open, not forced to 0
+    assert outcome.gap_fill_exhausted  # reported as a no-progress / cap stop, not a clean close
+    assert outcome.proof_ids == ["PROOF-0001"]
+    # Terminated by the no-progress window, not after thousands of steps.
+    assert outcome.tool_calls <= 6
+
+
 def test_run_prove_creates_proof_artifact(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)

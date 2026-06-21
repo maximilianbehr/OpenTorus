@@ -136,6 +136,22 @@ def theorem_in_corpus(corpus: str, number: str) -> bool:
     )
 
 
+def available_theorem_numbers(corpus: str) -> list[str]:
+    """The theorem/lemma numbers that actually appear in the parsed text (sorted).
+
+    Surfaced in a citation-failure message so the model can cite a result that
+    exists instead of guessing numbers (the loop that blocked proof writing).
+    """
+    if not corpus:
+        return []
+    found: set[str] = set()
+    for m in re.finditer(
+        rf"\b{_THEOREM_KW}\s*(\d+(?:\s*\.\s*\d+)*)", _normalize_corpus(corpus), re.I
+    ):
+        found.add(re.sub(r"\s*\.\s*", ".", m.group(1)))
+    return sorted(found, key=lambda s: [int(p) for p in s.split(".")])
+
+
 def corpus_has_numbered_theorems(corpus: str) -> bool:
     """Whether the parsed text contains *any* numbered theorem/lemma environment.
 
@@ -202,10 +218,17 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
         for thm in sorted(theorems):
             if not theorem_in_corpus(corpus, thm):
                 if has_numbering:
+                    available = available_theorem_numbers(corpus)
+                    if available:
+                        shown = ", ".join(available[:12])
+                        more = " …" if len(available) > 12 else ""
+                        present = f" The parsed text contains: {shown}{more}."
+                    else:
+                        present = ""
                     errors.append(
-                        f"{pid} does not contain Theorem/Lemma {thm} (its parsed text lists "
-                        "other numbered results) — do not invent theorem numbers; cite a "
-                        "result that appears in the reading note."
+                        f"{pid} does not contain Theorem/Lemma {thm}.{present} "
+                        "Cite one of those numbers, describe the result in prose, or mark "
+                        "the step [GAP-n] — do not invent theorem numbers."
                     )
                 else:
                     warnings.append(

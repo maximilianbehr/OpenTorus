@@ -50,6 +50,11 @@ agent:
   # Max extra model steps for gap-filling after the first sketch (important when max_steps: inf).
   # Positive integer, or inf / unlimited / -1 for no separate gap-fill cap.
   prove_gap_fill_max_steps: 48
+  # Stop gap-filling after this many consecutive steps that do not reduce the gap count,
+  # even if the caps above are inf. Prevents an endless grind when a model cannot close
+  # gaps; a model that keeps shrinking the gap list resets the window and continues.
+  # Positive integer, or inf / unlimited / -1 to disable.
+  prove_gap_fill_no_progress_steps: 16
 
 # --- Permissions (see also permissions.yaml) ------------------------------------
 permissions:

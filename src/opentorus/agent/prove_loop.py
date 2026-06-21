@@ -375,6 +375,9 @@ def build_prove_prompt(
             "5. proof_write(problem_id, title, theorem, definitions, lemmas, main_proof, "
             "gaps_markdown, evidence_notes, gaps=[…]) — **mandatory** NL refutation sketch\n"
             "   • Cite PAPER-* ids where literature applies\n"
+            "   • Cite a theorem NUMBER only if you saw it in that paper's reading note; "
+            "otherwise cite by content/section or mark [GAP-n] — a wrong number rejects "
+            "the whole proof_write.\n"
             "   • Mark every unjustified step [GAP-1], [GAP-2], …\n"
             "6. memory_add(kind=decisions): refuted / open + gap count + papers read\n"
         )
@@ -395,6 +398,9 @@ def build_prove_prompt(
             "   • scope=exploration: side thread + connection_to_dossier (≥60 chars); "
             "does not finish the run alone\n"
             "   • Cite PAPER-* ids in evidence_notes and lemmas where literature applies\n"
+            "   • Cite a theorem NUMBER only if you saw it in that paper's reading note; "
+            "otherwise cite by content/section or mark the step [GAP-n]. A wrong number "
+            "rejects the whole proof_write — never guess.\n"
             "   • Mark every unjustified step [GAP-1], [GAP-2], …\n"
             "   • Do NOT write 'we prove', 'QED', or 'theorem' as settled while [GAP-n] remain\n"
             "   • A bound with log(n), log(d), or n^log d is quasi-polynomial — NOT polynomial\n"
@@ -650,7 +656,7 @@ def run_prove(
         proof_kw["pre_deliverable_gate_detail"] = lambda: _literature_ready()[1]
 
     proof_loop_holder: list = []
-    _gap_fill: dict[str, int | None] = {"anchor": None}
+    _gap_fill: dict[str, int | None] = {"anchor": None, "best": None, "best_step": None}
 
     def _proof_deliverable_complete() -> bool:
         # A proof must actually exist for THIS dossier; otherwise the model may have
@@ -659,20 +665,33 @@ def run_prove(
             return False
         if not config.agent.prove_until_gaps_closed:
             return True
-        if latest_proof_gap_count(ot_dir, pid) == 0:
+        gaps = latest_proof_gap_count(ot_dir, pid)
+        if gaps == 0:
             return True
         if not proof_loop_holder:
             return False
         loop = proof_loop_holder[0]
         if _gap_fill["anchor"] is None:
             _gap_fill["anchor"] = loop.steps_run
+            _gap_fill["best"] = gaps
+            _gap_fill["best_step"] = loop.steps_run
             # The draft now exists with open gaps: reflect the gap-fill phase in the
             # trace banner instead of leaving it on "Proof draft".
             if on_status is not None:
                 on_status("phase", "Proof gap-fill")
             return False
+        # Track the best (lowest) gap count and when it was last improved.
+        if _gap_fill["best"] is None or gaps < int(_gap_fill["best"]):
+            _gap_fill["best"] = gaps
+            _gap_fill["best_step"] = loop.steps_run
         spent = loop.steps_run - int(_gap_fill["anchor"])
-        return spent >= config.agent.prove_gap_fill_max_steps
+        if spent >= config.agent.prove_gap_fill_max_steps:
+            return True
+        # No-progress backstop: stop if the gap count has not dropped for a whole window,
+        # even when the caps are inf — otherwise a model that cannot close gaps grinds
+        # forever (re-reading papers, re-declaring "done").
+        no_progress = loop.steps_run - int(_gap_fill["best_step"] or _gap_fill["anchor"])
+        return no_progress >= config.agent.prove_gap_fill_no_progress_steps
 
     def _proof_gap_recovery() -> str:
         return build_proof_gap_recovery_hint(ot_dir, pid)
@@ -778,11 +797,17 @@ def run_prove(
                 )
 
     gaps_remaining = latest_proof_gap_count(ot_dir, pid)
+    _anchor = _gap_fill["anchor"]
+    _best_step = _gap_fill["best_step"]
     gap_fill_exhausted = bool(
         config.agent.prove_until_gaps_closed
         and gaps_remaining > 0
-        and _gap_fill["anchor"] is not None
-        and proof_loop.steps_run - int(_gap_fill["anchor"]) >= config.agent.prove_gap_fill_max_steps
+        and _anchor is not None
+        and (
+            proof_loop.steps_run - int(_anchor) >= config.agent.prove_gap_fill_max_steps
+            or proof_loop.steps_run - int(_best_step if _best_step is not None else _anchor)
+            >= config.agent.prove_gap_fill_no_progress_steps
+        )
     )
 
     return ProveOutcome(
