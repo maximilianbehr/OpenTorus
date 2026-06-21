@@ -321,6 +321,70 @@ def add_proof_attempt(
     return store.append_proof_attempt(ot_dir, proof)
 
 
+def latest_primary_proof(ot_dir: Path, problem_id: str) -> ProofAttempt | None:
+    """The most recent non-verified PRIMARY proof attempt, or None.
+
+    Used to refine the single dossier answer in place instead of accumulating an
+    unbounded pile of near-duplicate primary sketches.
+    """
+    primaries = [
+        p
+        for p in store.list_proof_attempts(ot_dir, problem_id)
+        if getattr(p, "scope", "primary") == "primary" and p.status != "verified"
+    ]
+    return primaries[-1] if primaries else None
+
+
+def update_proof_attempt(
+    ot_dir: Path,
+    problem_id: str,
+    proof_id: str,
+    *,
+    title: str,
+    body: str,
+    kind: str = "sketch",
+    gaps: list[str] | None = None,
+    claim_links: list[str] | None = None,
+) -> ProofAttempt:
+    """Refine an existing proof attempt in place (rewrite its body + index entry).
+
+    This is how the dossier's single primary answer is *improved* across iterations
+    rather than recreated, which is what prevents an unbounded run of near-identical
+    primary sketches (the amnesia loop). A verified proof is never overwritten.
+    """
+    proofs = store.list_proof_attempts(ot_dir, problem_id)
+    target = next((p for p in proofs if p.id == proof_id), None)
+    if target is None:
+        raise OpenTorusError(f"No proof attempt '{proof_id}' in dossier '{problem_id}'.")
+    if target.status == "verified":
+        raise OpenTorusError(
+            f"{proof_id} is verified; refine a new attempt instead of overwriting."
+        )
+    rel_body = target.body_path or f"proof_attempts/{proof_id}.md"
+    scope_note = (
+        " · **exploration** (NOT the dossier answer — speculative connection)"
+        if getattr(target, "scope", "primary") == "exploration"
+        else ""
+    )
+    (store.dossier_dir(ot_dir, problem_id) / rel_body).write_text(
+        f"# {proof_id} — {title}\n\n_Status: {kind} (NOT machine-checked){scope_note}_\n\n{body}\n",
+        encoding="utf-8",
+    )
+    for p in proofs:
+        if p.id == proof_id:
+            p.title = title
+            p.kind = "formal" if kind == "formal" else "sketch"
+            p.gaps = gaps or []
+            # Merge any newly cited claim links without dropping prior ones.
+            for cid in claim_links or []:
+                if cid not in p.claim_links:
+                    p.claim_links.append(cid)
+            p.updated_at = utcnow()
+    store.rewrite_proof_attempts(ot_dir, problem_id, proofs)
+    updated = next(p for p in store.list_proof_attempts(ot_dir, problem_id) if p.id == proof_id)
+    return updated
+
+
 def verify_counterexample(
     ot_dir: Path,
     problem_id: str,

@@ -880,19 +880,42 @@ class ProofWriteTool(Tool):
         claim_links = _as_str_list(call.args.get("claim_ids"))
 
         try:
-            proof = claim_ops.add_proof_attempt(
-                self._ot_dir,
-                problem_id,
-                title=title,
-                body=body,
-                kind=kind,
-                scope=scope,
-                gaps=gaps,
-                claim_links=claim_links,
+            # A dossier has exactly ONE primary answer. A second primary write refines
+            # the existing one in place rather than adding a near-duplicate sketch —
+            # this is what stops the unbounded "70 sketches, never consolidated" loop.
+            existing_primary = (
+                claim_ops.latest_primary_proof(self._ot_dir, problem_id)
+                if scope == "primary"
+                else None
             )
+            if existing_primary is not None:
+                proof = claim_ops.update_proof_attempt(
+                    self._ot_dir,
+                    problem_id,
+                    existing_primary.id,
+                    title=title,
+                    body=body,
+                    kind=kind,
+                    gaps=gaps,
+                    claim_links=claim_links,
+                )
+                refined = True
+            else:
+                proof = claim_ops.add_proof_attempt(
+                    self._ot_dir,
+                    problem_id,
+                    title=title,
+                    body=body,
+                    kind=kind,
+                    scope=scope,
+                    gaps=gaps,
+                    claim_links=claim_links,
+                )
+                refined = False
         except OpenTorusError as exc:
             return self.fail(call, str(exc))
 
+        verb = "refined" if refined else "created"
         gap_line = f"\nGaps recorded: {len(gaps)}" if gaps else ""
         scope_line = f"\nScope: {scope}" + (
             " (does not complete prove run — also need scope=primary)"
@@ -903,11 +926,18 @@ class ProofWriteTool(Tool):
         extra_warn = cite_warnings + rel_warnings
         if extra_warn:
             warn_line = "\nCitation/relevance notes:\n- " + "\n- ".join(extra_warn)
+        refine_hint = (
+            "\nThis dossier already had a primary answer, so it was refined in place "
+            "(one primary per problem). To make progress, close its remaining [GAP-n] "
+            "markers — do not write another primary sketch."
+            if verb == "refined"
+            else ""
+        )
         return self.ok(
             call,
-            f"created {proof.id} [{proof.status}] at "
+            f"{verb} {proof.id} [{proof.status}] at "
             f".opentorus/problems/{problem_id}/{proof.body_path}"
-            f"{gap_line}{scope_line}{warn_line}\n"
+            f"{gap_line}{scope_line}{warn_line}{refine_hint}\n"
             "Natural-language sketch saved (NOT formally_verified). "
             "Use read_file on that path to review the full body.",
             proof_id=proof.id,

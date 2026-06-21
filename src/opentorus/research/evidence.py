@@ -130,6 +130,14 @@ def add_evidence(
                 f"Cannot cite experiment '{source_id}': no such EXP-* artifact in this "
                 "workspace. Create and run it (exp_new → exp_run) before citing it."
             )
+        from opentorus.research.experiments import is_unmodified_counterexample_template
+
+        if is_unmodified_counterexample_template(ot_dir, exp):
+            raise OpenTorusError(
+                f"{source_id} still runs the unmodified counterexample-search template "
+                "(placeholder predicate 'n*n >= n'); it tests a tautology, not the claim. "
+                "Edit run.py to encode the real predicate before citing it as evidence."
+            )
         if exp.status not in ("completed", "failed"):
             exp_advisory = (
                 f"{source_id} has status '{exp.status}' (not run to completion); its results "

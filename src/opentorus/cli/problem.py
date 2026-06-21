@@ -27,6 +27,21 @@ problem_app = typer.Typer(
 app.add_typer(problem_app, name="problem")
 
 
+def _clip_title(title: str, limit: int = 80) -> str:
+    """Clip a heading to a title at a word boundary (never mid-word), adding an ellipsis.
+
+    A bare ``title[:80]`` clips mid-word (e.g. ``…of kernel ma``); this trims back to
+    the last whole word and marks the truncation.
+    """
+    title = title.strip()
+    if len(title) <= limit:
+        return title
+    cut = title[: limit - 1]
+    if " " in cut:
+        cut = cut[: cut.rfind(" ")]
+    return cut.rstrip() + "…"
+
+
 @problem_app.command("extract")
 def problem_extract(
     ctx: typer.Context,
@@ -117,7 +132,7 @@ def problem_new(
             dossier = store.create_dossier(
                 base,
                 sec_statement,
-                title=sec_title[:80],
+                title=_clip_title(sec_title),
                 domain=domain,
                 tags=list(tag or []),
             )

@@ -206,8 +206,14 @@ def test_run_prove_continues_after_proof_with_gaps(tmp_path: Path) -> None:
     config.agent.prove_until_gaps_closed = True
     outcome = run_prove(root, ot, GapFillProvider(), config, "PROBLEM-0001", literature_first=False)
     assert outcome.tool_calls >= 2
-    assert len(outcome.proof_ids) >= 2
-    assert outcome.gaps_remaining == 0
+    # A dossier has ONE primary answer: gap-fill REFINES it in place rather than
+    # accumulating near-duplicate primary sketches (the amnesia loop). So the second
+    # proof_write updates PROOF-0001 instead of creating PROOF-0002.
+    from opentorus.research.dossier import store as _store
+
+    primaries = [p for p in _store.list_proof_attempts(ot, "PROBLEM-0001") if p.scope == "primary"]
+    assert len(primaries) == 1
+    assert outcome.gaps_remaining == 0  # the single primary was refined to gap-free
 
 
 def test_run_prove_stops_early_when_gaps_disabled(tmp_path: Path) -> None:
