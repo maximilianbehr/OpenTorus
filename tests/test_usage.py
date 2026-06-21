@@ -84,6 +84,38 @@ def test_version_suffix_matches_price() -> None:
     assert abs(cost - 3.00) < 1e-9
 
 
+def test_local_openai_compatible_endpoint_is_free() -> None:
+    # An unknown-name model served via a localhost OpenAI-compatible endpoint is local
+    # inference (no cloud cost): it must read $0 (local), not "$? (price unknown)".
+    from opentorus.usage import cost_known, format_usage_line, is_local_provider
+
+    base = "http://localhost:11435"
+    assert is_local_provider("openai", base) is True
+    assert cost_known("openai", "gpt-5.4-mini", base) is True
+    assert estimate_cost("openai", "gpt-5.4-mini", 10_000, 1_000, base) == 0.0
+    line = format_usage_line("openai", "gpt-5.4-mini", 10_000, 1_000, base_url=base)
+    assert "$0 (local)" in line
+    assert "price unknown" not in line
+
+
+def test_remote_unknown_model_still_price_unknown() -> None:
+    # A real cloud endpoint with an unknown model name must NOT be silently $0.
+    from opentorus.usage import cost_known, format_usage_line
+
+    base = "https://api.openai.com/v1"
+    assert cost_known("openai", "gpt-5.4-mini", base) is False
+    line = format_usage_line("openai", "gpt-5.4-mini", 10_000, 1_000, base_url=base)
+    assert "price unknown" in line
+
+
+def test_private_lan_host_is_local() -> None:
+    from opentorus.usage import is_local_provider
+
+    for base in ("http://192.168.1.20:8000", "http://10.0.0.5:11434", "http://172.16.4.4:1234"):
+        assert is_local_provider("openai", base) is True
+    assert is_local_provider("openai", "https://api.anthropic.com") is False
+
+
 def test_record_and_summarize(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)

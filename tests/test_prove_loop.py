@@ -339,6 +339,79 @@ def test_run_prove_no_progress_backstop_stops_unbounded_gap_fill(tmp_path: Path)
     assert outcome.tool_calls <= 6
 
 
+def test_no_progress_window_resets_on_new_evidence(tmp_path: Path, monkeypatch) -> None:
+    # A model that keeps gathering NEW evidence (experiments / parsed papers) toward a gap
+    # must NOT be cut off by the no-progress backstop, even though the gap COUNT has not
+    # dropped yet. Without this, a model running experiments to close a gap is killed
+    # mid-work (the user's "terminates early with a gapped proof"). Contrast with the
+    # stuck test above, where evidence is constant and the window fires at tool_calls<=6.
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    root = tmp_path
+    store.create_dossier(ot, "Is P=NP?", title="P vs NP")
+
+    gapped = {
+        "problem_id": "PROBLEM-0001",
+        "title": "Sketch",
+        "theorem": "P=NP.",
+        "main_proof": "Consider a reduction. [GAP-1] the hard direction is unresolved.",
+        "gaps_markdown": "[GAP-1] hard direction.",
+        "gaps": ["hard direction"],
+    }
+
+    # Simulate evidence that grows on every check (the model is actively gathering it).
+    grow = {"n": 0}
+
+    def _growing_experiments(ot_dir, problem_id=None, **kwargs):
+        grow["n"] += 1
+        return [object()] * grow["n"]
+
+    monkeypatch.setattr(
+        "opentorus.research.dossier.experiments.list_experiments", _growing_experiments
+    )
+    monkeypatch.setattr("opentorus.research.papers.list_papers", lambda ot_dir: [])
+
+    class GatheringProvider:
+        def __init__(self) -> None:
+            self._n = 0
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            self._n += 1
+            if self._n % 2 == 1:
+                return ProviderResponse(
+                    kind="tool_call", content="", tool_name="proof_write", tool_args=gapped
+                )
+            return ProviderResponse(kind="message", content="Gathering more evidence.")
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+    from opentorus.config import default_config
+
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = 30  # finite hard backstop so the test cannot hang
+    config.agent.prove_gap_fill_max_steps = float("inf")
+    config.agent.prove_gap_fill_no_progress_steps = 4  # small window
+    config.agent.prove_until_gaps_closed = True
+    outcome = run_prove(
+        root, ot, GatheringProvider(), config, "PROBLEM-0001", literature_first=False
+    )
+    # Evidence kept resetting the window, so the run ran far past the 4-step window
+    # (to the max_steps backstop) instead of stopping early like the stuck case.
+    assert outcome.gaps_remaining >= 1
+    assert outcome.tool_calls > 6
+
+
 def test_run_prove_creates_proof_artifact(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)
