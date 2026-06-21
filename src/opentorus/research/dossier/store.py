@@ -473,6 +473,11 @@ def append_proof_attempt(ot_dir: Path, proof: ProofAttempt) -> ProofAttempt:
     return proof
 
 
+def rewrite_proof_attempts(ot_dir: Path, problem_id: str, proofs: list[ProofAttempt]) -> None:
+    """Overwrite the proof index (used to refine an existing attempt in place)."""
+    rewrite_jsonl(_proofs_path(ot_dir, problem_id), proofs)
+
+
 def next_proof_id(ot_dir: Path, problem_id: str) -> str:
     return next_id("PROOF", (p.id for p in list_proof_attempts(ot_dir, problem_id)))
 

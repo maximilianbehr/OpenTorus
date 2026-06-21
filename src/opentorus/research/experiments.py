@@ -146,6 +146,21 @@ def list_experiments(ot_dir: Path, *, problem_id: str | None = None) -> list[Exp
     return experiments
 
 
+def is_unmodified_counterexample_template(ot_dir: Path, experiment: Experiment) -> bool:
+    """True if the experiment still runs the stock counterexample predicate.
+
+    The counterexample-search template ships a placeholder ``conjecture_holds`` that
+    is trivially true (``return n * n >= n``) and must be replaced with the real
+    predicate. An unmodified template "searches" a tautology, so its "no
+    counterexample found" result tests nothing and must not back a claim.
+    """
+    run_py = ot_dir / experiment.path / "run.py"
+    if not run_py.is_file():
+        return False
+    text = run_py.read_text(encoding="utf-8", errors="replace")
+    return "Replace with your predicate." in text and "return n * n >= n" in text
+
+
 def get_experiment(ot_dir: Path, exp_id: str) -> Experiment | None:
     for experiment in list_experiments(ot_dir):
         if experiment.id == exp_id:
