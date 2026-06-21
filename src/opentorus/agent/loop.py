@@ -90,7 +90,9 @@ _LIT_RECOVERY_HINT_AFTER_TOOLS = (
 # Literature search/fetch tools are never repeat-blocked — their results can change,
 # so only the step budget limits usage. paper_read is NOT exempt: reading an
 # already-parsed note is idempotent, so a repeat is re-served from cache (see below).
-_REPEAT_GUARD_EXEMPT = frozenset({"lit_search", "paper_fetch", "paper_list"})
+# ``status`` is also never repeat-blocked: it reports the live inventory the agent
+# legitimately re-polls after writing artifacts, so it is re-run, not hard-blocked.
+_REPEAT_GUARD_EXEMPT = frozenset({"lit_search", "paper_fetch", "paper_list", "status"})
 
 _REPEAT_GUARD_TOOLS = frozenset({"glob_files", "read_file", "list_files", "status", "paper_read"})
 

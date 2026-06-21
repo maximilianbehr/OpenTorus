@@ -209,13 +209,26 @@ def _run_iteration(
     hypothesis_id = hypotheses[0].id if hypotheses else None
     actions.append(f"Proposed {len(hypotheses)} hypothesis/-es; studying {claim_id}.")
 
-    # (3) Experiment: run a bounded counterexample search (reproducible, M50).
+    # (3) Experiment: state-aware so iterations are not redundant. If a prior
+    # iteration already produced a counterexample (contradicting evidence on the
+    # claim), stop re-searching and switch to rigorously confirming it via validated
+    # numerics; otherwise keep searching for one.
     from opentorus.research.dossier.store import get_active_problem
+    from opentorus.research.evidence import list_evidence
 
+    prior_counterexample = any(
+        e.direction in ("contradicts", "mixed") for e in list_evidence(ot_dir, claim_id)
+    )
+    template = "validated_numerics" if prior_counterexample else "counterexample_search"
+    actions.append(
+        "Counterexample already found — switching to validated-numerics confirmation."
+        if prior_counterexample
+        else "Searching for a counterexample."
+    )
     exp = new_experiment(
         ot_dir,
         f"{state.slug} iter {iteration}",
-        template="counterexample_search",
+        template=template,
         problem_id=get_active_problem(ot_dir),
     )
     exp, _code = run_experiment(ot_dir, exp.id, timeout=min(120, 20 * max_steps))
@@ -333,9 +346,12 @@ def run_research(
     stops cleanly and reports state. Re-running with the same question resumes
     from the next unfinished iteration.
     """
+    from opentorus.agent.context import reset_retrieval_breaker
     from opentorus.research.checkpoints import create_checkpoint
     from opentorus.usage import summarize_usage
 
+    # A breaker tripped in an earlier run must not disable retrieval for this one.
+    reset_retrieval_breaker()
     state = load_state(ot_dir, question) or ResearchState(
         question=question, slug=_slugify(question)
     )
