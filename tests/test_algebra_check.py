@@ -9,15 +9,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from opentorus.cli import app
-from opentorus.research.algebra_check import check_optimizer, sympy_available
+from opentorus.research.algebra_check import check_optimizer
 
 runner = CliRunner()
-
-pytestmark = pytest.mark.skipif(not sympy_available(), reason="sympy not installed (algebra extra)")
 
 
 def test_false_interior_optimum_on_monotone_objective() -> None:

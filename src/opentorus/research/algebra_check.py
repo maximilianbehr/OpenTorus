@@ -11,8 +11,9 @@ critical points, decides whether ``W`` is monotone on the domain, and verifies
 that any claimed ``m*`` actually satisfies ``dW/dm = 0``. It returns a structured,
 serializable verdict.
 
-``sympy`` is an optional dependency (the ``algebra`` extra) and is imported lazily
-so the base CLI stays importable and fast without it.
+``sympy`` is a required dependency. It is imported inside :func:`check_optimizer`
+(rather than at module top) only so that importing this module — e.g. for the
+result model — does not pull sympy into the base CLI's import path.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CheckVerdict = Literal["consistent", "rejected", "inconclusive", "unavailable"]
+CheckVerdict = Literal["consistent", "rejected", "inconclusive"]
 
 # Fixed sample points used to infer the sign of the derivative. Deterministic by
 # construction (no randomness), so the verdict is reproducible from inputs alone.
@@ -47,15 +48,6 @@ class AlgebraCheckResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-def sympy_available() -> bool:
-    """Return whether the optional ``sympy`` dependency is importable."""
-    try:
-        import sympy  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
 def check_optimizer(
     expression: str,
     *,
@@ -71,7 +63,6 @@ def check_optimizer(
       optimum exists), or the claimed ``m*`` does not satisfy ``dW/dm = 0``.
     * ``consistent`` — the claimed ``m*`` is a genuine interior critical point.
     * ``inconclusive`` — symbolic analysis could not settle the question.
-    * ``unavailable`` — ``sympy`` is not installed.
     """
     result = AlgebraCheckResult(
         expression=expression,
@@ -79,12 +70,6 @@ def check_optimizer(
         claimed_optimizer=claimed_optimizer,
         domain=domain,
     )
-    if not sympy_available():
-        result.verdict = "unavailable"
-        result.detail = (
-            "sympy is not installed. Install the optional extra: pip install 'opentorus[algebra]'."
-        )
-        return result
 
     import sympy as sp
 

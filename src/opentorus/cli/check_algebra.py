@@ -59,7 +59,7 @@ def check_algebra(
     as_json: bool = typer.Option(False, "--json", help="Emit the machine-readable result as JSON."),
 ) -> None:
     """Check an optimization claim symbolically (derivative, optimum, monotonicity)."""
-    from opentorus.research.algebra_check import check_optimizer, sympy_available
+    from opentorus.research.algebra_check import check_optimizer
 
     spec = _load_spec(source)
     expression = expr or spec.get("expression")
@@ -82,13 +82,6 @@ def check_algebra(
             raise typer.Exit(code=1)
         dom = (str(parts[0]).strip(), str(parts[1]).strip())
 
-    if not sympy_available():
-        console.print(
-            "[red]check-algebra needs sympy.[/red] Install the optional extra: "
-            "[bold]pip install 'opentorus[algebra]'[/bold]."
-        )
-        raise typer.Exit(code=1)
-
     result = check_optimizer(
         str(expression), variable=str(var), claimed_optimizer=claimed, domain=dom
     )
@@ -101,7 +94,6 @@ def check_algebra(
         "consistent": "green",
         "rejected": "red",
         "inconclusive": "yellow",
-        "unavailable": "red",
     }[result.verdict]
     console.print(f"[bold]Objective:[/bold] W({result.variable}) = {result.expression}")
     console.print(f"[bold]dW/d{result.variable}:[/bold] {result.derivative}")
