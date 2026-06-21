@@ -340,23 +340,62 @@ class LiteratureSearchTool(Tool):
                 "description": "Search keywords from the problem statement or hypothesis.",
             },
             "limit": {"type": "integer", "description": "Max results per source (default 5)."},
+            "field": {
+                "type": "string",
+                "description": (
+                    "Field hint to pick relevant sources (math, cs, physics, bio, …); "
+                    "defaults to math. Avoids querying off-domain databases."
+                ),
+            },
         },
         "required": ["query"],
     }
     risk_level = "medium"
     permission = "external"
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, ot_dir=None) -> None:  # noqa: ANN001
         self._config = config
+        self._ot_dir = ot_dir
+
+    def _egress_guard(self):  # noqa: ANN202
+        # Mirror PaperFetchTool: host authorization + per-host rate limit + the daily
+        # request-budget ledger. Without ot_dir (e.g. a bare unit test) skip the guard.
+        if self._ot_dir is None:
+            return None
+        from opentorus.research.egress import EgressGuard
+
+        lit = self._config.tools.literature
+        return EgressGuard(
+            self._config.permissions.mode,
+            style=self._config.agent.style,
+            review=self._config.agent.mode == "review",
+            rate_limit_per_minute=lit.rate_limit_per_minute,
+            daily_request_budget=lit.daily_request_budget,
+            ledger_path=self._ot_dir / "egress.json",
+            dlp=self._config.governance.dlp,
+        )
 
     def run(self, call: ToolCall) -> ToolResult:
-        from opentorus.research.sources import search_all
+        from opentorus.research.egress import EgressBlocked
+        from opentorus.research.sources import search_all, sources_for_field
 
         query = str(call.args.get("query", "")).strip()
         if not query:
             return self.fail(call, "lit_search requires a non-empty 'query'.")
         limit = int(call.args.get("limit", 5))
-        records = search_all(self._config, query, limit=limit)
+        # Default to the math field so a math problem does not query bio/CS/astro DBs.
+        field = str(call.args.get("field", "") or "math").strip()
+        source_names = [s.name for s in sources_for_field(self._config, field)]
+        try:
+            records = search_all(
+                self._config,
+                query,
+                limit=limit,
+                sources=source_names or None,
+                egress=self._egress_guard(),
+            )
+        except EgressBlocked as exc:
+            return self.fail(call, f"Network egress denied: {exc}")
         if not records:
             return self.ok(call, "No results (or no literature sources enabled).")
         lines = []
@@ -453,7 +492,7 @@ def build_default_registry(root: Path, ot_dir: Path, config=None) -> ToolRegistr
     registry.register(ApplyPatchTool(root))
     registry.register(RunShellTool(root))
     if config is not None and config.tools.literature.enabled:
-        registry.register(LiteratureSearchTool(config))
+        registry.register(LiteratureSearchTool(config, ot_dir))
     if config is not None and config.tools.web.enabled:
         web = config.tools.web
         if web.fetch:
