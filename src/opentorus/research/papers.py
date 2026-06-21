@@ -194,8 +194,21 @@ def _is_url(source: str) -> bool:
 _ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/(?P<id>[^\s?#]+)", re.IGNORECASE)
 
 
+def _normalize_arxiv_id(arxiv_id: str | None) -> str | None:
+    """Bare arXiv id without a trailing version (e.g. ``2002.01682v1`` -> ``2002.01682``).
+
+    Applied on both store and compare so a stub added as ``2002.01682`` and a fetch
+    record carrying ``2002.01682v1`` resolve to one paper instead of duplicating.
+    """
+    if not arxiv_id:
+        return None
+    ident = arxiv_id.strip().removesuffix(".pdf")
+    ident = re.sub(r"v\d+$", "", ident)
+    return ident or None
+
+
 def _arxiv_id_from_url(url: str) -> str | None:
-    """Extract a bare arXiv id from an arxiv.org URL (abs or pdf, version stripped).
+    """Extract a version-stripped arXiv id from an arxiv.org URL (abs or pdf).
 
     ``https://arxiv.org/abs/2002.01682v2`` and ``.../pdf/2002.01682.pdf`` both yield
     ``2002.01682``. Populating this on ``paper add`` lets a later ``paper_fetch`` of
@@ -204,9 +217,7 @@ def _arxiv_id_from_url(url: str) -> str | None:
     match = _ARXIV_URL_RE.search(url)
     if not match:
         return None
-    ident = match.group("id").removesuffix(".pdf")
-    ident = re.sub(r"v\d+$", "", ident)
-    return ident or None
+    return _normalize_arxiv_id(match.group("id"))
 
 
 def list_papers(ot_dir: Path) -> list[Paper]:
@@ -351,7 +362,8 @@ def describe_fetched_paper(ot_dir: Path, paper: Paper) -> str:
         if parsed and note:
             line += f"\n\n--- Reading note ---\n{note}"
     else:
-        line += f": metadata only — {paper.access_note}"
+        note = paper.access_note or "full text not accessible"
+        line += f": metadata only — {note}"
     return line
 
 
@@ -425,11 +437,11 @@ def resolve_full_text(
 
 def _find_cached(ot_dir: Path, record: SourceRecord) -> Paper | None:
     doi = (record.doi or "").lower()
-    arxiv_id = (record.arxiv_id or "").lower()
+    arxiv_id = (_normalize_arxiv_id(record.arxiv_id) or "").lower()
     for paper in list_papers(ot_dir):
         if doi and (paper.doi or "").lower() == doi:
             return paper
-        if arxiv_id and (paper.arxiv_id or "").lower() == arxiv_id:
+        if arxiv_id and (_normalize_arxiv_id(paper.arxiv_id) or "").lower() == arxiv_id:
             return paper
     return None
 
@@ -451,7 +463,8 @@ def acquire_paper(
     with metadata + abstract only and an honest ``full_text_accessible=False``.
     """
     cached = _find_cached(ot_dir, record)
-    if cached is not None:
+    # A cached record that already has full text (or a local copy) is reused as-is.
+    if cached is not None and (cached.full_text_accessible or cached.local_path):
         return _parse_full_text_if_needed(ot_dir, cached)
 
     download = downloader
@@ -462,25 +475,45 @@ def acquire_paper(
 
     resolution = resolver(record, contact_email=contact_email, unpaywall=unpaywall)
 
-    paper_id = next_sequential_id("PAPER", len(list_papers(ot_dir)))
-    paper_dir = papers_dir(ot_dir) / paper_id
-    paper_dir.mkdir(parents=True, exist_ok=True)
+    if cached is not None:
+        # A metadata-only stub (e.g. from `paper add <arxiv URL>`): resolve and
+        # download full text now, upgrading the existing record in place rather than
+        # creating a duplicate. Fill in any metadata the stub was missing.
+        paper = cached
+        paper_dir = papers_dir(ot_dir) / paper.id
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        paper.title = paper.title or record.title
+        paper.doi = paper.doi or record.doi
+        paper.arxiv_id = _normalize_arxiv_id(paper.arxiv_id or record.arxiv_id)
+        paper.year = paper.year or record.year
+        paper.abstract = paper.abstract or record.abstract
+        paper.source_connector = paper.source_connector or record.source
+        paper.citation_count = paper.citation_count or record.citation_count
+        paper.retrieved_at = _utcnow()
+        if resolution.license:
+            paper.license = resolution.license
+    else:
+        paper_id = next_sequential_id("PAPER", len(list_papers(ot_dir)))
+        paper_dir = papers_dir(ot_dir) / paper_id
+        paper_dir.mkdir(parents=True, exist_ok=True)
 
-    source_type: PaperSourceType = "doi" if record.doi else ("arxiv" if record.arxiv_id else "url")
-    paper = Paper(
-        id=paper_id,
-        source=record.url or record.doi or record.arxiv_id or record.title,
-        source_type=source_type,
-        title=record.title,
-        retrieved_at=_utcnow(),
-        doi=record.doi,
-        arxiv_id=record.arxiv_id,
-        year=record.year,
-        abstract=record.abstract,
-        source_connector=record.source,
-        citation_count=record.citation_count,
-        license=resolution.license,
-    )
+        source_type: PaperSourceType = (
+            "doi" if record.doi else ("arxiv" if record.arxiv_id else "url")
+        )
+        paper = Paper(
+            id=paper_id,
+            source=record.url or record.doi or record.arxiv_id or record.title,
+            source_type=source_type,
+            title=record.title,
+            retrieved_at=_utcnow(),
+            doi=record.doi,
+            arxiv_id=_normalize_arxiv_id(record.arxiv_id),
+            year=record.year,
+            abstract=record.abstract,
+            source_connector=record.source,
+            citation_count=record.citation_count,
+            license=resolution.license,
+        )
 
     if resolution.accessible and resolution.pdf_url:
         if egress is not None:

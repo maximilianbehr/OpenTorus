@@ -155,3 +155,49 @@ def test_paper_agent_line_does_not_loop_on_unavailable_full_text() -> None:
 
     stub = Paper(id="PAPER-0002", source="2002.01682", source_type="arxiv", arxiv_id="2002.01682")
     assert "paper_fetch to retrieve" in format_paper_agent_line(stub)
+
+
+def test_normalize_arxiv_id_strips_version() -> None:
+    from opentorus.research.papers import _normalize_arxiv_id
+
+    assert _normalize_arxiv_id("2002.01682v3") == "2002.01682"
+    assert _normalize_arxiv_id("2002.01682") == "2002.01682"
+    assert _normalize_arxiv_id(None) is None
+
+
+def test_paper_fetch_upgrades_add_stub_in_place(tmp_path: Path) -> None:
+    # `paper add <arxiv URL>` makes a metadata-only stub; a later fetch (even with a
+    # versioned id) must upgrade THAT record to full text in place, not duplicate it.
+    from opentorus.research.papers import acquire_paper, add_paper, list_papers
+    from opentorus.research.sources.base import SourceRecord
+
+    base = _ws(tmp_path)
+    stub = add_paper(base, "https://arxiv.org/abs/2002.01682")
+    assert not stub.full_text_accessible
+
+    upgraded = acquire_paper(
+        base,
+        SourceRecord(source="arxiv", title="LMP", arxiv_id="2002.01682v1"),  # versioned id
+        downloader=lambda u: b"%PDF fake",
+    )
+    assert upgraded.id == stub.id  # upgraded in place
+    assert upgraded.full_text_accessible is True
+    assert upgraded.local_path
+    assert len(list_papers(base)) == 1  # version mismatch did not create a duplicate
+
+
+def test_describe_fetched_paper_handles_missing_access_note(tmp_path: Path) -> None:
+    from opentorus.research.papers import Paper, describe_fetched_paper
+
+    base = _ws(tmp_path)
+    paper = Paper(
+        id="PAPER-0001",
+        source="2002.01682",
+        source_type="arxiv",
+        arxiv_id="2002.01682",
+        full_text_accessible=False,
+        access_note=None,
+    )
+    line = describe_fetched_paper(base, paper)
+    assert "None" not in line
+    assert "full text not accessible" in line
