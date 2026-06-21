@@ -210,6 +210,10 @@ class VerifiersConfig(BaseModel):
     # optional ``mpmath`` dependency — so it is enabled by default; it reports itself
     # unavailable when mpmath is absent rather than faking rigor.
     interval: bool = True
+    # Symbolic identity/inequality checking via sympy (a core dependency); enabled by
+    # default. Discharges a plain symbolic certificate, returning accepted only on a
+    # symbolic proof and inconclusive otherwise — never faking rigor.
+    sympy: bool = True
     lean_command: str = "lake env lean"
     coq_command: str = "coqc"
     smt_command: str = "z3"
