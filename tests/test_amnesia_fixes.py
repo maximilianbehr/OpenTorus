@@ -55,6 +55,30 @@ def test_proof_write_refines_single_primary_in_place(tmp_path: Path) -> None:
     assert "[GAP-1]" not in body
 
 
+def test_proof_write_accepts_lemmas_as_array(tmp_path: Path) -> None:
+    # Models often pass structured fields as arrays; the tool must coerce, not reject
+    # with "Argument 'lemmas' must be a string".
+    from opentorus.tools.base import validate_tool_args
+
+    base, pid = _problem(tmp_path)
+    tool = ProofWriteTool(base)
+    args = {
+        "problem_id": pid,
+        "title": "Sketch with list lemmas",
+        "theorem": "X holds for all n.",
+        "main_proof": "We bound the residual directly; the estimate gives the result.",
+        "lemmas": ["Lemma A: the residual is monotone.", "Lemma B: the bound is tight."],
+        "scope": "primary",
+    }
+    # The arg validator must not reject the array-typed field.
+    assert validate_tool_args(tool.input_schema, args) is None
+    result = tool.run(ToolCall(id="1", name="proof_write", args=args))
+    assert result.ok
+    proofs = store.list_proof_attempts(base, pid)
+    body = (base / "problems" / pid / proofs[0].body_path).read_text()
+    assert "Lemma A" in body and "Lemma B" in body
+
+
 def test_clip_title_truncates_at_word_boundary() -> None:
     from opentorus.cli.problem import _clip_title
 
