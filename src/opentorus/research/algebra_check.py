@@ -42,6 +42,9 @@ class AlgebraCheckResult(BaseModel):
     claimed_optimizer: str | None = None
     optimizer_is_critical: bool | None = None
     optimizer_derivative_value: str | None = None
+    second_derivative_value: str | None = None
+    extremum_kind: str = "unknown"
+    claimed_extremum: str | None = None
     boundary_candidates: list[str] = Field(default_factory=list)
     verdict: CheckVerdict = "inconclusive"
     detail: str = ""
@@ -54,14 +57,21 @@ def check_optimizer(
     variable: str = "m",
     claimed_optimizer: str | None = None,
     domain: tuple[str, str] | None = None,
+    extremum: str | None = None,
 ) -> AlgebraCheckResult:
     """Check a claimed interior optimizer ``m*`` of an objective ``W(variable)``.
+
+    ``extremum`` ("min" or "max"), when given, is the *kind* of optimum claimed; the
+    second-order condition is then checked and a claimed minimizer that is actually a
+    maximum (or vice versa) is ``rejected``.
 
     Returns a structured result. The verdict is:
 
     * ``rejected`` — the objective is monotone on the domain (so no interior
-      optimum exists), or the claimed ``m*`` does not satisfy ``dW/dm = 0``.
-    * ``consistent`` — the claimed ``m*`` is a genuine interior critical point.
+      optimum exists), the claimed ``m*`` does not satisfy ``dW/dm = 0``, or the
+      second-order condition contradicts the claimed kind of extremum.
+    * ``consistent`` — the claimed ``m*`` is a genuine interior critical point of
+      the claimed kind.
     * ``inconclusive`` — symbolic analysis could not settle the question.
     """
     result = AlgebraCheckResult(
@@ -69,6 +79,7 @@ def check_optimizer(
         variable=variable,
         claimed_optimizer=claimed_optimizer,
         domain=domain,
+        claimed_extremum=extremum,
     )
 
     import sympy as sp
@@ -121,7 +132,9 @@ def check_optimizer(
 
     # Validate any claimed optimizer against the calculus.
     if claimed_optimizer is not None:
-        _evaluate_claimed_optimizer(sp, result, deriv, sym, claimed_optimizer, lo, hi, is_monotone)
+        _evaluate_claimed_optimizer(
+            sp, result, expr, deriv, sym, claimed_optimizer, lo, hi, is_monotone, extremum
+        )
     else:
         if is_monotone:
             result.verdict = "rejected"
@@ -202,9 +215,9 @@ def _infer_monotonicity(sp, deriv, sym, lo, hi, interior_roots):  # noqa: ANN001
 
 
 def _evaluate_claimed_optimizer(  # noqa: ANN001
-    sp, result, deriv, sym, claimed_optimizer, lo, hi, is_monotone
+    sp, result, expr, deriv, sym, claimed_optimizer, lo, hi, is_monotone, extremum
 ) -> None:
-    """Fill the verdict for a claimed optimizer m* against dW/dm and monotonicity."""
+    """Fill the verdict for a claimed optimizer m* against dW/dm, monotonicity, and curvature."""
     try:
         m_star = sp.sympify(claimed_optimizer, locals={str(sym): sym})
     except (sp.SympifyError, SyntaxError, TypeError) as exc:
@@ -245,11 +258,23 @@ def _evaluate_claimed_optimizer(  # noqa: ANN001
         )
         return
     if is_critical:
+        # Second-order condition: classify the stationary point and, if a kind of
+        # extremum was claimed, reject when the curvature contradicts it.
+        kind = _classify_extremum(sp, expr, sym, m_star, result)
+        result.extremum_kind = kind
+        if extremum in ("min", "max"):
+            wanted = "minimum" if extremum == "min" else "maximum"
+            if kind in ("minimum", "maximum") and kind != wanted:
+                result.verdict = "rejected"
+                result.detail = (
+                    f"{sym}* = {claimed_optimizer} is a stationary point but a {kind}, not the "
+                    f"claimed {wanted} (second derivative {result.second_derivative_value})."
+                )
+                return
         result.verdict = "consistent"
+        sense = f" — a {kind}" if kind != "unknown" else ""
         result.detail = (
-            f"The claimed optimizer {sym}* = {claimed_optimizer} satisfies dW/d{sym} = 0; "
-            "it is a genuine stationary point (check the second-order condition for a "
-            "minimum vs maximum)."
+            f"The claimed optimizer {sym}* = {claimed_optimizer} satisfies dW/d{sym} = 0{sense}."
         )
         return
     result.verdict = "inconclusive"
@@ -257,3 +282,22 @@ def _evaluate_claimed_optimizer(  # noqa: ANN001
         f"Could not symbolically decide whether dW/d{sym} vanishes at {claimed_optimizer} "
         f"(value: {dval})."
     )
+
+
+def _classify_extremum(sp, expr, sym, m_star, result) -> str:  # noqa: ANN001
+    """Classify a stationary point via the second derivative; record its value."""
+    try:
+        d2 = sp.simplify(sp.diff(expr, sym, 2).subs(sym, m_star))
+    except (TypeError, ValueError):
+        return "unknown"
+    result.second_derivative_value = str(d2)
+    if not getattr(d2, "is_number", False):
+        return "unknown"
+    try:
+        if d2 > 0:
+            return "minimum"
+        if d2 < 0:
+            return "maximum"
+    except TypeError:
+        return "unknown"
+    return "inflection-or-saddle"
