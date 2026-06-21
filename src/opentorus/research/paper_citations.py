@@ -6,6 +6,16 @@ import json
 import re
 from pathlib import Path
 
+# Unicode hyphens/dashes a model may type in "PAPER-0001" (e.g. U+2011 non-breaking
+# hyphen). Normalize to ASCII before matching so the citation grounding guard is not
+# silently bypassed by typographic hyphens (mirrors nl_proof._HYPHENS).
+_HYPHEN_MAP = {ord(c): "-" for c in "‐‑‒–—―−"}
+
+
+def _normalize_hyphens(text: str) -> str:
+    return text.translate(_HYPHEN_MAP)
+
+
 _PAPER_ID = re.compile(r"PAPER-\d{4}", re.I)
 _THM_NUM = re.compile(r"(\d+(?:\.\d+)*)")
 _THM_LABEL = re.compile(
@@ -121,8 +131,13 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
     if not body.strip():
         return errors, warnings
 
+    # Normalize typographic hyphens so "Paper‑0001" (U+2011) is still validated.
+    body = _normalize_hyphens(body)
     paper_ids = sorted({m.upper() for m in _PAPER_ID.findall(body)})
     for pid in paper_ids:
+        # Unverifiable author/year attribution is independent of parse status.
+        warnings.extend(_year_attribution_warnings(ot_dir, body, pid))
+
         corpus = _paper_corpus(ot_dir, pid)
         if corpus is None:
             errors.append(
@@ -146,3 +161,30 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
             )
 
     return errors, warnings
+
+
+# A year token attached to a PAPER-* mention, e.g. "PAPER-0001 (Kressner, 2020)".
+_YEAR_NEAR = re.compile(r"(?:19|20)\d{2}")
+
+
+def _year_attribution_warnings(ot_dir: Path, body: str, pid: str) -> list[str]:
+    """Warn when a proof attaches an author/year a local artifact cannot confirm.
+
+    A specific year tied to a ``PAPER-*`` whose metadata records no (matching) year is
+    an unverifiable attribution (the "Kressner & Tobler, 2020" class). Non-blocking: it
+    surfaces invented authorship without rejecting an otherwise-grounded proof.
+    """
+    from opentorus.research.papers import get_paper
+
+    paper = get_paper(ot_dir, pid)
+    meta_year = str(paper.year) if (paper and paper.year) else None
+    cited: set[str] = set()
+    for match in re.finditer(re.escape(pid), body, re.I):
+        window = body[match.start() : min(len(body), match.end() + 40)]
+        cited.update(y for y in _YEAR_NEAR.findall(window) if y != meta_year)
+    if not cited:
+        return []
+    return [
+        f"{pid} is attributed a year ({', '.join(sorted(cited))}) the local metadata "
+        "does not record — verify against the source; do not invent author/year."
+    ]

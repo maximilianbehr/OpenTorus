@@ -530,9 +530,12 @@ _DOUBLE_DOLLAR_RE = re.compile(r"\$\$([^$]+)\$\$", re.DOTALL)
 def _fix_corrupted_latex(body: str) -> str:
     """Repair common PDF/OCR corruptions and display-math delimiters in LaTeX fragments."""
     body = _normalize_unicode(body)
+    # Collapse display delimiters to inline as balanced pairs ($$…$$ -> $…$). Do NOT
+    # blindly replace every "$$" with "$": that strips one delimiter from any display
+    # block the paired regex did not catch, leaving odd '$' parity that aborts pdflatex.
     body = _DOUBLE_DOLLAR_RE.sub(lambda m: f"${m.group(1).strip()}$", body)
     body = _CORRUPTED_NORM.sub(r"\\|", body)
-    body = body.replace(r"\$$", "$").replace("$$", "$")
+    body = body.replace(r"\$$", "$")
     return body
 
 

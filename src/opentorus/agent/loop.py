@@ -87,10 +87,12 @@ _LIT_RECOVERY_HINT_AFTER_TOOLS = (
     "Do NOT call proof_write or end with a summary yet."
 )
 
-# Literature / paper inventory tools are never repeat-blocked — only step budget limits usage.
-_REPEAT_GUARD_EXEMPT = frozenset({"lit_search", "paper_fetch", "paper_read", "paper_list"})
+# Literature search/fetch tools are never repeat-blocked — their results can change,
+# so only the step budget limits usage. paper_read is NOT exempt: reading an
+# already-parsed note is idempotent, so a repeat is re-served from cache (see below).
+_REPEAT_GUARD_EXEMPT = frozenset({"lit_search", "paper_fetch", "paper_list"})
 
-_REPEAT_GUARD_TOOLS = frozenset({"glob_files", "read_file", "list_files", "status"})
+_REPEAT_GUARD_TOOLS = frozenset({"glob_files", "read_file", "list_files", "status", "paper_read"})
 
 
 def _tool_sig(name: str, args: dict) -> str:
@@ -626,9 +628,9 @@ class AgentLoop:
             # its content may have been compacted out of context, so re-serve the
             # cached content (with a nudge) rather than hard-blocking — which would
             # otherwise strand the agent, unable to recover a file it already read.
-            if name == "read_file" and sig in self._read_cache:
+            if name in ("read_file", "paper_read") and sig in self._read_cache:
                 return (
-                    f"(Already read this file earlier in the run; re-showing the "
+                    f"(Already read this earlier in the run; re-showing the "
                     f"cached content — then produce the deliverable: {deliverable}.)\n\n"
                     f"{self._read_cache[sig]}"
                 )
@@ -672,11 +674,17 @@ class AgentLoop:
             self._tool_sigs_ok.add(sig)
         if name == "read_file":
             path = str(args.get("path", "")).strip()
-            if path and (not result.ok or result.content.startswith("Not a file")):
+            # Only a genuinely missing file is a "fail path"; a policy refusal of an
+            # existing protected artifact must not be mislabeled "missing" (which would
+            # wrongly steer the model to write_file).
+            if path and result.content.startswith("Not a file"):
                 self._read_fail_paths.add(path)
             elif result.ok:
                 # Cache so a later repeat can be re-served instead of blocked.
                 self._read_cache[sig] = result.content
+        elif name == "paper_read" and result.ok:
+            # Idempotent retrieval of a parsed note: cache for re-serve on repeat.
+            self._read_cache[sig] = result.content
         if result.ok and tool.permission == "write":
             self.edited = True
         elif result.ok and name in ("exp_run", "exp_new", "proof_write"):

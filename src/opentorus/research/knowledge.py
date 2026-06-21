@@ -99,6 +99,8 @@ def link_paper_to_claim(
     if find_paper(ot_dir, paper_id) is None:
         raise OpenTorusError(f"No local paper with id '{paper_id}'.")
 
+    from opentorus.research.dossier.store import get_active_problem
+
     evidence, advisory = add_evidence(
         ot_dir,
         claim_id,
@@ -107,6 +109,7 @@ def link_paper_to_claim(
         summary=summary,
         direction=direction,
         strength=strength,
+        problem_id=get_active_problem(ot_dir),
     )
     relation = "contradicts" if direction == "contradicts" else "supports"
     edge = add_edge(ot_dir, paper_id, claim_id, relation, rationale=summary)

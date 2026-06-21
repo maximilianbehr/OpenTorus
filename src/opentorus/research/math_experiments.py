@@ -203,6 +203,7 @@ def record_bounds_evidence(ot_dir: Path, claim_id: str, result: VerifiedBounds |
     evidence over the whole domain; a non-excluding rigorous bound is *moderate*;
     a sampled fallback is *weak* and explicitly not a bound.
     """
+    from opentorus.research.dossier.store import get_active_problem
     from opentorus.research.evidence import add_evidence
 
     if isinstance(result, VerifiedBounds):
@@ -223,6 +224,7 @@ def record_bounds_evidence(ot_dir: Path, claim_id: str, result: VerifiedBounds |
         direction="supports",
         strength=strength,
         limitations=limitations,
+        problem_id=get_active_problem(ot_dir),
     )
 
 
@@ -232,6 +234,7 @@ def record_search_evidence(ot_dir: Path, claim_id: str, result: CounterexampleRe
     A found counterexample is strong *contradicting* evidence; a clean bounded
     search is *weak supporting* evidence (bounded, explicitly not a proof).
     """
+    from opentorus.research.dossier.store import get_active_problem
     from opentorus.research.evidence import add_evidence
 
     if result.found:
@@ -246,6 +249,7 @@ def record_search_evidence(ot_dir: Path, claim_id: str, result: CounterexampleRe
         direction=direction,
         strength=strength,
         limitations=[] if result.found else ["bounded search only", "not a proof"],
+        problem_id=get_active_problem(ot_dir),
     )
 
 

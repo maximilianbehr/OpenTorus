@@ -270,3 +270,26 @@ def test_dedup_across_overlapping_sources(monkeypatch) -> None:  # noqa: ANN001
     )
     results = search_all(default_config(), "anything")
     assert len(results) == 1  # case-insensitive DOI dedup removes the overlap
+
+
+def test_validate_citations_normalizes_unicode_hyphen_in_paper_id(tmp_path) -> None:
+    # H1: "Paper‑0001" with a U+2011 non-breaking hyphen must still be grounded
+    # (previously the ASCII-only PAPER-id regex silently skipped it).
+    from opentorus.research.paper_citations import validate_proof_citations
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    errors, _ = validate_proof_citations(ot, "By Paper‑0001 the result follows.")
+    assert any("PAPER-0001" in e for e in errors)  # the U+2011 id was validated
+
+
+def test_validate_citations_warns_on_unverifiable_year(tmp_path) -> None:
+    # M5: a year attribution a local artifact cannot confirm is flagged (non-blocking).
+    from opentorus.research.paper_citations import validate_proof_citations
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    _, warnings = validate_proof_citations(ot, "PAPER-0001 (Kressner & Tobler, 2020 survey).")
+    assert any("2020" in w for w in warnings)

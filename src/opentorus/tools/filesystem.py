@@ -108,6 +108,22 @@ def _listing_blocked_message(user_path: str, parts: tuple[str, ...]) -> str | No
     return None
 
 
+def _write_blocked_message(user_path: str, parts: tuple[str, ...]) -> str | None:
+    """Refuse writes into internal OpenTorus state.
+
+    Only dossier files and task cards (the agent-readable subtrees) may be written
+    directly; the papers cache, memory, summaries, and session logs are managed by
+    the dedicated artifact tools, mirroring the read guard so protection is symmetric.
+    """
+    if parts and parts[0] == WORKSPACE_DIRNAME and not _under_opentorus_agent_readable(parts):
+        return (
+            f"Refusing to write '{user_path}' into internal OpenTorus state. Use the "
+            "dedicated tools (claim_new, evidence_add, proof_write, exp_new, memory_add) "
+            "for artifacts, or write project files outside .opentorus/."
+        )
+    return None
+
+
 def _read_blocked_message(user_path: str, parts: tuple[str, ...]) -> str | None:
     if parts and parts[-1] in _IGNORE_FILE_NAMES:
         return (
@@ -271,6 +287,9 @@ def read_file(
 def write_file(root: Path, user_path: str, content: str) -> Path:
     """Write ``content`` to ``user_path`` (path-safety enforced)."""
     target = resolve_workspace_path(root, user_path)
+    blocked = _write_blocked_message(user_path, _relative_parts(root, target))
+    if blocked:
+        raise OpenTorusError(blocked)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return target
@@ -322,6 +341,9 @@ def apply_patch(root: Path, user_path: str, old: str, new: str) -> str:
     ambiguous (appears more than once).
     """
     target = resolve_workspace_path(root, user_path)
+    blocked = _write_blocked_message(user_path, _relative_parts(root, target))
+    if blocked:
+        raise OpenTorusError(blocked)
     if not target.is_file():
         raise OpenTorusError(f"Not a file: {user_path}")
     original = _read_utf8_text(target, user_path)
