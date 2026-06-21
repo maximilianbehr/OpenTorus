@@ -49,6 +49,7 @@ def export_problem(
     provider: BaseProvider | None = None,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
+    allow_overclaims: bool = False,
 ) -> ProblemExportResult:
     """Write merged Markdown (and optionally LLM-composed PDF) for a problem dossier."""
     pid = problem_id.strip().upper()
@@ -110,6 +111,7 @@ def export_problem(
                     provider=provider,
                     compose_llm=compose_llm,
                     hooks=hooks,
+                    allow_overclaims=allow_overclaims,
                 )
                 written_pdf = target
                 written_tex = tex_target

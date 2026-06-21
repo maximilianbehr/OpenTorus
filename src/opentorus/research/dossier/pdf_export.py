@@ -1228,6 +1228,70 @@ def tex_available() -> bool:
     return bool(_available_latex_engines())
 
 
+_MATH_ENV_RE = re.compile(
+    r"\\begin\{(equation|align|gather|multline|displaymath|math)\*?\}.*?"
+    r"\\end\{\1\*?\}",
+    re.DOTALL,
+)
+_MATH_SPAN_RE = re.compile(r"\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\)", re.DOTALL)
+_LATEX_CMD_RE = re.compile(r"\\[a-zA-Z]+\*?")
+
+
+def _latex_to_prose(document: str) -> str:
+    """Strip math and LaTeX commands so the honesty linter sees only narrative prose.
+
+    Overclaim phrases ("we prove", "provably") live in prose, never inside math, so
+    removing math spans/environments and command tokens avoids false positives while
+    still catching narrative overclaiming.
+    """
+    text = _MATH_ENV_RE.sub(" ", document)
+    text = _MATH_SPAN_RE.sub(" ", text)
+    text = _LATEX_CMD_RE.sub(" ", text)
+    return text.replace("{", " ").replace("}", " ").replace("%", " ")
+
+
+def enforce_export_honesty(
+    ot_dir: Path, problem_id: str, document: str, *, allow_overclaims: bool = False
+) -> None:
+    """Refuse a composed PDF that overclaims or exports an INVALID-status dossier.
+
+    The model-composed LaTeX can reintroduce overclaims the honest ``report.md`` does
+    not contain. This runs the artifact-aware honesty linter over the composed prose
+    (with the dossier's own licensing context) and refuses to emit the PDF on a hard,
+    unlicensed proof/result/experiment claim, or when the derived status is INVALID —
+    unless ``allow_overclaims`` overrides. The caller then falls back to the honest
+    HTML report.
+    """
+    if allow_overclaims:
+        return
+    from opentorus.research.dossier.honesty import lint_report
+    from opentorus.research.dossier.report import honesty_context
+    from opentorus.research.dossier.status_gate import derive_status
+
+    has_p, has_r, has_t = honesty_context(ot_dir, problem_id)
+    issues = lint_report(
+        _latex_to_prose(document),
+        has_verified_proof=has_p,
+        has_reference=has_r,
+        has_supported_theorem=has_t,
+    )
+    hard = [
+        i for i in issues if i.kind.value in ("experiment_proof", "proof_claim", "result_claim")
+    ]
+    reasons: list[str] = []
+    if hard:
+        phrases = "; ".join(f"'{i.phrase}'" for i in hard[:5])
+        reasons.append(f"{len(hard)} unlicensed overclaim(s) in the composed PDF ({phrases})")
+    if derive_status(ot_dir, problem_id).status == "INVALID":
+        reasons.append("the dossier's derived status is INVALID")
+    if reasons:
+        raise OpenTorusError(
+            "Refusing to emit the PDF because " + "; ".join(reasons) + ". Fix the wording or "
+            "back the claims, or pass --force to override (the honest HTML report is written "
+            "instead)."
+        )
+
+
 def latex_lint(document: str) -> list[str]:
     """Cheap structural pre-compile checks that catch common opaque-failure causes.
 
@@ -1326,6 +1390,7 @@ def compose_and_render_pdf(
     provider: BaseProvider | None = None,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
+    allow_overclaims: bool = False,
 ) -> Path:
     """Build a preprint PDF with model-composed LaTeX (a model is required).
 
@@ -1389,6 +1454,10 @@ def compose_and_render_pdf(
     # whole-document model narrative, then deterministic structure + per-proof model conversion.
     for idx, use_llm in enumerate((True, False)):
         document = _document(use_llm=use_llm)
+        # Refuse to typeset a PDF that overclaims relative to the artifacts (the model
+        # may reintroduce proof language) or an INVALID-status dossier; the caller then
+        # falls back to the honest HTML report unless --force was passed.
+        enforce_export_honesty(ot_dir, problem_id, document, allow_overclaims=allow_overclaims)
         target_tex.write_text(document, encoding="utf-8")
         last_lint = latex_lint(document)
         if last_lint and hooks and hooks.on_progress:

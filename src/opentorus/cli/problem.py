@@ -744,6 +744,11 @@ def problem_export(
         "--no-refresh",
         help="Use existing report.md instead of rebuilding from artifacts.",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Emit the PDF even if it overclaims or the dossier status is INVALID.",
+    ),
 ) -> None:
     """Export dossier report + proof sketches as merged Markdown (and optional PDF)."""
     from opentorus.errors import ProviderError
@@ -798,6 +803,7 @@ def problem_export(
             provider=provider,
             compose_llm=not no_llm,
             hooks=hooks,
+            allow_overclaims=force,
         )
     except OpenTorusError as exc:
         console.print(f"[red]{exc}[/red]")
