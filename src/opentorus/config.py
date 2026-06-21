@@ -142,7 +142,10 @@ class EnvironmentConfig(BaseModel):
 class ContextConfig(BaseModel):
     retrieval_enabled: bool = True
     top_k: int = 5
-    history_turns: int = 10
+    # Recent session turns replayed verbatim into each request's context. Larger keeps
+    # the model aware of earlier papers/claims/proof steps (less amnesia); it is bounded
+    # by token_budget, which triggers compaction when the assembled context grows too big.
+    history_turns: int = 50
     # History token budget before compaction. Must comfortably hold the system head
     # (statement + artifact inventory) plus a few paper reading notes (~900 tokens each)
     # and the current proof; a value too small (e.g. 6000) forces a compaction nearly
