@@ -39,6 +39,7 @@ class ProveOutcome:
     harvested_claims: list[str] | None = None
     gaps_remaining: int = 0
     gap_fill_exhausted: bool = False
+    referee_verdict: str | None = None
 
 
 def latest_proof_gap_count(ot_dir: Path, problem_id: str) -> int:
@@ -712,6 +713,17 @@ def run_prove(
         new_proofs = after[-1:]
 
     gap_count = sum(len(p.gaps) for p in new_proofs)
+
+    # Hostile referee: classify claims, lint proof bodies, gate. Persisted as a
+    # REFEREE-* artifact so `problem report` surfaces the verdict. Never fatal.
+    referee_verdict: str | None = None
+    try:
+        from opentorus.research.dossier.referee import referee_review
+
+        referee_verdict = referee_review(ot_dir, pid).verdict
+    except Exception:  # noqa: BLE001 - the referee must never break the prove run
+        referee_verdict = None
+
     lint_issues = 0
     report_path = store.dossier_dir(ot_dir, pid) / "report.md"
     if report_path.is_file():
@@ -770,4 +782,5 @@ def run_prove(
         harvested_claims=harvest_outcome.claim_ids if harvest_outcome else None,
         gaps_remaining=gaps_remaining,
         gap_fill_exhausted=gap_fill_exhausted,
+        referee_verdict=referee_verdict,
     )
