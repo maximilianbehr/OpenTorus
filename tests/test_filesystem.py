@@ -213,3 +213,51 @@ def test_write_file_allows_dossier_and_project_files(tmp_path: Path) -> None:
     (tmp_path / ".opentorus" / "problems" / "PROBLEM-0001").mkdir(parents=True)
     write_file(tmp_path, ".opentorus/problems/PROBLEM-0001/notes.md", "ok")  # dossier file
     write_file(tmp_path, "analysis.md", "ok")  # project file outside .opentorus
+
+
+def _ws_with_dossier(tmp_path: Path) -> tuple[Path, str]:
+    """A workspace with one dossier whose PROOF-0001 exists; returns (root, pid)."""
+    from opentorus.research.dossier import claims, store
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    base = workspace_dir(tmp_path)
+    pid = store.create_dossier(base, "Prove X holds for all n.").id
+    claims.add_proof_attempt(
+        base,
+        pid,
+        title="sketch",
+        body="We bound the residual directly. [GAP-1] constant.",
+        kind="sketch",
+    )
+    return tmp_path, pid
+
+
+def test_read_file_recovers_bare_dossier_path(tmp_path: Path) -> None:
+    # The agent drops the .opentorus/problems/PROBLEM-XXXX/ prefix; read_file resolves
+    # it against the active dossier instead of failing with "Not a file".
+    root, pid = _ws_with_dossier(tmp_path)
+    out = read_file(root, "proof_attempts/PROOF-0001.md")
+    assert "GAP-1" in out
+    assert "missing its dossier prefix" in out  # note points to the full path
+
+
+def test_list_files_bare_dossier_path_hints(tmp_path: Path) -> None:
+    root, pid = _ws_with_dossier(tmp_path)
+    with pytest.raises(OpenTorusError) as exc:
+        list_files(root, "proof_attempts")
+    assert pid in str(exc.value) and "did you mean" in str(exc.value).lower()
+
+
+def test_glob_files_bare_dossier_path_hints(tmp_path: Path) -> None:
+    root, pid = _ws_with_dossier(tmp_path)
+    with pytest.raises(OpenTorusError) as exc:
+        glob_files(root, "*.md", "proof_attempts")
+    assert pid in str(exc.value)
+
+
+def test_no_recovery_without_a_single_active_dossier(tmp_path: Path) -> None:
+    # With no workspace/dossier, a bare path just fails normally (no misleading hint).
+    with pytest.raises(OpenTorusError) as exc:
+        read_file(tmp_path, "proof_attempts/PROOF-0001.md")
+    assert "did you mean" not in str(exc.value).lower()
