@@ -235,3 +235,22 @@ def test_paper_fetch_auto_reads_cached_pdf(tmp_path: Path, monkeypatch) -> None:
     assert result.ok is True
     assert "Reading note" in result.content
     assert is_paper_parsed(ot, paper) is True
+
+
+def test_normalize_gap_args_handles_dicts_and_dedupes() -> None:
+    # Models pass gaps as structured dicts; they must become clean "[GAP-n] desc"
+    # strings (not "{'description':…}" reprs) so explicit_gaps can dedupe them
+    # against body markers instead of double-counting.
+    from opentorus.research.dossier.nl_proof import explicit_gaps
+    from opentorus.tools.research import _normalize_gap_args
+
+    raw = [
+        {"id": "GAP-1", "description": "Formal proof of residual link"},
+        {"id": "GAP-2", "description": "Quantitative bound"},
+    ]
+    norm = _normalize_gap_args(raw)
+    assert norm == ["[GAP-1] Formal proof of residual link", "[GAP-2] Quantitative bound"]
+    assert not any(s.startswith("{") for s in norm)  # no dict reprs
+
+    merged = explicit_gaps(gaps=norm, body="Main argument [GAP-1] and [GAP-2]; new [GAP-3].")
+    assert len(merged) == 3  # GAP-1/GAP-2 deduped, GAP-3 added once (no doubling)

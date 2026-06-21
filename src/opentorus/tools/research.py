@@ -53,6 +53,49 @@ def _as_str_list(value: object) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _normalize_gap_args(value: object) -> list[str]:
+    """Coerce the proof_write ``gaps`` arg into clean ``"[GAP-n] description"`` strings.
+
+    Models often pass gaps as structured objects (``{"id": "GAP-1", "description":
+    "…"}``) or a JSON-encoded string of them. Stringifying those directly yields ugly
+    ``{'description': …}`` reprs that also carry no ``[GAP-n]`` marker, so the body-marker
+    dedup in :func:`explicit_gaps` cannot collapse them and the gap count doubles. Here
+    we extract id+description so each gap is a single, dedup-able string.
+    """
+    items: object = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text[0] in "[{":
+            try:
+                items = json.loads(text)
+            except (ValueError, TypeError):
+                items = [text]
+        else:
+            items = [ln for ln in text.splitlines() if ln.strip()]
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, (list, tuple)):
+        items = [items]
+
+    out: list[str] = []
+    for gap in items:
+        if isinstance(gap, dict):
+            gid = str(gap.get("id") or "").strip()
+            desc = str(gap.get("description") or gap.get("text") or "").strip()
+            if gid:
+                marker = gid if gid.startswith("[") else f"[{gid}]"
+                out.append(f"{marker} {desc}".strip())
+            elif desc:
+                out.append(desc)
+        else:
+            s = str(gap).strip()
+            if s:
+                out.append(s)
+    return out
+
+
 def _paper_line(paper, ot_dir: Path | None = None) -> str:
     from opentorus.research.papers import format_paper_agent_line
 
@@ -833,7 +876,7 @@ class ProofWriteTool(Tool):
             )
 
         kind = str(call.args.get("kind", "sketch")).strip() or "sketch"
-        gaps = explicit_gaps(gaps=_as_str_list(call.args.get("gaps")), body=body)
+        gaps = explicit_gaps(gaps=_normalize_gap_args(call.args.get("gaps")), body=body)
         claim_links = _as_str_list(call.args.get("claim_ids"))
 
         try:
