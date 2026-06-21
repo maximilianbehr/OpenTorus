@@ -139,7 +139,12 @@ class ContextConfig(BaseModel):
     retrieval_enabled: bool = True
     top_k: int = 5
     history_turns: int = 10
-    token_budget: int = 6000
+    # History token budget before compaction. Must comfortably hold the system head
+    # (statement + artifact inventory) plus a few paper reading notes (~900 tokens each)
+    # and the current proof; a value too small (e.g. 6000) forces a compaction nearly
+    # every turn during proof work, which adds summarization calls and induces amnesia.
+    # Well within modern model context windows; lower it for small local models.
+    token_budget: int = 24000
     compaction_enabled: bool = True
     # Persistently rewrite session.jsonl when history exceeds this fraction of token_budget.
     compaction_threshold: float = Field(default=0.85, ge=0.1, le=1.0)

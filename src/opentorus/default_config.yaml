@@ -101,7 +101,10 @@ context:
   retrieval_enabled: true
   top_k: 5
   history_turns: 10
-  token_budget: 6000
+  # History token budget before compaction. Hold the system head + a few paper reading
+  # notes (~900 tokens each) + the current proof; too small (e.g. 6000) forces a
+  # compaction nearly every turn during proof work. Lower it for small local models.
+  token_budget: 24000
   compaction_enabled: true
   # Persistently compact session.jsonl when history exceeds this fraction of token_budget
   compaction_threshold: 0.85
