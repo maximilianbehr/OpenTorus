@@ -358,7 +358,11 @@ class LlmTraceSession:
         self._user_on_text = user_on_text
         self._indicator = indicator
         self._step = 0
-        self._seen_messages = 0
+        # Content signatures of messages already shown. The provider message list
+        # is rebuilt (and windowed) each turn rather than appended to, so a simple
+        # index slice would misreport genuinely-new tool/user turns as "no new
+        # context"; track by content instead.
+        self._seen_sigs: set[str] = set()
         self._banner: str | None = None
         self._tools_shown = False
         self._stream_prefix_printed = False
@@ -381,8 +385,17 @@ class LlmTraceSession:
         self._thinking_prefix_printed = False
         self._streamed_chars = 0
 
-        new_messages = messages[self._seen_messages :]
-        self._seen_messages = len(messages)
+        def _sig(message: Any) -> str:
+            role = getattr(message, "role", "?")
+            content = getattr(message, "content", "") or ""
+            tool_calls = ""
+            meta = getattr(message, "metadata", None)
+            if isinstance(meta, dict):
+                tool_calls = str(meta.get("tool_calls", ""))
+            return f"{role}\x00{content}\x00{tool_calls}"
+
+        new_messages = [m for m in messages if _sig(m) not in self._seen_sigs]
+        self._seen_sigs.update(_sig(m) for m in messages)
 
         header_parts = [f"Step {self._step}", f"context {len(messages)} msgs"]
         if self._banner:

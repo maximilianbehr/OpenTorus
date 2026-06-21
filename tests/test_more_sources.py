@@ -206,9 +206,19 @@ def test_parse_ads() -> None:
 def test_default_sources_include_free_field_connectors() -> None:
     config = default_config()
     names = {s.name for s in available_sources(config)}
-    assert {"dblp", "zbmath", "europepmc", "biorxiv", "medrxiv"} <= names
+    assert {"dblp", "zbmath"} <= names
+    # Biomedical servers are off by default (OpenTorus targets open math problems).
+    assert {"europepmc", "biorxiv", "medrxiv"}.isdisjoint(names)
     # Keyed sources stay out without a key.
     assert "ads" not in names
+
+
+def test_biomedical_sources_enable_when_configured() -> None:
+    config = default_config()
+    config.tools.literature.europepmc = True
+    config.tools.literature.biorxiv = True
+    names = {s.name for s in available_sources(config)}
+    assert {"europepmc", "biorxiv", "medrxiv"} <= names
 
 
 def test_ads_enabled_only_with_key() -> None:

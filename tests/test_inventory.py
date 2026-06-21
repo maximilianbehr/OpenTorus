@@ -76,3 +76,33 @@ def test_inventory_lists_root_python_scripts(tmp_path: Path) -> None:
     assert result.ok
     assert "Research artifacts:" in result.content
     assert "PAPER-0001" in result.content
+
+
+def test_inventory_lists_recent_claims_with_statements(tmp_path: Path) -> None:
+    # Claims must appear with id + status + statement (not just a count) so the
+    # agent does not forget or doubt claims it created earlier in a long run.
+    from opentorus.research.claims import new_claim
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    new_claim(ot, "The restart-cost ratio is bounded by two.")
+    inv = gather_artifact_inventory(tmp_path, ot)
+    assert inv.workspace_claims == 1
+    assert any("CLAIM-0001" in line and "restart-cost ratio" in line for line in inv.claim_lines)
+    text = format_artifact_inventory(inv)
+    assert "CLAIM: CLAIM-0001" in text
+    assert "restart-cost ratio" in text
+
+
+def test_build_messages_anchors_goal_as_system_message(tmp_path: Path) -> None:
+    # The run's task must be anchored as a persistent system message so it does not
+    # scroll out of the windowed history on a long autonomous run.
+    from opentorus.agent.context import build_messages
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    goal = "Produce a natural-language proof sketch for PROBLEM-0002 with explicit gaps."
+    messages = build_messages(tmp_path, ot, default_config(), ["status"], goal=goal)
+    system_text = "\n".join(m.content for m in messages if m.role == "system")
+    assert "Current task" in system_text
+    assert "PROBLEM-0002" in system_text

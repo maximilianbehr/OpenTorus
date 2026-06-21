@@ -190,3 +190,13 @@ def test_read_file_unknown_problem_lists_valid_ids(tmp_path: Path) -> None:
         read_file(tmp_path, ".opentorus/problems/PROBLEM-9027/statement.md")
     assert "PROBLEM-0001" in str(exc.value)
     assert "Existing problem dossiers" in str(exc.value)
+
+
+def test_read_file_paper_pdf_points_to_paper_read(tmp_path: Path) -> None:
+    # Reading a cached paper PDF under .opentorus/papers/ is refused, and the
+    # message must point to paper_read (the correct tool), not a generic hint.
+    papers = tmp_path / ".opentorus" / "papers" / "PAPER-0002"
+    papers.mkdir(parents=True)
+    (papers / "paper.pdf").write_bytes(b"%PDF-1.4 fake")
+    with pytest.raises(OpenTorusError, match=r'paper_read\("PAPER-0002"\)'):
+        read_file(tmp_path, ".opentorus/papers/PAPER-0002/paper.pdf")

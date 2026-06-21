@@ -9,6 +9,7 @@ parsed into structure + reading notes automatically (``pypdf`` is a core depende
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -186,6 +187,24 @@ def _is_url(source: str) -> bool:
     return source.startswith(("http://", "https://"))
 
 
+_ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/(?P<id>[^\s?#]+)", re.IGNORECASE)
+
+
+def _arxiv_id_from_url(url: str) -> str | None:
+    """Extract a bare arXiv id from an arxiv.org URL (abs or pdf, version stripped).
+
+    ``https://arxiv.org/abs/2002.01682v2`` and ``.../pdf/2002.01682.pdf`` both yield
+    ``2002.01682``. Populating this on ``paper add`` lets a later ``paper_fetch`` of
+    the same id deduplicate instead of creating a second PAPER-* record.
+    """
+    match = _ARXIV_URL_RE.search(url)
+    if not match:
+        return None
+    ident = match.group("id").removesuffix(".pdf")
+    ident = re.sub(r"v\d+$", "", ident)
+    return ident or None
+
+
 def list_papers(ot_dir: Path) -> list[Paper]:
     base = papers_dir(ot_dir)
     if not base.is_dir():
@@ -247,14 +266,31 @@ def ingest_inbox(ot_dir: Path, root: Path) -> list[Paper]:
 
 
 def add_paper(ot_dir: Path, source: str) -> Paper:
-    """Register a local PDF (copied + hash-pinned) or a URL (unpinned)."""
+    """Register a local PDF (copied + hash-pinned) or a URL (unpinned).
+
+    An arXiv URL is recognized and its id recorded so a later ``paper_fetch`` of
+    the same id reuses this record instead of creating a duplicate; if the id is
+    already registered, the existing paper is returned unchanged.
+    """
     existing = list_papers(ot_dir)
+    arxiv_id = _arxiv_id_from_url(source) if _is_url(source) else None
+    if arxiv_id:
+        for paper in existing:
+            if (paper.arxiv_id or "").strip() == arxiv_id:
+                return paper
+
     paper_id = next_sequential_id("PAPER", len(existing))
     paper_dir = papers_dir(ot_dir) / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
 
     if _is_url(source):
-        paper = Paper(id=paper_id, source=source, source_type="url", pinned=False)
+        paper = Paper(
+            id=paper_id,
+            source=source,
+            source_type="arxiv" if arxiv_id else "url",
+            arxiv_id=arxiv_id,
+            pinned=False,
+        )
     else:
         src_path = Path(source).expanduser()
         if not src_path.is_file():

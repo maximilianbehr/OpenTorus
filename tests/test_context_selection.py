@@ -60,3 +60,32 @@ def test_no_query_means_no_selection(tmp_path: Path) -> None:
     ot = _ws(tmp_path)
     _seed(ot)
     assert select_relevant(ot, default_config(), None) == []
+
+
+def test_select_relevant_survives_embedding_failure(tmp_path: Path, monkeypatch) -> None:
+    # A flaky embeddings/index backend must never crash the agent: select_relevant
+    # degrades to no retrieval and trips a circuit breaker for the rest of the run.
+    import opentorus.agent.context as context
+
+    ot = _ws(tmp_path)
+    _seed(ot)
+    monkeypatch.setattr(context, "_retrieval_disabled", False)
+
+    def _boom(*args, **kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("opentorus.research.index.hybrid_search", _boom)
+    config = default_config()
+    # First call hits the failure, returns [] instead of raising, trips the breaker.
+    assert select_relevant(ot, config, "latency") == []
+    assert context._retrieval_disabled is True
+    # Subsequent calls skip retrieval entirely (no repeated timeout).
+    calls = {"n": 0}
+
+    def _count(*args, **kwargs):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr("opentorus.research.index.hybrid_search", _count)
+    assert select_relevant(ot, config, "latency") == []
+    assert calls["n"] == 0  # breaker prevents re-calling the backend

@@ -132,8 +132,10 @@ tools:
     semantic_scholar: true
     dblp: true
     zbmath: true
-    europepmc: true
-    biorxiv: true
+    # Biomedical servers — off by default (OpenTorus targets open math problems;
+    # they only add 503s/timeouts for math/CS queries). Enable for biomedical work.
+    europepmc: false
+    biorxiv: false
     # Keyed sources (enable only after setting the matching *_api_key)
     springer: false
     ieee: false
