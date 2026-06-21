@@ -9,6 +9,7 @@ import pytest
 from opentorus.errors import OpenTorusError
 from opentorus.research.claims import get_claim, new_claim
 from opentorus.research.evidence import add_evidence, get_evidence, list_evidence
+from opentorus.research.experiments import new_experiment, run_experiment
 from opentorus.workspace import init_workspace, workspace_dir
 
 
@@ -20,11 +21,14 @@ def _ws(tmp_path: Path) -> Path:
 def test_add_and_list_evidence_for_claim(tmp_path: Path) -> None:
     ot = _ws(tmp_path)
     claim = new_claim(ot, "Caching helps")
+    # A cited experiment must exist and have run to completion; create + run it first.
+    exp = new_experiment(ot, "latency sweep")
+    run_experiment(ot, exp.id)
     ev, advisory = add_evidence(
         ot,
         claim.id,
         source_type="experiment",
-        source_id="EXP-0001",
+        source_id=exp.id,
         summary="latency dropped",
         direction="supports",
         strength="moderate",
@@ -34,6 +38,25 @@ def test_add_and_list_evidence_for_claim(tmp_path: Path) -> None:
     listed = list_evidence(ot, claim.id)
     assert len(listed) == 1
     assert get_evidence(ot, ev.id) is not None
+
+
+def test_cite_nonexistent_experiment_rejected(tmp_path: Path) -> None:
+    # Citing an EXP-* that was never created (a hallucinated id) is rejected:
+    # evidence must point at a real artifact, never an invented one.
+    ot = _ws(tmp_path)
+    claim = new_claim(ot, "Caching helps")
+    with pytest.raises(OpenTorusError):
+        add_evidence(ot, claim.id, source_type="experiment", source_id="EXP-9999")
+
+
+def test_cite_unrun_experiment_advises(tmp_path: Path) -> None:
+    # A real but not-yet-run experiment may be cited, but the advisory flags that
+    # its results do not exist yet.
+    ot = _ws(tmp_path)
+    claim = new_claim(ot, "Caching helps")
+    exp = new_experiment(ot, "planned sweep")
+    _, advisory = add_evidence(ot, claim.id, source_type="experiment", source_id=exp.id)
+    assert advisory is not None and "not run" in advisory.lower()
 
 
 def test_contradictory_evidence_preserved_and_advised(tmp_path: Path) -> None:

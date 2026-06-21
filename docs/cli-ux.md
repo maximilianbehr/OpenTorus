@@ -69,6 +69,7 @@ Markdown extraction defaults to the **LLM** path.
 | Datasets & code | `data fetch/list/link`, `repo clone/test/list` |
 | Knowledge & index | `index build/status/search`, `kb promote/query/stale` |
 | Research | `research`, `journal …`, `review run/list/resolve/gate` |
+| Integrity | `problem referee [--apply-downgrades] [--json]`, `check-algebra` |
 | Execution | `env list/verify/pin` |
 | Authoring | `problem report/export`, `paper compile`, `pack export/reproduce/notebook` |
 | Sessions | `replay last/session`, `export`, `import` |
@@ -81,7 +82,9 @@ Markdown extraction defaults to the **LLM** path.
   diffed and scripted.
 - **Exit codes**: `0` on success, non-zero on failure. Quality gates
   (`opentorus check`) and verification commands exit non-zero when they fail, so
-  they compose in CI.
+  they compose in CI. The integrity checks follow this too: `check-algebra` exits
+  `2` when it rejects a claim (e.g. a false interior optimum), and `problem
+  referee` exits `2` on a `block` verdict.
 - **Errors are structured**: a failed shell command prints the command, exit
   code, a short stderr summary, the likely cause, and a suggested next action.
 - **Honest reporting**: when a capability is unavailable (no container runtime,

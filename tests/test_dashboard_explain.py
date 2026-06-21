@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from opentorus.research.claims import new_claim, update_claim
 from opentorus.research.evidence import add_evidence
+from opentorus.research.experiments import new_experiment
 from opentorus.research.explain import (
     artifact_kind,
     build_dashboard_html,
@@ -32,6 +33,8 @@ def test_explain_returns_provenance_subgraph_with_contradiction(tmp_path) -> Non
     claim = new_claim(ot, "The bound is tight.")
     update_claim(ot, claim.id, status="numerical_evidence")
 
+    # A cited experiment must exist as a real artifact (integrity gate).
+    new_experiment(ot, "bounded search")
     add_evidence(
         ot,
         claim.id,

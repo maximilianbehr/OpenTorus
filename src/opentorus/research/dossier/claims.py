@@ -7,6 +7,7 @@ or a recorded formal-proof artifact) can move a claim to a verified status.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from opentorus.errors import OpenTorusError
@@ -28,6 +29,8 @@ from opentorus.research.dossier.validation import (
     default_status_for_type,
     evidence_can_verify,
 )
+
+_EXP_ID_RE = re.compile(r"^EXP-\d+$")
 
 
 def _log_status_change(
@@ -130,6 +133,28 @@ def add_evidence(
     if claim is None:
         raise OpenTorusError(f"No claim '{claim_id}' in dossier '{problem_id}'.")
 
+    # An EXPERIMENT citation must reference a real EXP-* manifest. A hallucinated id
+    # is rejected outright; a real but not-yet-run experiment is recorded but flagged
+    # (its results do not exist yet, so citing them as settled would be dishonest).
+    exp_advisory: str | None = None
+    if evidence_type == "EXPERIMENT":
+        from opentorus.research.dossier.experiments import get_experiment
+
+        for art in source_artifacts or []:
+            if not _EXP_ID_RE.match(art.strip()):
+                continue
+            exp = get_experiment(ot_dir, problem_id, art.strip())
+            if exp is None:
+                raise OpenTorusError(
+                    f"Cannot cite experiment '{art}': no such EXP-* manifest in dossier "
+                    f"'{problem_id}'. Create and run it (exp_new → exp_run) before citing it."
+                )
+            if exp.status == "planned":
+                exp_advisory = (
+                    f"{art} is planned (not run); its results do not exist yet. Run it "
+                    "before relying on its outcome — this is support, never proof."
+                )
+
     evidence = EvidenceRecord(
         id=store.next_evidence_id(ot_dir, problem_id),
         problem_id=problem_id,
@@ -143,7 +168,8 @@ def add_evidence(
     )
     store.append_evidence(ot_dir, evidence)
 
-    advisory: str | None = None
+    # exp_advisory is the lowest-priority note; a path or contradiction note overrides it.
+    advisory: str | None = exp_advisory
     if path is not None and not (ot_dir.parent / path).exists() and not Path(path).exists():
         advisory = f"Evidence path '{path}' does not exist on disk yet."
 
@@ -204,6 +230,54 @@ def set_claim_status(
     )
     updated = store.get_claim(ot_dir, problem_id, claim_id)
     assert updated is not None
+    return updated
+
+
+def downgrade_claim_type(
+    ot_dir: Path,
+    problem_id: str,
+    claim_id: str,
+    new_type: ClaimType,
+    *,
+    reason: str = "",
+) -> ClaimRecord:
+    """Downgrade a claim's *type* (e.g. THEOREM → CONJECTURE) and flag it for review.
+
+    Used by the referee to act on a recommended downgrade. This only ever *weakens*
+    a claim (an over-stated theorem becomes a conjecture); it never upgrades truth
+    status. The change is logged in the status changelog, never silent. Promotions
+    to a verified type are refused — those require the verification CRUD.
+    """
+    if new_type in ("THEOREM", "COUNTEREXAMPLE_VERIFIED", "FORMAL_PROOF_VERIFIED"):
+        raise OpenTorusError(
+            f"downgrade_claim_type only weakens a claim; '{new_type}' is not a downgrade. "
+            "Use the verification CRUD to assert a settled result."
+        )
+    claim = store.get_claim(ot_dir, problem_id, claim_id)
+    if claim is None:
+        raise OpenTorusError(f"No claim '{claim_id}' in dossier '{problem_id}'.")
+    old_type = claim.type
+    old_status = claim.status
+    claims = store.list_claims(ot_dir, problem_id)
+    for c in claims:
+        if c.id == claim_id:
+            c.type = new_type
+            # A downgraded claim is, by construction, not settled; mark it for review
+            # unless it is already in a terminal/non-verified state.
+            if c.status in ("verified", "formally_verified", "supported", "unverified"):
+                c.status = "needs_review"
+            c.updated_at = utcnow()
+    store.rewrite_claims(ot_dir, problem_id, claims)
+    updated = store.get_claim(ot_dir, problem_id, claim_id)
+    assert updated is not None
+    _log_status_change(
+        ot_dir,
+        problem_id,
+        claim_id,
+        old_status,
+        updated.status,
+        reason=reason or f"type downgraded {old_type} → {new_type}",
+    )
     return updated
 
 

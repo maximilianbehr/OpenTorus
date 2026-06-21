@@ -669,6 +669,54 @@ def problem_report(
         console.print(f"[green]Artifact report[/green] at .opentorus/problems/{pid}/report.md")
 
 
+@problem_app.command("referee")
+def problem_referee(
+    problem_id: str | None = typer.Argument(
+        None, help="Dossier id (defaults to the active problem)."
+    ),
+    apply_downgrades: bool = typer.Option(
+        False,
+        "--apply-downgrades",
+        help="Apply recommended THEOREM→CONJECTURE downgrades to the ledger (logged, reversible).",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the machine-readable report as JSON."),
+) -> None:
+    """Run the hostile referee over a dossier (classify claims, find overclaims, gate)."""
+    from opentorus.research.dossier.referee import referee_review
+
+    base = _require_workspace_dir()
+    pid = _resolve_problem_id(base, problem_id).strip().upper()
+    try:
+        report = referee_review(base, pid, apply_downgrades=apply_downgrades)
+    except OpenTorusError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    if as_json:
+        console.print_json(report.model_dump_json())
+    else:
+        color = {"pass": "green", "revise": "yellow", "block": "red"}[report.verdict]
+        console.print(f"[{color}]Referee verdict: {report.verdict.upper()}[/{color}]")
+        console.print(f"Derived report status: [bold]{report.report_status}[/bold]")
+        console.print(report.summary)
+        if report.downgrades_recommended:
+            console.print("[yellow]Recommended downgrades:[/yellow]")
+            for d in report.downgrades_recommended:
+                console.print(f"  {d}")
+        if report.contradictions:
+            console.print("[red]Contradictions:[/red]")
+            for c in report.contradictions:
+                console.print(f"  {c}")
+        if report.overclaims:
+            console.print(f"[yellow]{len(report.overclaims)} overclaim(s):[/yellow]")
+            for o in report.overclaims:
+                console.print(f"  {o.location} [{o.kind}] '{o.phrase}'")
+        console.print(f"[dim]Full report → .opentorus/problems/{pid}/referee/{report.id}.md[/dim]")
+    # Exit non-zero on a blocking verdict so scripts/CI can gate on the referee.
+    if report.verdict == "block":
+        raise typer.Exit(code=2)
+
+
 @problem_app.command("export")
 def problem_export(
     ctx: typer.Context,

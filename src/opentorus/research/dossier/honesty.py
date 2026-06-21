@@ -25,6 +25,7 @@ class IssueKind(StrEnum):
     PROOF_CLAIM = "proof_claim"
     KNOWLEDGE_CLAIM = "knowledge_claim"
     EXPERIMENT_PROOF = "experiment_proof"
+    RESULT_CLAIM = "result_claim"
     WEASEL = "weasel"
 
 
@@ -52,6 +53,25 @@ _PROOF_CLAIM = re.compile(
     re.IGNORECASE,
 )
 
+# Result-assertion language ("provably", "we proved", "this establishes", "the
+# problem is solved", "therefore the theorem holds"). These assert a *settled*
+# result and so are honest only when the dossier actually carries a supported (or
+# stronger) THEOREM. Phrasing is deliberately specific so the generated, honest
+# report (which says "open", "conjecture", "supported", "solved externally")
+# never trips it. A leading "not"/"to be" disclaimer is honest hedging.
+_RESULT_CLAIM = re.compile(
+    r"\b(?:"
+    r"provably"
+    r"|this\s+establishes"
+    r"|we\s+(?:have\s+)?(?:proved|established)"
+    r"|(?<!not\s)(?<!to\s)(?:be\s+|been\s+|is\s+|are\s+|was\s+|were\s+)(?:proved|established)"
+    r"|(?:problem|conjecture)\s+is\s+(?:now\s+)?solved"
+    r"|therefore\s+(?:the\s+)?(?:theorem|result|claim|conjecture|statement|bound)"
+    r"\s+(?:is\s+|are\s+)?(?:proved|proven|holds?|follows?|established)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # Affirmative knowledge claims only: an explicit disclaimer ("it is not known
 # that ...") is honest hedging, not an overclaim, so a "not"/"un-" before the
 # phrase must not trip the linter.
@@ -70,8 +90,15 @@ def lint_report(
     *,
     has_verified_proof: bool = False,
     has_reference: bool = False,
+    has_supported_theorem: bool = False,
 ) -> list[ReportIssue]:
-    """Flag overclaims that the dossier's artifacts do not justify."""
+    """Flag overclaims that the dossier's artifacts do not justify.
+
+    ``has_supported_theorem`` licenses *result-assertion* language ("provably",
+    "we proved", "the problem is solved"): such language is honest only when the
+    dossier carries at least one supported (or stronger) THEOREM. A verified proof
+    artifact additionally licenses the stronger proof-claim phrases.
+    """
     issues: list[ReportIssue] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
@@ -108,6 +135,20 @@ def lint_report(
                 )
             )
 
+        if (m := _RESULT_CLAIM.search(line)) and not has_supported_theorem:
+            issues.append(
+                ReportIssue(
+                    line=lineno,
+                    phrase=m.group(0),
+                    kind=IssueKind.RESULT_CLAIM,
+                    suggestion=(
+                        "No supported THEOREM backs this result-assertion. Use "
+                        "'we conjecture' / 'the evidence suggests' / 'a sketch argues', "
+                        "or record a supported THEOREM first."
+                    ),
+                )
+            )
+
         if (m := _KNOWLEDGE_CLAIM.search(line)) and not has_reference:
             issues.append(
                 ReportIssue(
@@ -133,5 +174,16 @@ def lint_report(
     return issues
 
 
-def is_honest(text: str, *, has_verified_proof: bool = False, has_reference: bool = False) -> bool:
-    return not lint_report(text, has_verified_proof=has_verified_proof, has_reference=has_reference)
+def is_honest(
+    text: str,
+    *,
+    has_verified_proof: bool = False,
+    has_reference: bool = False,
+    has_supported_theorem: bool = False,
+) -> bool:
+    return not lint_report(
+        text,
+        has_verified_proof=has_verified_proof,
+        has_reference=has_reference,
+        has_supported_theorem=has_supported_theorem,
+    )

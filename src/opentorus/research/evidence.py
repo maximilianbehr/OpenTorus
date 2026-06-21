@@ -9,6 +9,7 @@ suggestion to review or downgrade the claim.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -17,6 +18,8 @@ from pydantic import BaseModel, Field
 
 from opentorus.errors import OpenTorusError
 from opentorus.jsonl import append_jsonl, next_id, read_jsonl
+
+_EXP_ID_RE = re.compile(r"^EXP-\d+$")
 
 SourceType = Literal[
     "experiment",
@@ -113,6 +116,26 @@ def add_evidence(
     if strength not in VALID_STRENGTHS:
         raise OpenTorusError(f"Invalid strength '{strength}'. Valid: {', '.join(VALID_STRENGTHS)}")
 
+    # Experiment citations must point at a real EXP-* artifact: a hallucinated id
+    # (e.g. "EXP-9999" the model never created) can never back a claim. A real but
+    # not-yet-run experiment is allowed but surfaces an advisory — citing its
+    # *results* before it ran would be dishonest.
+    exp_advisory: str | None = None
+    if source_type == "experiment" and source_id and _EXP_ID_RE.match(source_id.strip()):
+        from opentorus.research.experiments import get_experiment
+
+        exp = get_experiment(ot_dir, source_id.strip())
+        if exp is None:
+            raise OpenTorusError(
+                f"Cannot cite experiment '{source_id}': no such EXP-* artifact in this "
+                "workspace. Create and run it (exp_new → exp_run) before citing it."
+            )
+        if exp.status not in ("completed", "failed"):
+            exp_advisory = (
+                f"{source_id} has status '{exp.status}' (not run to completion); its results "
+                "are not available yet. Run it before relying on its outcome."
+            )
+
     existing = list_evidence(ot_dir)
     evidence = Evidence(
         id=next_id("EVIDENCE", (e.id for e in existing)),
@@ -133,4 +156,6 @@ def add_evidence(
             f"{evidence.id} contradicts {claim_id}. Consider reviewing or downgrading "
             "the claim; contradictory evidence is preserved, not discarded."
         )
+    elif exp_advisory is not None:
+        advisory = exp_advisory
     return evidence, advisory
