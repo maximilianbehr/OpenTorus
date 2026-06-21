@@ -44,6 +44,38 @@ def test_critical_points_reported() -> None:
     assert any("sqrt" in c for c in r.critical_points)
 
 
+def test_second_order_rejects_min_that_is_a_max() -> None:
+    # W = -m^2 has a maximum at 0; claiming it as a minimizer is rejected by curvature.
+    r = check_optimizer("-(m**2)", variable="m", claimed_optimizer="0", extremum="min")
+    assert r.verdict == "rejected"
+    assert r.extremum_kind == "maximum"
+
+
+def test_second_order_accepts_correct_min() -> None:
+    r = check_optimizer("m**2", variable="m", claimed_optimizer="0", extremum="min")
+    assert r.verdict == "consistent"
+    assert r.extremum_kind == "minimum"
+
+
+def test_persisted_rejection_drives_status_invalid_and_flags_claim(tmp_path: Path) -> None:
+    from opentorus.research.dossier import claims, store
+    from opentorus.research.dossier.algebra_link import record_algebra_check
+    from opentorus.research.dossier.status_gate import derive_status
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    base = workspace_dir(tmp_path)
+    pid = store.create_dossier(base, "Optimal m problem.").id
+    c = claims.add_claim(base, pid, claim_type="CLAIM", statement="optimal m is 10")
+    assert derive_status(base, pid).status != "INVALID"
+
+    res = check_optimizer("5*m + 3", variable="m", claimed_optimizer="10", domain=("1", "1000"))
+    record_algebra_check(base, pid, res, claim_id=c.id)
+
+    assert derive_status(base, pid).status == "INVALID"
+    assert store.get_claim(base, pid, c.id).status == "needs_review"
+
+
 def test_cli_rejects_false_optimum_with_exit_code() -> None:
     res = runner.invoke(
         app,

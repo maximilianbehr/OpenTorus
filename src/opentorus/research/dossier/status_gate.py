@@ -108,8 +108,16 @@ def derive_status(
     referee_blocked: bool = False,
     algebra_rejected: bool = False,
 ) -> StatusVerdict:
-    """Derive the report status for a dossier from its persisted artifacts."""
+    """Derive the report status for a dossier from its persisted artifacts.
+
+    ``algebra_rejected`` is OR-ed with any persisted algebra check that rejected a
+    claim, so a refuted optimum drives the status to ``INVALID`` without the caller
+    having to thread the flag through.
+    """
+    from opentorus.research.dossier.algebra_link import has_algebra_rejection
+
     dossier = store.require_dossier(ot_dir, problem_id)
+    algebra_rejected = algebra_rejected or has_algebra_rejection(ot_dir, problem_id)
     claims = store.list_claims(ot_dir, problem_id)
     proofs = store.list_proof_attempts(ot_dir, problem_id)
     experiments = _list_experiments(ot_dir, problem_id)

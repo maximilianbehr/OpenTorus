@@ -244,6 +244,13 @@ def referee_review(
             downgrades.append(f"{c.id}: {c.type} → {rec} ({classification})")
 
     contradictions = _find_contradictions(claims, evidence)
+    # A persisted algebra rejection (e.g. a false interior optimum) is a contradiction.
+    from opentorus.research.dossier.algebra_link import list_algebra_checks
+
+    for alg in list_algebra_checks(ot_dir, problem_id):
+        if alg.result.verdict == "rejected":
+            target = alg.claim_id or "an objective claim"
+            contradictions.append(f"Algebra check {alg.id} rejected {target}: {alg.result.detail}")
     overclaims = _collect_overclaims(
         ot_dir,
         problem_id,

@@ -56,6 +56,15 @@ def check_algebra(
     domain: str = typer.Option(
         None, "--domain", help="Domain 'lo,hi' (e.g. '1,1000') to test monotonicity over."
     ),
+    extremum: str = typer.Option(
+        None, "--extremum", help="Claimed kind of optimum: 'min' or 'max' (checks curvature)."
+    ),
+    problem: str = typer.Option(
+        None, "--problem", help="Link the check to a dossier (PROBLEM-XXXX) and persist it."
+    ),
+    claim: str = typer.Option(
+        None, "--claim", help="Link the check to a claim (CLAIM-XXXX); a rejection flags it."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit the machine-readable result as JSON."),
 ) -> None:
     """Check an optimization claim symbolically (derivative, optimum, monotonicity)."""
@@ -72,6 +81,10 @@ def check_algebra(
 
     var = variable or spec.get("variable") or "m"
     claimed = optimizer or spec.get("claimed_optimizer")
+    extremum_kind = extremum or spec.get("extremum")
+    if extremum_kind is not None and extremum_kind not in ("min", "max"):
+        console.print("[red]--extremum must be 'min' or 'max'.[/red]")
+        raise typer.Exit(code=1)
 
     dom: tuple[str, str] | None = None
     raw_domain = domain or spec.get("domain")
@@ -83,8 +96,23 @@ def check_algebra(
         dom = (str(parts[0]).strip(), str(parts[1]).strip())
 
     result = check_optimizer(
-        str(expression), variable=str(var), claimed_optimizer=claimed, domain=dom
+        str(expression),
+        variable=str(var),
+        claimed_optimizer=claimed,
+        domain=dom,
+        extremum=extremum_kind,
     )
+
+    # When linked to a dossier, persist the check so a rejection reaches the status gate.
+    if problem:
+        from opentorus.cli._base import _require_workspace_dir, _resolve_problem_id
+        from opentorus.research.dossier.algebra_link import record_algebra_check
+
+        base = _require_workspace_dir()
+        pid = _resolve_problem_id(base, problem).strip().upper()
+        rec = record_algebra_check(base, pid, result, claim_id=claim)
+        if not as_json:
+            console.print(f"[dim]Recorded {rec.id} under {pid}.[/dim]")
 
     if as_json:
         console.print_json(result.model_dump_json())
@@ -111,6 +139,11 @@ def check_algebra(
         console.print(
             f"[bold]dW/d{result.variable} at optimizer:[/bold] {result.optimizer_derivative_value}"
         )
+        if result.extremum_kind != "unknown":
+            console.print(
+                f"[bold]Curvature:[/bold] {result.extremum_kind} "
+                f"(W''={result.second_derivative_value})"
+            )
     for w in result.warnings:
         console.print(f"[yellow]warning:[/yellow] {w}")
     console.print(f"[{color}]Verdict: {result.verdict.upper()}[/{color}] — {result.detail}")
