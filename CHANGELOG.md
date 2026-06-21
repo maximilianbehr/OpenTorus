@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.5] — 2026-06-21
+
+This release hardens `opentorus prove` and provider handling for real local/OpenAI-compatible
+model use: it stops infinite gap-fill grinds, unblocks proof writing, refuses or warns when a
+model cannot call tools, and reports local-endpoint cost honestly.
+
 ### Added
 - **Tool-calling capability check** (`model.verify_tool_calling`, default true): before
   an agent run (`run`, `prove`, `research`) OpenTorus verifies the model can call tools,
