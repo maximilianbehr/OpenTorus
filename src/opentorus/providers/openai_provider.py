@@ -32,7 +32,10 @@ class OpenAIProvider(BaseProvider):
         self, messages: list[SessionMessage], tools: list[dict] | None = None
     ) -> ProviderResponse:
         if not os.environ.get("OPENAI_API_KEY"):
-            raise ProviderError("OPENAI_API_KEY is not set. Export it to use the OpenAI provider.")
+            raise ProviderError(
+                "OPENAI_API_KEY is not set. Put it in a .env file in your project "
+                "(OPENAI_API_KEY=sk-…) or export it to use the OpenAI provider."
+            )
         try:
             from openai import OpenAI
         except ImportError as exc:

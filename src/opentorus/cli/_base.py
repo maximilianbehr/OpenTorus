@@ -102,9 +102,17 @@ def main(
     ),
 ) -> None:
     """OpenTorus — inspectable loops for code, research, and experiments."""
+    import logging
+
+    from opentorus.dotenv import load_project_dotenv
     from opentorus.ux import setup_logging
 
     setup_logging(verbose=verbose, debug=debug)
+    # Load a project .env so provider API keys (OPENAI_API_KEY, …) are picked up
+    # without an explicit shell export; never overrides an already-set variable.
+    loaded = load_project_dotenv()
+    if loaded:
+        logging.getLogger("opentorus").debug("Loaded .env variables: %s", ", ".join(loaded))
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     ctx.obj["debug"] = debug
