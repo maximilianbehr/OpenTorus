@@ -310,35 +310,6 @@ def _normalize_unicode(text: str) -> str:
     return text.translate(_UNICODE_SPACES)
 
 
-def _neutralize_unicode_math(text: str) -> str:
-    """Map every non-ASCII character to an ASCII-safe token (strict fallback only).
-
-    The guaranteed-compile path cannot risk math mode, so instead of converting
-    Unicode math into ``$…$`` (which glues runs like ``∈C`` into the invalid
-    ``$\\inC$``) it transliterates each symbol to plain letters: ``∈``→``in``,
-    ``ρ``→``rho``, ``Σ``→``Sigma``, ``≤``→``leq``, ``√``→``sqrt``. Symbols absent
-    from the shared Unicode→LaTeX map fall back to an NFKD ASCII transliteration,
-    then to ``?``. The result is pure ASCII text that pdflatex always typesets.
-    """
-    import unicodedata
-
-    from opentorus.research.markdown_latex import _UNICODE_MATH_ALL
-
-    out: list[str] = []
-    for ch in text:
-        if ord(ch) < 128:
-            out.append(ch)
-            continue
-        cmd = _UNICODE_MATH_ALL.get(ch)
-        if cmd:
-            word = re.sub(r"[^A-Za-z]", "", cmd)
-            out.append(word or "?")
-            continue
-        ascii_form = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode()
-        out.append(ascii_form or "?")
-    return "".join(out)
-
-
 def _escape_unescaped_specials(text: str) -> str:
     """Escape LaTeX specials in inline text, skipping existing backslash sequences
     and inline math spans.
@@ -703,21 +674,17 @@ def _clean_proof_markdown(body: str) -> str:
     return body.replace("\ufffd", "?")
 
 
-def _proof_markdown_to_latex_fallback(body: str, *, strict_math: bool = False) -> str:
-    """Deterministic Markdown → LaTeX for proof sketches (no LLM).
+def _proof_markdown_to_latex_fallback(body: str) -> str:
+    """Deterministic Markdown → LaTeX for a single proof sketch (no model).
 
-    With ``strict_math=True`` every special character in the proof body — including
-    ``$``, ``^`` and ``_`` — is escaped to a literal, so model-authored math that
-    is malformed (bare subscripts outside math mode, ``$$…$$`` interleaved with
-    prose, ``\\timesn``-style command-eats-letter) cannot abort pdflatex. The math
-    then reads as plain text, but the PDF is *guaranteed* to compile. This backs
-    the final fallback attempt in :func:`compose_and_render_pdf`.
+    Used only as a per-proof fallback when the model conversion of *that* proof
+    fails; the whole-document deterministic PDF path was removed (it could not
+    render Unicode-in-prose mathematics legibly — see :func:`compose_and_render_pdf`).
     """
     from opentorus.research.markdown_latex import prepare_markdown_for_pdf
 
     body = _clean_proof_markdown(body)
-    if not strict_math:
-        body = prepare_markdown_for_pdf(body)
+    body = prepare_markdown_for_pdf(body)
     bold_re = re.compile(r"\*\*(.+?)\*\*")
     italic_re = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
     out: list[str] = []
@@ -755,18 +722,11 @@ def _proof_markdown_to_latex_fallback(body: str, *, strict_math: bool = False) -
                 out.append("\\begin{itemize}")
                 in_itemize = True
             content = stripped[2:].strip()
-            if strict_math:
-                # Escape everything (math becomes literal text) — guaranteed to compile.
-                out.append(f"\\item {_latex_escape(content)}")
-            else:
-                item = bold_re.sub(r"\\textbf{\1}", content)
-                item = italic_re.sub(r"\\emph{\1}", item)
-                out.append(f"\\item {_latex_escape_preserving_math(item)}")
+            item = bold_re.sub(r"\\textbf{\1}", content)
+            item = italic_re.sub(r"\\emph{\1}", item)
+            out.append(f"\\item {_latex_escape_preserving_math(item)}")
             continue
         close_list()
-        if strict_math:
-            out.append(_latex_escape(stripped))
-            continue
         text = bold_re.sub(r"\\textbf{\1}", stripped)
         text = italic_re.sub(r"\\emph{\1}", text)
         if "$" in text or "\\[" in text:
@@ -774,11 +734,6 @@ def _proof_markdown_to_latex_fallback(body: str, *, strict_math: bool = False) -
         else:
             out.append(_latex_escape(text))
     close_list()
-    if strict_math:
-        # Everything is already escaped; only neutralize Unicode (no math conversion)
-        # and guard bare [GAP-n] markers. Skips the math-preserving sanitizer that
-        # would otherwise glue Unicode runs back into invalid math.
-        return _fix_gap_markers(_neutralize_unicode_math("\n".join(out)))
     return sanitize_latex_body("\n".join(out))
 
 
@@ -830,10 +785,9 @@ def proof_body_to_latex(
     *,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
-    strict_math: bool = False,
     cache: dict[str, str] | None = None,
 ) -> str:
-    """Render a proof sketch body as integrated LaTeX (LLM or deterministic fallback).
+    """Render a proof sketch body as integrated LaTeX (LLM, deterministic per-proof fallback).
 
     A ``cache`` keyed by proof id memoizes the (expensive) LLM conversion so a
     failed whole-document attempt does not pay to re-convert every proof on the
@@ -842,9 +796,6 @@ def proof_body_to_latex(
     body = proof.get("body") or ""
     if not body.strip():
         return ""
-    if strict_math:
-        # Guaranteed-compile path: never invoke the LLM, neutralize all math.
-        return _proof_markdown_to_latex_fallback(body, strict_math=True)
     if compose_llm and _llm_usable(provider):
         pid = proof.get("id") or ""
         if cache is not None and pid in cache:  # reuse a prior LLM conversion
@@ -874,7 +825,6 @@ def _proofs_section_latex(
     *,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
-    strict_math: bool = False,
     cache: dict[str, str] | None = None,
 ) -> str:
     """LaTeX section with proof sketch bodies rendered as math-aware LaTeX."""
@@ -902,7 +852,6 @@ def _proofs_section_latex(
             provider,
             compose_llm=compose_llm,
             hooks=hooks,
-            strict_math=strict_math,
             cache=cache,
         )
         if latex_body:
@@ -918,7 +867,6 @@ def _append_missing_proofs(
     *,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
-    strict_math: bool = False,
     cache: dict[str, str] | None = None,
 ) -> str:
     """Ensure every PROOF-* body appears in the LaTeX report body (LLM often omits them)."""
@@ -934,7 +882,6 @@ def _append_missing_proofs(
         provider,
         compose_llm=compose_llm,
         hooks=hooks,
-        strict_math=strict_math,
         cache=cache,
     )
     return body.rstrip() + "\n\n" + section + "\n"
@@ -953,7 +900,6 @@ def _replace_verbatim_proof_blocks(
     *,
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
-    strict_math: bool = False,
     cache: dict[str, str] | None = None,
 ) -> str:
     """Swap LLM-emitted verbatim proof dumps for converted LaTeX proof sections."""
@@ -969,7 +915,6 @@ def _replace_verbatim_proof_blocks(
             provider,
             compose_llm=compose_llm,
             hooks=hooks,
-            strict_math=strict_math,
             cache=cache,
         )
         return latex if latex else match.group(0)
@@ -980,7 +925,6 @@ def _replace_verbatim_proof_blocks(
 def facts_to_latex(
     facts: dict[str, Any],
     *,
-    strict_math: bool = False,
     provider: BaseProvider | None = None,
     proof_compose_llm: bool = False,
     cache: dict[str, str] | None = None,
@@ -992,10 +936,6 @@ def facts_to_latex(
     are converted to clean LaTeX by the model (reliable typeset math) while the
     surrounding structure stays deterministic — the robust "pretty math" path used
     when whole-document LLM composition truncates or fails to compile.
-
-    ``strict_math=True`` instead renders proof bodies with all math neutralized to
-    literal text, guaranteeing the document compiles even when stored proof sketches
-    carry malformed model-authored math. See :func:`_proof_markdown_to_latex_fallback`.
     """
     parts: list[str] = [
         "\\section{Summary}",
@@ -1062,7 +1002,6 @@ def facts_to_latex(
         facts,
         provider,
         compose_llm=proof_compose_llm,
-        strict_math=strict_math,
         cache=cache,
     )
     if proof_section:
@@ -1329,15 +1268,25 @@ def compose_and_render_pdf(
     compose_llm: bool = True,
     hooks: ReportComposeHooks | None = None,
 ) -> Path:
-    """Build preprint LaTeX and compile a PDF.
+    """Build a preprint PDF with model-composed LaTeX (a model is required).
 
-    The model's narrative LaTeX is occasionally structurally invalid (broken
-    lists, unbalanced math) in ways the sanitizer cannot repair, which aborts
-    pdflatex. So we try the model narrative first (when requested) and, if it
-    fails to compile, fall back to the deterministic template LaTeX, which is
-    generated from artifacts and is always well-formed.
+    Stored proofs hold mathematics as Unicode-in-prose; turning that into valid
+    typeset LaTeX is only reliable with a model. Without one the old deterministic
+    path produced math as literal escaped text (e.g. ``AinC\\textasciicircum{}…``),
+    which is unreadable — so we refuse here and let the caller fall back to the
+    MathJax HTML report instead of emitting a math-broken PDF.
+
+    Two model attempts: the whole-document narrative first, then a deterministic
+    document structure with per-proof model conversion (which survives a truncated
+    or non-compiling whole-document call). On failure the caller renders HTML.
     """
     from opentorus.agent.prove_harvest import harvest_prove_session
+
+    if not (compose_llm and _llm_usable(provider)):
+        raise OpenTorusError(
+            "PDF export requires a configured model to render mathematics; "
+            "falling back to the HTML report (math rendered via MathJax)."
+        )
 
     if hooks and hooks.on_progress:
         hooks.on_progress("Gathering artifacts from the dossier…")
@@ -1345,20 +1294,16 @@ def compose_and_render_pdf(
     facts = gather_dossier_facts(ot_dir, problem_id)
 
     # Shared across attempts so a failed whole-document attempt does not pay to
-    # re-run the per-proof LLM conversions on the next, deterministic-structure one.
+    # re-run the per-proof model conversions on the next, deterministic-structure one.
     proof_cache: dict[str, str] = {}
 
-    def _document(*, use_llm: bool, strict_math: bool = False, llm_proofs: bool = False) -> str:
-        # The whole-document body (use_llm) is a throwaway baseline here, so only
-        # convert proofs in the baseline when that baseline IS the final structure.
+    def _document(*, use_llm: bool) -> str:
+        # The whole-document body is a throwaway baseline (overwritten by the model),
+        # so only convert proofs in the baseline when it IS the final structure.
         body = facts_to_latex(
-            facts,
-            strict_math=strict_math,
-            provider=provider,
-            proof_compose_llm=(llm_proofs and not use_llm),
-            cache=proof_cache,
+            facts, provider=provider, proof_compose_llm=not use_llm, cache=proof_cache
         )
-        if use_llm and _llm_usable(provider):
+        if use_llm:
             if hooks and hooks.on_progress:
                 hooks.on_progress("Composing narrative report with the model…")
             try:
@@ -1367,74 +1312,24 @@ def compose_and_render_pdf(
                 )
             except Exception:
                 body = facts_to_latex(
-                    facts,
-                    strict_math=strict_math,
-                    provider=provider,
-                    proof_compose_llm=llm_proofs,
-                    cache=proof_cache,
+                    facts, provider=provider, proof_compose_llm=True, cache=proof_cache
                 )
-        proof_llm = use_llm or llm_proofs
         body = _replace_verbatim_proof_blocks(
-            body,
-            facts,
-            provider,
-            compose_llm=proof_llm,
-            hooks=hooks,
-            strict_math=strict_math,
-            cache=proof_cache,
+            body, facts, provider, compose_llm=True, hooks=hooks, cache=proof_cache
         )
         body = _append_missing_proofs(
-            body,
-            facts,
-            provider,
-            compose_llm=proof_llm,
-            hooks=hooks,
-            strict_math=strict_math,
-            cache=proof_cache,
+            body, facts, provider, compose_llm=True, hooks=hooks, cache=proof_cache
         )
-        if strict_math:
-            # Guaranteed-compile finalize: neutralize Unicode to ASCII and guard gap
-            # markers, but never run the Unicode→math conversion that can re-introduce
-            # malformed spans. The body is already fully escaped by facts_to_latex.
-            return wrap_preprint_document(facts, _fix_gap_markers(_neutralize_unicode_math(body)))
         return wrap_preprint_document(facts, sanitize_latex_body(body))
 
     target_tex = tex_path or pdf_path.with_suffix(".tex")
     target_tex.parent.mkdir(parents=True, exist_ok=True)
 
-    # Escalating attempts. With a model available:
-    #   1. whole-document model narrative + model-converted proofs (richest prose);
-    #   2. deterministic structure + per-proof model conversion (reliable typeset
-    #      math — survives when the single whole-document call truncates or fails);
-    #   3. deterministic structure + deterministic proofs (math preserved);
-    #   4. deterministic structure with math neutralized to text (always compiles).
-    if compose_llm and _llm_usable(provider):
-        attempts = [
-            {"use_llm": True, "strict_math": False, "llm_proofs": True},
-            {"use_llm": False, "strict_math": False, "llm_proofs": True},
-            {"use_llm": False, "strict_math": False, "llm_proofs": False},
-            {"use_llm": False, "strict_math": True, "llm_proofs": False},
-        ]
-    else:
-        attempts = [
-            {"use_llm": False, "strict_math": False, "llm_proofs": False},
-            {"use_llm": False, "strict_math": True, "llm_proofs": False},
-        ]
-
-    def _next_attempt_msg(nxt: dict[str, bool]) -> str:
-        if nxt["strict_math"]:
-            return "LaTeX failed to compile; retrying with math neutralized to text…"
-        if nxt["llm_proofs"]:
-            return (
-                "Whole-document LaTeX failed; retrying with a deterministic structure "
-                "and per-proof model conversion…"
-            )
-        return "LaTeX failed to compile; retrying with the deterministic template…"
-
     last_exc: OpenTorusError | None = None
     last_lint: list[str] = []
-    for idx, opts in enumerate(attempts):
-        document = _document(**opts)
+    # whole-document model narrative, then deterministic structure + per-proof model conversion.
+    for idx, use_llm in enumerate((True, False)):
+        document = _document(use_llm=use_llm)
         target_tex.write_text(document, encoding="utf-8")
         last_lint = latex_lint(document)
         if last_lint and hooks and hooks.on_progress:
@@ -1445,8 +1340,11 @@ def compose_and_render_pdf(
             return compile_latex_report(target_tex, pdf_path=pdf_path)
         except OpenTorusError as exc:
             last_exc = exc
-            if idx + 1 < len(attempts) and hooks and hooks.on_progress:
-                hooks.on_progress(_next_attempt_msg(attempts[idx + 1]))
+            if idx == 0 and hooks and hooks.on_progress:
+                hooks.on_progress(
+                    "Whole-document LaTeX failed; retrying with a deterministic "
+                    "structure and per-proof model conversion…"
+                )
     detail = ""
     if last_lint:
         detail = "\n\nPre-compile checks flagged (likely cause):\n" + "\n".join(

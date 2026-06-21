@@ -617,13 +617,21 @@ class AgentLoop:
             and name not in _REPEAT_GUARD_EXEMPT
             and sig in self._tool_sigs_ok
         ):
-            deliverable = "write_file (e.g. analysis.md)"
-            if self._task_id:
+            if self._required_deliverable_tool:
+                # e.g. a prove run's deliverable is proof_write, not write_file —
+                # nudging toward write_file misdirects the agent during gap-fill.
+                deliverable = self._required_deliverable_tool
+            elif self._task_id:
                 from opentorus.research.tasks import get_task
 
                 task = get_task(self.ot_dir, self._task_id)
-                if task is not None and task.category == "report":
-                    deliverable = "write_file(path='analysis.md', …)"
+                deliverable = (
+                    "write_file(path='analysis.md', …)"
+                    if task is not None and task.category == "report"
+                    else "write_file (e.g. analysis.md)"
+                )
+            else:
+                deliverable = "write_file (e.g. analysis.md)"
             # read_file of a known path is idempotent retrieval, not exploration:
             # its content may have been compacted out of context, so re-serve the
             # cached content (with a nudge) rather than hard-blocking — which would
