@@ -36,7 +36,8 @@ class AnthropicProvider(BaseProvider):
     ) -> ProviderResponse:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise ProviderError(
-                "ANTHROPIC_API_KEY is not set. Export it to use the Anthropic provider."
+                "ANTHROPIC_API_KEY is not set. Put it in a .env file in your project "
+                "(ANTHROPIC_API_KEY=sk-ant-…) or export it to use the Anthropic provider."
             )
         try:
             import anthropic
