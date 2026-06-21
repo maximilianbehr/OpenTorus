@@ -252,6 +252,12 @@ class AgentLoop:
         )
         for _ in step_iter:
             self.steps_run += 1
+            # Hard budget gate: stop cleanly before spending more on the next turn.
+            budget_stop = self._budget_stop()
+            if budget_stop is not None:
+                self._append(SessionMessage(role="assistant", content=budget_stop))
+                result_text = budget_stop
+                break
             messages = build_messages(
                 self.root,
                 self.ot_dir,
@@ -263,6 +269,13 @@ class AgentLoop:
                 provider=self.provider,
             )
             recovery_hint = None
+            # Pre-egress DLP: never send secrets/PII to a cloud provider (no-op for a
+            # local/mock provider, whose payload does not leave the machine).
+            egress_stop = self._screen_outbound(messages)
+            if egress_stop is not None:
+                self._append(SessionMessage(role="assistant", content=egress_stop))
+                result_text = egress_stop
+                break
             self._status("model")
             started = time.monotonic()
             tool_choice: str | dict | None = None
@@ -461,6 +474,45 @@ class AgentLoop:
             elapsed_seconds=time.monotonic() - run_started,
         )
         return result_text
+
+    def _budget_stop(self) -> str | None:
+        """Return a stop message if a configured budget cap is reached, else None."""
+        from opentorus.governance import BudgetExceeded, assert_within_budget
+
+        try:
+            assert_within_budget(self.ot_dir, self.config, session_id=self.session_id)
+        except BudgetExceeded as exc:
+            return f"[stopped] {exc}"
+        return None
+
+    def _screen_outbound(self, messages) -> str | None:  # noqa: ANN001
+        """Pre-egress DLP: block a cloud send that would leak secrets/PII (else None).
+
+        A local/mock provider never leaves the machine, so it is exempt; cloud sends
+        are screened when ``governance.dlp`` is enabled and fail closed.
+        """
+        import json
+
+        from opentorus.usage import is_local_provider
+
+        if not self.config.governance.dlp:
+            return None
+        if is_local_provider(getattr(self.provider, "name", "unknown")):
+            return None
+        from opentorus.governance import DlpBlocked, assert_egress_safe
+
+        try:
+            payload = json.dumps(messages, default=str)
+        except (TypeError, ValueError):
+            payload = str(messages)
+        try:
+            assert_egress_safe(payload, self.config)
+        except DlpBlocked as exc:
+            return (
+                f"[stopped] Pre-egress DLP blocked the request: {exc} Remove the secret/PII "
+                "from the conversation, or disable governance.dlp to override."
+            )
+        return None
 
     def _record_usage(self, messages, response, elapsed: float) -> None:
         """Record a usage/cost entry for one provider turn.

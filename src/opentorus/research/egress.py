@@ -146,6 +146,11 @@ class EgressGuard:
     def _enforce_budget(self) -> None:
         if self._today() != self._day:
             self._day, self._day_count = self._today(), 0
+        # Reconcile with the on-disk ledger so a concurrent or earlier run's requests
+        # are counted: the in-memory count alone would undercount and overrun the cap.
+        disk_day, disk_count = self._load_budget()
+        if disk_day == self._day:
+            self._day_count = max(self._day_count, disk_count)
         if self._day_count >= self.daily_request_budget:
             raise EgressBlocked(
                 f"Daily request budget of {self.daily_request_budget} reached; "
@@ -154,5 +159,10 @@ class EgressGuard:
 
     def _record(self, host: str, now: float) -> None:
         self._recent.setdefault(host, []).append(now)
+        # Re-read before incrementing so concurrent runs do not clobber each other's
+        # totals (read-modify-write on the shared ledger); the count stays monotone.
+        disk_day, disk_count = self._load_budget()
+        if disk_day == self._day:
+            self._day_count = max(self._day_count, disk_count)
         self._day_count += 1
         self._persist_budget()

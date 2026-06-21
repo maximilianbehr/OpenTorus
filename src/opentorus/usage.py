@@ -69,9 +69,23 @@ def _price_for(model: str) -> tuple[float, float] | None:
     return None
 
 
+def is_local_provider(provider: str) -> bool:
+    """A local provider (mock/ollama) genuinely costs nothing."""
+    return provider.lower() in {"mock", "ollama"}
+
+
+def cost_known(provider: str, model: str) -> bool:
+    """Whether the cost can be priced: local (free) or a model with a known rate."""
+    return is_local_provider(provider) or _price_for(model) is not None
+
+
 def estimate_cost(provider: str, model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """Estimate cost in USD. Local providers and unknown models cost $0."""
-    if provider.lower() in {"mock", "ollama"}:
+    """Estimate cost in USD. Local providers cost $0; an unknown paid model returns 0.0.
+
+    A 0.0 here is ambiguous (free local vs unknown-price paid); callers that render
+    cost should consult :func:`cost_known` to distinguish the two honestly.
+    """
+    if is_local_provider(provider):
         return 0.0
     price = _price_for(model)
     if price is None:
@@ -151,7 +165,13 @@ def format_usage_line(
     """
     total = prompt_tokens + completion_tokens
     cost = estimate_cost(provider, model, prompt_tokens, completion_tokens)
-    cost_str = "$0 (local)" if cost == 0 else f"~${cost:.4f}"
+    if is_local_provider(provider):
+        cost_str = "$0 (local)"
+    elif not cost_known(provider, model):
+        # A paid cloud model with no known rate must not read as free.
+        cost_str = "$? (price unknown)"
+    else:
+        cost_str = f"~${cost:.4f}"
     sigil = "~" if tokens_estimated else "="
     out = f"{_fmt_tokens(completion_tokens)} out"
     if thinking_tokens > 0:

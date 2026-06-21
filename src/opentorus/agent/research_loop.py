@@ -104,9 +104,12 @@ def _record_turn(
     from opentorus.usage import UsageRecord, estimate_cost, record_usage
 
     messages = [SessionMessage(role="user", content=prompt)]
-    # Policy model routing (M75): pick a model for this task class, recorded below.
+    # Policy model routing (M75) is advisory here: the provider is built from
+    # config.model.name and is not rebuilt per decision, so record the model actually
+    # sent (never the chosen-but-unused decision.model). The task class is still
+    # recorded for routing transparency.
     decision = route_model(config, task_class)
-    model = decision.model
+    model = config.model.name or decision.model
     started = time.monotonic()
     response = provider.respond(messages)
     elapsed = time.monotonic() - started
