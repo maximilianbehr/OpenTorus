@@ -6,6 +6,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Gap-fill no-progress backstop** (`agent.prove_gap_fill_no_progress_steps`,
+  default 16): `opentorus prove` now ends gap-filling after a window of steps that do
+  not reduce the proof's gap count — even when `max_steps` and
+  `prove_gap_fill_max_steps` are `inf`. A model that keeps shrinking the gap list
+  resets the window and continues; a model that cannot close gaps stops instead of
+  grinding indefinitely (observed: an ~80-minute unbounded run on a workspace with
+  both caps set to `inf`).
+
+### Changed
+- A rejected proof citation now lists the theorem/lemma numbers the parsed paper
+  actually contains, so the model can cite a real result (or mark a `[GAP-n]`) instead
+  of guessing numbers and having the whole `proof_write` rejected. The prove prompt
+  also instructs the model not to invent theorem numbers.
+
+### Fixed
+- `read_file` / `list_files` / `glob_files` recover a bare dossier-artifact path
+  (e.g. `proof_attempts/PROOF-0001.md`) against the active dossier, so the agent can
+  read back a proof it just wrote without the full `.opentorus/problems/PROBLEM-XXXX/`
+  prefix.
+
 ## [0.0.3] — 2026-06-21
 
 This release turns the integrity scaffolding into enforced behavior: the documented

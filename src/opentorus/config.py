@@ -87,8 +87,15 @@ class AgentConfig(BaseModel):
     # Extra model steps allowed for gap-filling after the first sketch (when max_steps is inf).
     # Positive integer, or inf / unlimited / -1 for no separate gap-fill cap.
     prove_gap_fill_max_steps: float = 48
+    # Stop gap-filling after this many consecutive steps that do NOT reduce the proof's
+    # gap count — even when the caps above are inf. Bounds an otherwise endless grind when
+    # a model cannot close gaps; a model that IS shrinking the gap list resets the window
+    # and keeps going. Positive integer, or inf / unlimited / -1 to disable.
+    prove_gap_fill_no_progress_steps: float = 16
 
-    @field_validator("max_steps", "prove_gap_fill_max_steps", mode="before")
+    @field_validator(
+        "max_steps", "prove_gap_fill_max_steps", "prove_gap_fill_no_progress_steps", mode="before"
+    )
     @classmethod
     def _validate_step_count(cls, value: object) -> float:
         return parse_max_steps(value)

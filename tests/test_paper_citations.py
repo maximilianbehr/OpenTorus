@@ -96,6 +96,30 @@ def test_missing_theorem_blocks_when_paper_has_other_numbers(tmp_path: Path) -> 
     assert any("1.3" in e for e in errors)
 
 
+def test_blocked_citation_lists_available_theorem_numbers(tmp_path: Path) -> None:
+    # The rejection must tell the model which numbers the paper actually has, so it can
+    # cite a real one instead of guessing (the loop that blocked proof writing).
+    ot = _ot(tmp_path)
+    record = SourceRecord(source="arxiv", title="Sparse JL", arxiv_id="2401.00009")
+    paper = acquire_paper(ot, record, downloader=lambda u: b"%PDF")
+    pages = ["Results\nTheorem 1.3 holds. Lemma 2.1 follows. Theorem 4.2 too.\n"]
+    read_paper(ot, paper.id, page_extractor=lambda path: pages)
+
+    body = "By Theorem 7.9 of PAPER-0001 the bound follows."
+    errors, _ = validate_proof_citations(ot, body)
+    assert errors
+    err = " ".join(errors)
+    assert "1.3" in err and "2.1" in err and "4.2" in err
+    assert "[GAP-n]" in err
+
+
+def test_available_theorem_numbers_sorted_numerically() -> None:
+    from opentorus.research.paper_citations import available_theorem_numbers
+
+    corpus = "theorem 10.1 ... lemma 2.1 ... theorem 1 ... proposition 2.10"
+    assert available_theorem_numbers(corpus) == ["1", "2.1", "2.10", "10.1"]
+
+
 def test_literature_tool_gate_blocks_proof_write() -> None:
     gate = literature_tool_gate()
     msg = gate("proof_write", {"problem_id": "PROBLEM-0001", "title": "x"})
