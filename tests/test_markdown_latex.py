@@ -66,3 +66,20 @@ def test_em_dash_not_wrapped_as_math() -> None:
     out = prepare_markdown_for_pdf(text)
     assert "$---$" not in out
     assert "---" in out or "—" in out
+
+
+def test_prepare_markdown_handles_proportional_and_unmapped_unicode() -> None:
+    # Regression: a bare "∝" (U+221D) aborted pdflatex ("not set up for use with
+    # LaTeX"). Common math symbols are now mapped, and any unmapped non-ASCII left
+    # outside math is neutralized so no bare Unicode can reach the engine.
+    import re
+
+    from opentorus.research.markdown_latex import prepare_markdown_for_pdf
+
+    out = prepare_markdown_for_pdf("work (∝ m), with A∈ℝ, x≅y, h∘k; and weird 🜨 char")
+    assert "\\propto" in out
+    assert "\\mathbb{R}" in out
+    assert "\\cong" in out
+    # No bare non-ASCII outside math spans (what crashes pdflatex).
+    outside_math = re.sub(r"\$[^$]*\$", "", out)
+    assert all(ord(c) < 128 for c in outside_math)

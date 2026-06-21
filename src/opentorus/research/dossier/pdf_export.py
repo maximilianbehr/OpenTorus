@@ -638,6 +638,60 @@ def _fix_text_cmd(match: re.Match[str]) -> str:
     return f"\\{cmd}{{{_escape_unescaped_specials(inner)}}}"
 
 
+_TAG_RE = re.compile(r"\\tag\*?\{([^{}]*)\}")
+
+
+def _latex_safe_unicode(text: str) -> str:
+    """Final guard: no bare non-ASCII reaches pdflatex (which aborts on undeclared
+    Unicode, even inside math mode).
+
+    Tracks ``$`` / ``$$`` math context: a symbol in the Unicode→LaTeX map becomes its
+    bare command inside math (``\\beta``) or ``$\\beta$`` outside; anything unmapped is
+    transliterated to ASCII (NFKD) and otherwise dropped. Backslash escapes are skipped.
+    """
+    import unicodedata
+
+    from opentorus.research.markdown_latex import _UNICODE_MATH_ALL
+
+    out: list[str] = []
+    in_math = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if ch == "$":
+            if i + 1 < n and text[i + 1] == "$":
+                out.append("$$")
+                in_math = not in_math
+                i += 2
+                continue
+            out.append("$")
+            in_math = not in_math
+            i += 1
+            continue
+        if ord(ch) < 128:
+            out.append(ch)
+            i += 1
+            continue
+        cmd = _UNICODE_MATH_ALL.get(ch)
+        if cmd:
+            if in_math:
+                out.append(cmd)
+                # separate a control word from a following letter (\surd m, not \surdm)
+                if cmd[-1:].isalpha() and i + 1 < n and text[i + 1].isalpha():
+                    out.append(" ")
+            else:
+                out.append(f"${cmd}$")
+        else:
+            out.append(unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode())
+        i += 1
+    return "".join(out)
+
+
 def sanitize_latex_body(body: str) -> str:
     """Repair common LLM LaTeX mistakes so preprint compiles under -halt-on-error."""
     body = _fix_corrupted_latex(body)
@@ -651,6 +705,11 @@ def sanitize_latex_body(body: str) -> str:
     body = _fix_texttt_and_path_commands(body)
     body = _TEXT_CMD_RE.sub(_fix_text_cmd, body)
     body = _CITE_ARTIFACT_RE.sub(r"\\texttt{\1}", body)
+    # \tag is only valid inside an equation; models emit it in prose (e.g.
+    # "\tag{GAP-2}"), which aborts amsmath — render it as a parenthetical instead.
+    body = _TAG_RE.sub(r"(\1)", body)
+    # Last line of defense: never let a bare non-ASCII char reach pdflatex.
+    body = _latex_safe_unicode(body)
     return body
 
 
