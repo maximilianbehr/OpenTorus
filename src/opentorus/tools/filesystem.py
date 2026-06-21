@@ -211,7 +211,7 @@ def list_files(root: Path, user_path: str = ".") -> list[str]:
     """List entries directly under ``user_path``, hiding cache/scaffold noise."""
     target = resolve_workspace_path(root, user_path)
     if not target.exists():
-        raise OpenTorusError(f"Path does not exist: {user_path}")
+        raise OpenTorusError(f"Path does not exist: {user_path}{_dossier_path_hint(root, target)}")
     parts = _relative_parts(root, target)
     blocked = _listing_blocked_message(user_path, parts)
     if blocked:
@@ -235,7 +235,7 @@ def glob_files(root: Path, pattern: str, user_path: str = ".") -> list[str]:
         raise OpenTorusError("glob_files requires a non-empty 'pattern'.")
     base = resolve_workspace_path(root, user_path)
     if not base.exists():
-        raise OpenTorusError(f"Path does not exist: {user_path}")
+        raise OpenTorusError(f"Path does not exist: {user_path}{_dossier_path_hint(root, base)}")
     parts = _relative_parts(root, base)
     blocked = _listing_blocked_message(user_path, parts)
     if blocked:
@@ -294,6 +294,54 @@ def _resolve_problem_path(root: Path, user_path: str, parts: tuple[str, ...]) ->
     return note + _read_utf8_text(corrected, user_path)
 
 
+# Dossier-internal subdirectories an agent often references without the
+# ``.opentorus/problems/PROBLEM-XXXX/`` prefix (e.g. ``proof_attempts/PROOF-0001.md``).
+_DOSSIER_SUBDIRS: frozenset[str] = frozenset(
+    {"proof_attempts", "evidence", "experiments", "approaches", "counterexample_search", "referee"}
+)
+
+
+def _active_or_single_dossier(root: Path) -> str | None:
+    """The active problem, or the only dossier if there is exactly one; else None."""
+    from opentorus.research.dossier import store
+
+    ot_dir = root / WORKSPACE_DIRNAME
+    active = store.get_active_problem(ot_dir)
+    if active:
+        return active
+    dossiers = store.list_dossiers(ot_dir)
+    return dossiers[0].id if len(dossiers) == 1 else None
+
+
+def _bare_dossier_suggestion(root: Path, parts: tuple[str, ...]) -> str | None:
+    """Corrected path when a dossier subdir is referenced without its prefix.
+
+    ``proof_attempts/PROOF-0001.md`` → ``.opentorus/problems/PROBLEM-XXXX/proof_attempts/
+    PROOF-0001.md`` for the active/only dossier — the agent dropped the prefix.
+    """
+    if not parts or parts[0] not in _DOSSIER_SUBDIRS:
+        return None
+    pid = _active_or_single_dossier(root)
+    if pid is None:
+        return None
+    return "/".join((WORKSPACE_DIRNAME, "problems", pid, *parts))
+
+
+def _dossier_path_hint(root: Path, target: Path) -> str:
+    """A ' Did you mean …' suffix when a bare dossier path was used, else ''."""
+    try:
+        parts = target.resolve().relative_to(root.resolve()).parts
+    except ValueError:
+        return ""
+    suggestion = _bare_dossier_suggestion(root, parts)
+    if suggestion is None:
+        return ""
+    return (
+        ". Dossier artifacts live under .opentorus/problems/PROBLEM-XXXX/ — "
+        f"did you mean '{suggestion}'?"
+    )
+
+
 def read_file(
     root: Path,
     user_path: str,
@@ -317,6 +365,21 @@ def read_file(
         corrected = _resolve_problem_path(root, user_path, parts)
         if corrected is not None:
             return corrected
+        # The agent referenced a dossier artifact without its prefix (e.g.
+        # ``proof_attempts/PROOF-0001.md``). Resolve it under the active dossier.
+        suggestion = _bare_dossier_suggestion(root, parts)
+        if suggestion is not None:
+            corrected_file = root / suggestion
+            if corrected_file.is_file():
+                note = (
+                    f"(Note: '{user_path}' was missing its dossier prefix; resolved to "
+                    f"{suggestion}. Use that full path next time.)\n\n"
+                )
+                return note + _read_utf8_text(corrected_file, user_path)
+            raise OpenTorusError(
+                f"Not a file: {user_path}. Dossier artifacts live under "
+                f".opentorus/problems/PROBLEM-XXXX/ — did you mean '{suggestion}'?"
+            )
         raise OpenTorusError(f"Not a file: {user_path}")
     text = _read_utf8_text(target, user_path)
     if start is None and end is None:
