@@ -53,6 +53,20 @@ def _as_str_list(value: object) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _as_text(value: object) -> str:
+    """Coerce a structured free-text proof field to a string.
+
+    Models frequently pass ``lemmas`` / ``definitions`` / ``main_proof`` as a JSON
+    array of items rather than one string; joining with blank lines preserves the
+    content instead of rejecting the call or stringifying a Python list literal.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return "\n\n".join(str(x).strip() for x in value if str(x).strip())
+    return str(value)
+
+
 def _normalize_gap_args(value: object) -> list[str]:
     """Coerce the proof_write ``gaps`` arg into clean ``"[GAP-n] description"`` strings.
 
@@ -754,25 +768,28 @@ class ProofWriteTool(Tool):
             },
             "title": {"type": "string", "description": "Short title for this proof attempt."},
             "body": {
-                "type": "string",
+                "type": ["string", "array"],
                 "description": "Full markdown proof (optional if structured sections are given).",
             },
-            "theorem": {"type": "string", "description": "Theorem or goal statement."},
+            "theorem": {"type": ["string", "array"], "description": "Theorem or goal statement."},
             "definitions": {
-                "type": "string",
+                "type": ["string", "array"],
                 "description": "Definitions and standing assumptions.",
             },
-            "lemmas": {"type": "string", "description": "Supporting lemmas with proofs."},
+            "lemmas": {
+                "type": ["string", "array"],
+                "description": "Supporting lemmas with proofs (a string, or a list of lemmas).",
+            },
             "main_proof": {
-                "type": "string",
+                "type": ["string", "array"],
                 "description": "Main logical argument (use [GAP-n] for gaps).",
             },
             "gaps_markdown": {
-                "type": "string",
+                "type": ["string", "array"],
                 "description": "Section listing open gaps and limitations.",
             },
             "evidence_notes": {
-                "type": "string",
+                "type": ["string", "array"],
                 "description": "EXP-*/PAPER-* citations as corroboration only, not proof.",
             },
             "gaps": {
@@ -824,14 +841,14 @@ class ProofWriteTool(Tool):
             return self.fail(call, "proof_write requires 'problem_id' and 'title'.")
 
         body = assemble_nl_proof_body(
-            body=str(call.args.get("body", "")),
-            theorem=str(call.args.get("theorem", "")),
-            connection_to_dossier=str(call.args.get("connection_to_dossier", "")),
-            definitions=str(call.args.get("definitions", "")),
-            lemmas=str(call.args.get("lemmas", "")),
-            main_proof=str(call.args.get("main_proof", "")),
-            gaps_markdown=str(call.args.get("gaps_markdown", "")),
-            evidence_notes=str(call.args.get("evidence_notes", "")),
+            body=_as_text(call.args.get("body")),
+            theorem=_as_text(call.args.get("theorem")),
+            connection_to_dossier=_as_text(call.args.get("connection_to_dossier")),
+            definitions=_as_text(call.args.get("definitions")),
+            lemmas=_as_text(call.args.get("lemmas")),
+            main_proof=_as_text(call.args.get("main_proof")),
+            gaps_markdown=_as_text(call.args.get("gaps_markdown")),
+            evidence_notes=_as_text(call.args.get("evidence_notes")),
         )
         if len(body) < 40:
             return self.fail(
@@ -867,7 +884,7 @@ class ProofWriteTool(Tool):
             body,
             title=title,
             scope=scope,  # type: ignore[arg-type]
-            connection_to_dossier=str(call.args.get("connection_to_dossier", "")),
+            connection_to_dossier=_as_text(call.args.get("connection_to_dossier")),
         )
         if rel_errors:
             return self.fail(
