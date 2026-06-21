@@ -30,6 +30,7 @@ from typing import TypeVar
 import yaml
 from pydantic import BaseModel
 
+from opentorus.atomicio import atomic_write_text
 from opentorus.errors import OpenTorusError
 from opentorus.jsonl import append_jsonl, next_id, next_sequential_id, read_jsonl, rewrite_jsonl
 from opentorus.research.dossier.models import (
@@ -103,16 +104,14 @@ def _read_yaml_list(path: Path, model_cls: type[ModelT]) -> list[ModelT]:
 
 
 def _write_yaml_list(path: Path, models: list[BaseModel]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = [m.model_dump(mode="json") for m in models]
-    path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False, allow_unicode=True))
 
 
 def _write_yaml(path: Path, model: BaseModel) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    atomic_write_text(
+        path,
         yaml.safe_dump(model.model_dump(mode="json"), sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
     )
 
 

@@ -113,6 +113,39 @@ def run_doctor(root: Path, ot_dir: Path, config: Config) -> list[CheckResult]:
     else:
         results.append(CheckResult("quality", True, "test_command disabled"))
 
+    # Verification backends: report which enabled rigor backends are actually
+    # installed, so "formal verification available" is never advertised falsely.
+    try:
+        from opentorus.research.verifiers.registry import available_verifiers
+
+        ready = sorted(available_verifiers(config))
+        results.append(
+            CheckResult(
+                "verifiers",
+                True,
+                f"available: {', '.join(ready)}" if ready else "none installed (formal proof off)",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        results.append(CheckResult("verifiers", False, str(exc)))
+
+    # Execution backends: which runtimes are installed for containerized experiments.
+    try:
+        from opentorus.execution.registry import available_backends
+
+        ready_b = sorted(available_backends(config))  # already filtered to installed backends
+        results.append(
+            CheckResult(
+                "execution",
+                True,
+                f"available: {', '.join(ready_b)}"
+                if ready_b
+                else "local only (no container runtime)",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        results.append(CheckResult("execution", False, str(exc)))
+
     return results
 
 

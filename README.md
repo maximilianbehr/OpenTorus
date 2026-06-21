@@ -5,7 +5,7 @@
 > recording every step as inspectable artifacts on your own machine, and never
 > mistaking evidence for proof.
 
-**v0.0.1 — early release. Inspect it, run it, and report issues.**
+**v0.0.2 — early release. Inspect it, run it, and report issues.**
 
 ---
 
@@ -158,6 +158,7 @@ Real, runnable workflows on actual open problems (each resets a scratch
 | Example | Problem |
 |---------|---------|
 | [simons-eigenvalue-problems](examples/simons-eigenvalue-problems/) | Five eigenvalue / linear-systems open problems from a Simons workshop (arXiv:2602.05394), with containerized numerics. |
+| [matrix-functions](examples/matrix-functions/) | Five open problems on limited-memory polynomial methods for `f(A)b` (arXiv:2002.01682), with agent-written numerics. |
 | [polynomial-hirsch](examples/polynomial-hirsch/) | Polynomial Hirsch Conjecture — a literature + citation-honest dossier. |
 | [backward-error-convergence](examples/backward-error-convergence/) | Is randomness necessary for condition-number-independent backward-error convergence? (arXiv:2604.16075) |
 | [nystrom-submodularity](examples/nystrom-submodularity/) | Submodularity of the nuclear Nyström approximation error for SDD/SDDM matrices. |

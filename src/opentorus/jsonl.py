@@ -36,13 +36,14 @@ def rewrite_jsonl(path: Path, models: Sequence[BaseModel]) -> None:
     """Overwrite ``path`` with the given models (used for in-place updates).
 
     JSONL is append-only by default; rewriting the whole file is acceptable for
-    small, mutable ledgers such as claims where an entry's status can change.
+    small, mutable ledgers such as claims where an entry's status can change. The
+    rewrite is atomic (temp file + rename) so a crash mid-write cannot truncate the
+    ledger and silently lose records.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fh:
-        for model in models:
-            fh.write(model.model_dump_json())
-            fh.write("\n")
+    from opentorus.atomicio import atomic_write_text
+
+    payload = "".join(model.model_dump_json() + "\n" for model in models)
+    atomic_write_text(path, payload)
 
 
 def iter_jsonl(path: Path, model_cls: type[ModelT]) -> Iterator[ModelT]:
