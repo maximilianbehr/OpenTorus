@@ -26,6 +26,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (e.g. `proof_attempts/PROOF-0001.md`) against the active dossier, so the agent can
   read back a proof it just wrote without the full `.opentorus/problems/PROBLEM-XXXX/`
   prefix.
+- **Ollama gpt-oss harmony tool-name leak fixed at the source.** When Ollama's harmony
+  parser leaks channel framing into `function.name`
+  (e.g. `assistant<|channel|>commentary`), the Ollama provider now sanitizes it: a real
+  tool name is recovered from the `to=functions.NAME` recipient (anchored on `to=`, so a
+  function merely mentioned in a preamble is not dispatched), and a bare channel/role
+  marker is dropped (the turn degrades to a message) rather than persisted as a bogus
+  tool call that later breaks strict providers. Names that are not harmony framing —
+  including namespaced/dotted MCP tools like `mcp__server__get.forecast` — pass through
+  unchanged and are never dropped or rewritten. The streaming path now accumulates
+  tool-call deltas instead of overwriting, so a valid call is not lost when a later
+  delta carries only framing.
 
 ## [0.0.3] — 2026-06-21
 

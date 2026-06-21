@@ -9,6 +9,7 @@ clearly if the server is unreachable.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -198,11 +199,13 @@ class OllamaProvider(BaseProvider):
                 accumulated += content
                 if on_text is not None:
                     on_text(content)
-            # Tool calls arrive in their own delta; the final ``done`` chunk has an
-            # empty message, so capture them separately and never let ``done``
-            # clobber them (otherwise streamed tool calls are silently dropped).
+            # Tool calls arrive in their own delta(s); the final ``done`` chunk has an
+            # empty message. Accumulate across deltas instead of overwriting: a model
+            # may stream several calls in separate deltas, and a later delta carrying
+            # only harmony-framing garbage must not clobber a valid call captured
+            # earlier (it would be silently lost when the garbage is then dropped).
             if message.get("tool_calls"):
-                tool_calls = message["tool_calls"]
+                tool_calls = (tool_calls or []) + list(message["tool_calls"])
         last_message: dict = {"role": role, "content": accumulated}
         if tool_calls:
             last_message["tool_calls"] = tool_calls
@@ -225,13 +228,73 @@ def _ollama_usage(data: dict) -> TokenUsage | None:
     return TokenUsage(prompt_tokens=int(prompt or 0), completion_tokens=int(completion or 0))
 
 
+# OpenAI "harmony" response-format control tokens and channel names. gpt-oss models
+# emit tool calls as ``<|start|>assistant<|channel|>commentary to=functions.NAME
+# <|constrain|>json<|message|>{…}<|call|>``. When Ollama's harmony parser fails to
+# strip this framing it puts the leftover (e.g. ``assistant<|channel|>commentary``,
+# a bare preamble with no ``to=functions.X`` recipient) into ``function.name``. Such a
+# string is not a real tool name: persisting it corrupts the session and later breaks
+# strict providers (OpenAI rejects names not matching ^[a-zA-Z0-9_-]+$).
+_HARMONY_CHANNELS = frozenset({"analysis", "commentary", "final"})
+_HARMONY_ROLES = frozenset({"assistant", "system", "developer", "user", "tool"})
+# Tokens that are harmony framing, never a real tool name (compared case-insensitively).
+_NON_TOOL_TOKENS = _HARMONY_CHANNELS | _HARMONY_ROLES | frozenset({"functions"})
+_VALID_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+# Recovery is anchored on the ``to=`` recipient so a function merely *mentioned* in a
+# commentary preamble is not turned into a dispatchable call. ``to=functions.NAME`` for
+# OpenTorus tools (NAME kept verbatim, so namespaced ``mcp__server__tool`` survives);
+# ``to=namespace.tool`` for harmony builtins (last segment).
+_FUNCTIONS_RECIPIENT = re.compile(r"\bto=functions\.([A-Za-z0-9_-]+)")
+_BARE_RECIPIENT = re.compile(r"\bto=([A-Za-z0-9_.-]+)")
+
+
+def clean_harmony_tool_name(raw: object) -> str | None:
+    """Recover a real tool name from a possibly harmony-framed ``function.name``.
+
+    Returns the cleaned name, or ``None`` when the value is harmony framing rather than a
+    tool call (a bare channel/role marker, or a recipient that resolves to one), so the
+    caller drops it instead of persisting a bogus tool call. A name that does not look
+    like harmony framing is passed through unchanged — legitimate but unusual names such
+    as dotted/namespaced MCP tools (``mcp__server__get.forecast``) must never be dropped
+    or rewritten; the tool registry / agent loop validates them.
+    """
+    if not isinstance(raw, str):
+        return None
+    name = raw.strip()
+    if not name:
+        return None
+    # Harmony tool-call header leaked into the name → recover from the to= recipient.
+    m = _FUNCTIONS_RECIPIENT.search(name)
+    if m:
+        recovered = m.group(1)
+        return None if recovered.lower() in _NON_TOOL_TOKENS else recovered
+    m = _BARE_RECIPIENT.search(name)
+    if m:
+        recovered = m.group(1).split(".")[-1]  # to=browser.search → search
+        if not _VALID_TOOL_NAME.match(recovered) or recovered.lower() in _NON_TOOL_TOKENS:
+            return None
+        return recovered
+    # Control tokens but no recipient → a channel/role preamble, not a call.
+    if "<|" in name or "|>" in name:
+        return None
+    # A bare channel/role marker (any case) is not a tool call.
+    if name.lower() in _HARMONY_CHANNELS or name.lower() in _HARMONY_ROLES:
+        return None
+    # Not harmony framing → pass the name through unchanged (registry/loop validates).
+    return name
+
+
 def parse_ollama_message(message: dict) -> ProviderResponse:
     tool_calls = message.get("tool_calls") or []
     if tool_calls:
         parsed: list[ToolCallRequest] = []
         for tc in tool_calls:
             function = tc.get("function", {})
-            name = function.get("name", "")
+            name = clean_harmony_tool_name(function.get("name", ""))
+            if name is None:
+                # Harmony channel/role marker mis-parsed as a tool call — skip it so it
+                # is never persisted or sent on to a strict provider.
+                continue
             args = function.get("arguments", {})
             if isinstance(args, str):
                 try:
@@ -249,12 +312,15 @@ def parse_ollama_message(message: dict) -> ProviderResponse:
                     tool_call_id=tc.get("id") or uuid.uuid4().hex,
                 )
             )
-        first = parsed[0]
-        return ProviderResponse(
-            kind="tool_call",
-            tool_name=first.tool_name,
-            tool_args=first.tool_args,
-            tool_call_id=first.tool_call_id,
-            tool_calls=parsed,
-        )
+        if parsed:
+            first = parsed[0]
+            return ProviderResponse(
+                kind="tool_call",
+                tool_name=first.tool_name,
+                tool_args=first.tool_args,
+                tool_call_id=first.tool_call_id,
+                tool_calls=parsed,
+            )
+        # Every "tool call" was harmony framing → treat as a normal message so the
+        # commentary/analysis text is preserved instead of emitting a bogus call.
     return ProviderResponse(kind="message", content=message.get("content", ""))
