@@ -23,7 +23,11 @@ NL_PROOF_SECTIONS = (
 # captured. Requiring a number and/or a colon-led description (not a bare space)
 # keeps it from matching ordinary bracketed prose such as ``[gap between
 # eigenvalues]`` — the spectral "gap" is common in this domain.
-_GAP_MARKER = re.compile(r"\[GAP(?:[-\s]?\d+)?(?::[^\]]*)?\]", re.I)
+# Accept ASCII '-' and the Unicode hyphens/dashes a model may emit (e.g. U+2011
+# non-breaking hyphen in "[GAP-1]"); an ASCII-only class silently under-counts gaps.
+# Char class: literal '-', the U+2010–U+2015 hyphen/dash block, and U+2212 minus.
+_HYPHENS = "-‐-―−"
+_GAP_MARKER = re.compile(rf"\[GAP(?:[{_HYPHENS}\s]?\d+)?(?::[^\]]*)?\]", re.I)
 _CONNECTION_HEADING = re.compile(r"^##\s+Connection to dossier\s*$", re.M | re.I)
 _MIN_BRIDGE_CHARS = 60
 

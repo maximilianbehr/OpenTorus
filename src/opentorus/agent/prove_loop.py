@@ -646,6 +646,10 @@ def run_prove(
         loop = proof_loop_holder[0]
         if _gap_fill["anchor"] is None:
             _gap_fill["anchor"] = loop.steps_run
+            # The draft now exists with open gaps: reflect the gap-fill phase in the
+            # trace banner instead of leaving it on "Proof draft".
+            if on_status is not None:
+                on_status("phase", "Proof gap-fill")
             return False
         spent = loop.steps_run - int(_gap_fill["anchor"])
         return spent >= config.agent.prove_gap_fill_max_steps

@@ -292,9 +292,15 @@ _UNICODE_SPACES = str.maketrans(
         "\u2009": " ",
         "\u200a": " ",
         "\u200b": "",
+        # Hyphen/dash block + minus sign \u2192 ASCII so pdfLaTeX renders them and the
+        # ASCII gap-marker handling (e.g. "[GAP-1]") matches model-emitted variants.
+        "\u2010": "-",
         "\u2011": "-",
+        "\u2012": "-",
         "\u2013": "-",
         "\u2014": "--",
+        "\u2015": "-",
+        "\u2212": "-",
     }
 )
 

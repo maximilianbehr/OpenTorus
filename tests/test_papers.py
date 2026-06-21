@@ -130,3 +130,28 @@ def test_add_paper_then_fetch_deduplicates(tmp_path: Path) -> None:
     )
     assert fetched.id == added.id  # same record, not a duplicate PAPER-0002
     assert len(list_papers(base)) == 1
+
+
+def test_paper_agent_line_does_not_loop_on_unavailable_full_text() -> None:
+    # A paper that was fetched but has no accessible full text must not invite a
+    # re-fetch (that drove the agent into a paper_fetch loop); a not-yet-fetched
+    # stub still suggests paper_fetch.
+    from datetime import UTC, datetime
+
+    from opentorus.research.papers import Paper, format_paper_agent_line
+
+    fetched = Paper(
+        id="PAPER-0001",
+        source="2002.01682",
+        source_type="arxiv",
+        arxiv_id="2002.01682",
+        full_text_accessible=False,
+        access_note="full text not accessible (no legal open-access copy found)",
+        retrieved_at=datetime.now(UTC),
+    )
+    line = format_paper_agent_line(fetched)
+    assert "do not re-fetch" in line
+    assert "re-fetch with fetch=" not in line
+
+    stub = Paper(id="PAPER-0002", source="2002.01682", source_type="arxiv", arxiv_id="2002.01682")
+    assert "paper_fetch to retrieve" in format_paper_agent_line(stub)
