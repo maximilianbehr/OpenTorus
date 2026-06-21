@@ -134,7 +134,11 @@ def format_paper_agent_line(paper: Paper, ot_dir: Path | None = None) -> str:
         read_tag = "parsed" if is_paper_parsed(ot_dir, paper) else "UNREAD"
         chunks.append(f"[{read_tag}]")
     elif fetch_id and not paper.full_text_accessible:
-        chunks.append("[metadata only — re-fetch with fetch= id above]")
+        if paper.access_note:
+            # Already fetched; full text is unavailable and will not change on retry.
+            chunks.append("[metadata only — full text unavailable; paper_read, do not re-fetch]")
+        else:
+            chunks.append("[metadata only — paper_fetch to retrieve full text]")
     elif paper.local_path:
         chunks.append(paper.local_path)
     elif not fetch_id:

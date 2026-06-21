@@ -104,3 +104,13 @@ def test_enriched_report_is_still_honest(tmp_path: Path) -> None:
     claims.add_claim(base, pid, claim_type="CONJECTURE", statement="A neutral statement.")
     build_report(base, pid, harvest_session=False)
     assert not lint_dossier_report(base, pid)
+
+
+def test_explicit_gaps_counts_unicode_hyphen_markers() -> None:
+    # Models sometimes emit "[GAP‑1]" with a Unicode hyphen (U+2011); the gap
+    # scanner must still count it, not silently report zero gaps.
+    from opentorus.research.dossier.nl_proof import explicit_gaps
+
+    body = "We use Lemma 1 [GAP‑1] and bound the residual [GAP–2]."
+    merged = explicit_gaps(gaps=[], body=body)
+    assert len(merged) == 2  # both Unicode-hyphen markers found
