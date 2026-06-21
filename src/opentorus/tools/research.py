@@ -961,6 +961,42 @@ class ExpRunTool(Tool):
         return self.fail(call, body, exit_code=code, exp_id=exp_id)
 
 
+class KbQueryTool(Tool):
+    name = "kb_query"
+    description = (
+        "Search the cross-workspace knowledge base (papers + notes promoted from "
+        "prior investigations) by keyword. Read-only and offline — consult it before "
+        "spending network budget on a fresh literature search." + ex(query="Nyström error bound")
+    )
+    input_schema: dict = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Keywords to search the KB for."},
+            "limit": {"type": "integer", "description": "Max hits (default 5)."},
+        },
+        "required": ["query"],
+    }
+    risk_level = "low"
+
+    def run(self, call: ToolCall) -> ToolResult:
+        from opentorus.research.kb import query_kb
+
+        query = str(call.args.get("query", "")).strip()
+        if not query:
+            return self.fail(call, "kb_query requires a non-empty 'query'.")
+        hits = query_kb(query, k=int(call.args.get("limit", 5)))
+        if not hits:
+            return self.ok(call, "No KB hits (the cross-workspace knowledge base is empty).")
+        lines = []
+        for entry, score in hits:
+            origin = f" [{entry.origin_workspace}:{entry.origin_id}]" if entry.origin_id else ""
+            snippet = " ".join((entry.text or "").split())[:200]
+            lines.append(
+                f"[{entry.kind} {entry.id} · {score:.2f}]{origin} {entry.title or ''}: {snippet}"
+            )
+        return self.ok(call, "\n".join(lines), count=len(hits))
+
+
 def register_research_tools(registry, root: Path, ot_dir: Path, config) -> None:
     """Register paper + research artifact tools when enabled in config."""
     if config is None:
@@ -973,6 +1009,7 @@ def register_research_tools(registry, root: Path, ot_dir: Path, config) -> None:
         registry.register(PaperFetchTool(ot_dir, config))
         registry.register(PaperReadTool(ot_dir))
         registry.register(PaperExtractProblemsTool(ot_dir, config))
+        registry.register(KbQueryTool())
     registry.register(MemoryAddTool(ot_dir))
     registry.register(ClaimNewTool(ot_dir))
     registry.register(EvidenceAddTool(ot_dir))
