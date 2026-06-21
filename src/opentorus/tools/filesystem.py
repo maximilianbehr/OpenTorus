@@ -108,18 +108,60 @@ def _listing_blocked_message(user_path: str, parts: tuple[str, ...]) -> str | No
     return None
 
 
-def _write_blocked_message(user_path: str, parts: tuple[str, ...]) -> str | None:
-    """Refuse writes into internal OpenTorus state.
+# Tool-managed dossier artifacts (the first path component under a PROBLEM-* dir).
+# A raw write_file/apply_patch to any of these can clobber a proof/claim/experiment
+# that the dossier tools own (observed: an agent overwriting its own PROOF-* file),
+# so they are write-protected; free-form notes elsewhere in the dossier are allowed.
+_DOSSIER_MANAGED_ARTIFACTS: frozenset[str] = frozenset(
+    {
+        "proof_attempts",
+        "evidence",
+        "experiments",
+        "referee",
+        "approaches",
+        "counterexample_search",
+        "algebra",
+        "claims.jsonl",
+        "report.md",
+        "problem.yaml",
+        "statement.md",
+        "index.jsonl",
+        "status_changelog.jsonl",
+        "known_results.yaml",
+        "assumptions.yaml",
+        "definitions.yaml",
+        "related_papers.jsonl",
+        "theorem_refs.jsonl",
+        "failed_attempts.jsonl",
+    }
+)
 
-    Only dossier files and task cards (the agent-readable subtrees) may be written
-    directly; the papers cache, memory, summaries, and session logs are managed by
-    the dedicated artifact tools, mirroring the read guard so protection is symmetric.
+
+def _write_blocked_message(user_path: str, parts: tuple[str, ...]) -> str | None:
+    """Refuse writes into internal OpenTorus state and tool-managed dossier artifacts.
+
+    Non-agent-readable internal state (papers cache, memory, session logs) is always
+    refused. Inside a dossier, the tool-managed artifacts (proof_attempts/,
+    claims.jsonl, evidence/, experiment manifests, report.md, …) are also refused: a
+    raw ``write_file``/``apply_patch`` would clobber a proof/claim the dossier tools
+    own (observed: an agent overwriting its own PROOF-* file). Free-form notes in the
+    dossier remain writable; project files belong outside ``.opentorus/``.
     """
     if parts and parts[0] == WORKSPACE_DIRNAME and not _under_opentorus_agent_readable(parts):
         return (
             f"Refusing to write '{user_path}' into internal OpenTorus state. Use the "
             "dedicated tools (claim_new, evidence_add, proof_write, exp_new, memory_add) "
             "for artifacts, or write project files outside .opentorus/."
+        )
+    if (
+        _opentorus_dossier_path(parts)
+        and len(parts) >= 4
+        and parts[3] in _DOSSIER_MANAGED_ARTIFACTS
+    ):
+        return (
+            f"Refusing to write '{user_path}': it is a tool-managed dossier artifact. "
+            "Use proof_write / claim_new / evidence_add / exp_new / dossier_* tools — a "
+            "raw write would corrupt the artifact index."
         )
     return None
 
