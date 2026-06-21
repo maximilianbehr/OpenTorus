@@ -11,6 +11,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   replayed into each request (less amnesia about earlier papers/claims/proof steps). It
   remains bounded by `context.token_budget`, which triggers compaction.
 
+### Fixed
+- Citation grounding now recognizes **all numbered environments** — theorem, lemma,
+  proposition, corollary, **definition, remark, equation, example** — not just
+  theorem-like ones. A proof citing e.g. `Definition 1.1` of a paper that has no
+  `Theorem 1.1` is no longer wrongly rejected as a fabricated citation, and such numbers
+  now appear in the "parsed text contains …" hint. Messages are reworded from
+  "Theorem/Lemma N" to the generic "numbered result N".
+
 ## [0.0.5] — 2026-06-21
 
 This release hardens `opentorus prove` and provider handling for real local/OpenAI-compatible

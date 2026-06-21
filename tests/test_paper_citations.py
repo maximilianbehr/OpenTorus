@@ -6,6 +6,7 @@ from pathlib import Path
 
 from opentorus.agent.literature_gate import literature_tool_gate
 from opentorus.research.paper_citations import (
+    available_theorem_numbers,
     corpus_has_numbered_theorems,
     theorem_in_corpus,
     validate_proof_citations,
@@ -25,6 +26,36 @@ def test_theorem_in_corpus() -> None:
     assert theorem_in_corpus(text, "3.1")
     assert theorem_in_corpus(text, "2.4")
     assert not theorem_in_corpus(text, "9.9")
+
+
+def test_recognizes_all_numbered_environments() -> None:
+    # Not just theorems/lemmas: a number that exists only as a Definition/Remark/
+    # Corollary/Example/Equation must be recognized (the reported false rejection of
+    # "Definition 1.1" when the paper had no Theorem 1.1).
+    corpus = (
+        "Definition 1.1 (sketch). Theorem 1.2 holds. Lemma 1.6. Corollary 2.1. "
+        "Remark 4.10. Example 3.2. equation 5.1."
+    )
+    for n in ("1.1", "1.2", "1.6", "2.1", "4.10", "3.2", "5.1"):
+        assert theorem_in_corpus(corpus, n), n
+    assert not theorem_in_corpus(corpus, "9.9")
+    assert available_theorem_numbers(corpus) == ["1.1", "1.2", "1.6", "2.1", "3.2", "4.10", "5.1"]
+    assert corpus_has_numbered_theorems("Only a Definition 1.1 here.")
+
+
+def test_definition_citation_is_not_rejected(tmp_path: Path) -> None:
+    # PAPER-0001 has Definition 1.1 (not Theorem 1.1); citing it must be accepted.
+    ot = _ot(tmp_path)
+    record = SourceRecord(source="arxiv", title="Tensor concentration", arxiv_id="2411.10633")
+    paper = acquire_paper(ot, record, downloader=lambda u: b"%PDF")
+    pages = [
+        "1 Introduction\nDefinition 1.1 (injective norm). Theorem 1.2 follows. Lemma 1.6.\n",
+    ]
+    read_paper(ot, paper.id, page_extractor=lambda path: pages)
+
+    body = "By Definition 1.1 of PAPER-0001 the injective norm is well defined."
+    errors, _ = validate_proof_citations(ot, body)
+    assert not errors  # Definition 1.1 exists → no fabricated-citation block
 
 
 def test_validate_proof_citations_rejects_hallucinated_theorem(tmp_path: Path) -> None:
