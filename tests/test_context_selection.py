@@ -64,22 +64,24 @@ def test_no_query_means_no_selection(tmp_path: Path) -> None:
 
 def test_select_relevant_survives_embedding_failure(tmp_path: Path, monkeypatch) -> None:
     # A flaky embeddings/index backend must never crash the agent: select_relevant
-    # degrades to no retrieval and trips a circuit breaker for the rest of the run.
+    # degrades to no retrieval and, after several consecutive failures, trips a
+    # recoverable circuit breaker for the rest of the run.
     import opentorus.agent.context as context
 
     ot = _ws(tmp_path)
     _seed(ot)
-    monkeypatch.setattr(context, "_retrieval_disabled", False)
+    context.reset_retrieval_breaker()
 
     def _boom(*args, **kwargs):
         raise TimeoutError("timed out")
 
     monkeypatch.setattr("opentorus.research.index.hybrid_search", _boom)
     config = default_config()
-    # First call hits the failure, returns [] instead of raising, trips the breaker.
-    assert select_relevant(ot, config, "latency") == []
-    assert context._retrieval_disabled is True
-    # Subsequent calls skip retrieval entirely (no repeated timeout).
+    # Each failure returns [] instead of raising; the breaker trips at the limit.
+    for _ in range(context._RETRIEVAL_FAILURE_LIMIT):
+        assert select_relevant(ot, config, "latency") == []
+    assert context._retrieval_failures >= context._RETRIEVAL_FAILURE_LIMIT
+    # Once tripped, subsequent calls skip retrieval entirely (no repeated timeout).
     calls = {"n": 0}
 
     def _count(*args, **kwargs):
@@ -89,3 +91,25 @@ def test_select_relevant_survives_embedding_failure(tmp_path: Path, monkeypatch)
     monkeypatch.setattr("opentorus.research.index.hybrid_search", _count)
     assert select_relevant(ot, config, "latency") == []
     assert calls["n"] == 0  # breaker prevents re-calling the backend
+
+
+def test_retrieval_breaker_resets_on_success(tmp_path: Path, monkeypatch) -> None:
+    # A single transient failure must not permanently disable retrieval: a later
+    # success resets the counter.
+    import opentorus.agent.context as context
+
+    ot = _ws(tmp_path)
+    _seed(ot)
+    context.reset_retrieval_breaker()
+    config = default_config()
+
+    monkeypatch.setattr(
+        "opentorus.research.index.hybrid_search",
+        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("blip")),
+    )
+    assert select_relevant(ot, config, "latency") == []
+    assert context._retrieval_failures == 1
+
+    monkeypatch.setattr("opentorus.research.index.hybrid_search", lambda *a, **k: [])
+    assert select_relevant(ot, config, "latency") == []
+    assert context._retrieval_failures == 0  # success reset the counter

@@ -276,7 +276,13 @@ def compact_messages(
         head.append(messages[i])
         i += 1
     convo = messages[i:]
-    budget = config.context.token_budget - total_tokens(head)
+    # Floor the recent-conversation budget: a large rebuilt system head (the full
+    # artifact inventory each turn) must not starve recent turns down to nothing.
+    # Reserve ``compaction_keep_ratio`` of the token budget for recent turns (scaled to
+    # the budget, not an absolute floor that would suppress compaction at small budgets),
+    # even if that means the head + summary slightly overflow.
+    recent_floor = int(config.context.token_budget * config.context.compaction_keep_ratio)
+    budget = max(recent_floor, config.context.token_budget - total_tokens(head))
 
     older, kept = _split_recent(convo, budget)
     if not older:

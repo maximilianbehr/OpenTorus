@@ -19,9 +19,18 @@ from opentorus.workspace import gather_status
 
 _logger = logging.getLogger(__name__)
 
-# Process-level circuit breaker: once retrieval fails (e.g. the embeddings endpoint
-# times out), skip it for the rest of the run rather than pay the timeout every step.
-_retrieval_disabled = False
+# Circuit breaker for retrieval: a flaky embeddings endpoint must not abort the run,
+# but a single transient hiccup must not permanently disable retrieval for every later
+# phase either. So count *consecutive* failures, trip only at the limit, and let any
+# success reset the counter; ``reset_retrieval_breaker`` clears it at a phase boundary.
+_retrieval_failures = 0
+_RETRIEVAL_FAILURE_LIMIT = 3
+
+
+def reset_retrieval_breaker() -> None:
+    """Reset the retrieval failure counter (call at the start of a run/phase)."""
+    global _retrieval_failures
+    _retrieval_failures = 0
 
 
 def latest_user_query(ot_dir: Path) -> str | None:
@@ -39,23 +48,34 @@ def select_relevant(ot_dir: Path, config: Config, query: str | None):
     API or optional local sentence-transformers), degrading transparently to
     BM25-only otherwise.
     """
-    global _retrieval_disabled
-    if not config.context.retrieval_enabled or not query or _retrieval_disabled:
+    global _retrieval_failures
+    if (
+        not config.context.retrieval_enabled
+        or not query
+        or _retrieval_failures >= _RETRIEVAL_FAILURE_LIMIT
+    ):
         return []
     from opentorus.research.embeddings import load_embedder
     from opentorus.research.index import hybrid_search
 
     # Retrieval is an optional enhancement: a flaky embeddings endpoint (e.g. an
     # Ollama timeout while a large chat model occupies the server) must never abort
-    # the agent run. Degrade to no retrieval on any failure, and trip a circuit
-    # breaker so the rest of the run does not pay the timeout on every step.
+    # the agent run. Degrade to no retrieval on failure; trip the breaker only after
+    # several *consecutive* failures, and let a success reset it so one transient
+    # hiccup does not silently disable retrieval for the rest of the process.
     try:
         embedder = load_embedder(config)
-        return hybrid_search(ot_dir, query, k=config.context.top_k, embedder=embedder)
+        result = hybrid_search(ot_dir, query, k=config.context.top_k, embedder=embedder)
+        _retrieval_failures = 0
+        return result
     except Exception as exc:  # noqa: BLE001 — retrieval is best-effort, never fatal
-        _retrieval_disabled = True
-        _logger.warning(
-            "Context retrieval failed (%s); disabling it for the rest of this run.", exc
+        _retrieval_failures += 1
+        level = "warning" if _retrieval_failures >= _RETRIEVAL_FAILURE_LIMIT else "debug"
+        getattr(_logger, level)(
+            "Context retrieval failed (%s); failure %d/%d.",
+            exc,
+            _retrieval_failures,
+            _RETRIEVAL_FAILURE_LIMIT,
         )
         return []
 

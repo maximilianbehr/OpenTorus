@@ -421,12 +421,16 @@ def run_prove(
     session_id: str | None = None,
 ) -> ProveOutcome:
     """Run one bounded agent session aimed at an NL proof artifact."""
+    from opentorus.agent.context import reset_retrieval_breaker
     from opentorus.agent.loop import AgentLoop
     from opentorus.research.dossier import store
     from opentorus.research.dossier.report import lint_dossier_report
     from opentorus.research.papers import is_paper_parsed, list_papers
     from opentorus.tools.builtin import build_default_registry
 
+    # Start each prove run with retrieval re-enabled: a breaker tripped in an earlier
+    # phase/run must not silently disable retrieval here.
+    reset_retrieval_breaker()
     pid = problem_id.strip().upper()
     store.require_dossier(ot_dir, pid)
 
