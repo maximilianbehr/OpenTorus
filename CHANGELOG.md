@@ -12,6 +12,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remains bounded by `context.token_budget`, which triggers compaction.
 
 ### Fixed
+- The CLI agent trace no longer crashes when a provider emits stray markup-like tokens.
+  Model/tool text (e.g. a model writing a `[/THINK]` reasoning marker, or a tool argument
+  containing brackets) was interpolated raw into rich's markup-enabled `console.print`,
+  so a mismatched `[...]` raised `rich.errors.MarkupError` and aborted the whole run
+  (seen during `opentorus prove` gap-fill). Such text is now escaped before printing in
+  the non-streaming trace paths (context replay, tool-call args, reply preview), matching
+  the `markup=False` guard already used on the streaming paths.
 - Citation grounding now recognizes **all numbered environments** — theorem, lemma,
   proposition, corollary, **definition, remark, equation, example** — not just
   theorem-like ones. A proof citing e.g. `Definition 1.1` of a paper that has no

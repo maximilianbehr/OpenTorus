@@ -318,6 +318,20 @@ def setup_logging(verbose: bool = False, debug: bool = False) -> None:
     logger.setLevel(level)
 
 
+def _esc(text: str) -> str:
+    """Escape rich console markup in model/tool-controlled text.
+
+    Provider output can contain stray ``[...]`` tokens — e.g. a model emitting a
+    ``[/THINK]`` reasoning marker, or a tool argument with brackets. Interpolated
+    raw into a markup-enabled ``console.print`` these are parsed as markup tags and
+    a mismatched one raises ``rich.errors.MarkupError``, crashing the whole run.
+    Escape before interpolating so the styling tags we add stay intact.
+    """
+    from rich.markup import escape
+
+    return escape(str(text))
+
+
 def _format_tool_args(args: dict, *, debug: bool) -> str:
     """Pretty-print tool arguments for verbose traces."""
     import json
@@ -452,16 +466,16 @@ class LlmTraceSession:
             tool_name=str(tool_name) if tool_name else None,
         )
         if not formatted:
-            self._console.print(f"  [{style}]{label}[/{style}] [dim](empty)[/dim]")
+            self._console.print(f"  [{style}]{_esc(label)}[/{style}] [dim](empty)[/dim]")
             return
 
         lines = formatted.splitlines()
         if len(lines) == 1:
-            self._console.print(f"  [{style}]{label}[/{style}] {lines[0]}")
+            self._console.print(f"  [{style}]{_esc(label)}[/{style}] {_esc(lines[0])}")
             return
-        self._console.print(f"  [{style}]{label}[/{style}]")
+        self._console.print(f"  [{style}]{_esc(label)}[/{style}]")
         for line in lines:
-            self._console.print(f"    {line}")
+            self._console.print(f"    {_esc(line)}")
 
     def on_response(self, response: Any) -> None:
         from opentorus.providers.base import ProviderResponse
@@ -470,12 +484,12 @@ class LlmTraceSession:
             return
         if response.kind == "tool_call":
             args_text = _format_tool_args(response.tool_args or {}, debug=self._debug)
-            self._console.print(f"  [green]→ call[/green] [bold]{response.tool_name}[/bold]")
+            self._console.print(f"  [green]→ call[/green] [bold]{_esc(response.tool_name)}[/bold]")
             if "\n" in args_text:
                 for line in args_text.splitlines():
-                    self._console.print(f"    [dim]{line}[/dim]")
+                    self._console.print(f"    [dim]{_esc(line)}[/dim]")
             else:
-                self._console.print(f"    [dim]{args_text}[/dim]")
+                self._console.print(f"    [dim]{_esc(args_text)}[/dim]")
         elif response.content:
             if self._streamed_chars:
                 self._console.print(
@@ -486,12 +500,12 @@ class LlmTraceSession:
                 if self._debug:
                     self._console.print("  [cyan]→ reply[/cyan]")
                     for line in preview.splitlines():
-                        self._console.print(f"    {line}")
+                        self._console.print(f"    {_esc(line)}")
                 else:
                     one_line = preview.replace("\n", " ")
                     if len(one_line) > 240:
                         one_line = one_line[:240] + "…"
-                    self._console.print(f"  [cyan]→ reply[/cyan] {one_line}")
+                    self._console.print(f"  [cyan]→ reply[/cyan] {_esc(one_line)}")
         if self._stream_prefix_printed or self._thinking_prefix_printed:
             self._console.print()
         self._stream_prefix_printed = False
