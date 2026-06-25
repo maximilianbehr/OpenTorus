@@ -58,6 +58,27 @@ def test_definition_citation_is_not_rejected(tmp_path: Path) -> None:
     assert not errors  # Definition 1.1 exists → no fabricated-citation block
 
 
+def test_full_body_results_survive_parsing_for_citation_grounding(tmp_path: Path) -> None:
+    # Regression: ``structure.json`` keeps only a 280-char outline per section, so a
+    # result deep in a section (e.g. ``Lemma 3.1`` after a long preamble) used to be
+    # invisible to citation grounding and wrongly rejected as invented. read_paper now
+    # also persists the full text, so the whole body is searchable.
+    ot = _ot(tmp_path)
+    record = SourceRecord(source="arxiv", title="Tensor concentration", arxiv_id="2411.10633")
+    paper = acquire_paper(ot, record, downloader=lambda u: b"%PDF")
+    filler = "We develop the estimate in detail. " * 40  # > 280 chars before the result
+    pages = [
+        "1 Introduction\nTheorem 1.2 holds.\n",
+        f"3 Main results\n{filler}\nLemma 3.1 (key estimate). The bound follows.\n",
+    ]
+    paper = read_paper(ot, paper.id, page_extractor=lambda path: pages)
+
+    assert paper.text_path and (ot / paper.text_path).is_file()
+    body = "By Lemma 3.1 in PAPER-0001 the estimate holds."
+    errors, _ = validate_proof_citations(ot, body)
+    assert not errors  # Lemma 3.1 is deep in the body but still grounded
+
+
 def test_validate_proof_citations_rejects_hallucinated_theorem(tmp_path: Path) -> None:
     ot = _ot(tmp_path)
     record = SourceRecord(source="arxiv", title="Matrix bounds", arxiv_id="2401.00001")
