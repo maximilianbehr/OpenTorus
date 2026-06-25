@@ -589,6 +589,17 @@ def read_paper(
         section.text = section.text[:280]
     structure_file.write_text(trimmed.model_dump_json(indent=2), encoding="utf-8")
 
+    # Persist the full extracted text too. ``structure.json`` keeps only a 280-char
+    # outline per section for display, but citation grounding searches the parsed
+    # corpus for cited result numbers — without the full body, deep results (e.g.
+    # ``Lemma 3.1`` in a later section) are invisible and get wrongly rejected as
+    # invented. We already have the page text here, so write it once.
+    full_text = "\n".join(pages).strip()
+    if full_text:
+        text_file = paper_dir / "text.txt"
+        text_file.write_text(full_text, encoding="utf-8")
+        paper.text_path = str(text_file.relative_to(ot_dir))
+
     summaries = ot_dir / "summaries"
     summaries.mkdir(parents=True, exist_ok=True)
     note_file = summaries / f"{paper_id}.md"

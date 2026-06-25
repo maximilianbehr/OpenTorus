@@ -12,6 +12,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remains bounded by `context.token_budget`, which triggers compaction.
 
 ### Fixed
+- Citation grounding no longer rejects results that exist deep in a paper. `read_paper`
+  persists only a 280-char outline per section in `structure.json`, and the citation
+  corpus was built from that outline — so a real result in a later section (e.g.
+  `Lemma 3.1`) was invisible and wrongly reported as an invented citation. `read_paper`
+  now also writes the full extracted text (`text.txt`) it already has, so the whole body
+  is searchable; the compact `structure.json` is unchanged. Re-run `paper_read` /
+  `paper_fetch` on existing dossiers to regenerate the full-text artifact.
 - The CLI agent trace no longer crashes when a provider emits stray markup-like tokens.
   Model/tool text (e.g. a model writing a `[/THINK]` reasoning marker, or a tool argument
   containing brackets) was interpolated raw into rich's markup-enabled `console.print`,
