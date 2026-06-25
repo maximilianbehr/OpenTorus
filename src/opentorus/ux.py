@@ -318,7 +318,7 @@ def setup_logging(verbose: bool = False, debug: bool = False) -> None:
     logger.setLevel(level)
 
 
-def _esc(text: str) -> str:
+def _esc(text: Any) -> str:
     """Escape rich console markup in model/tool-controlled text.
 
     Provider output can contain stray ``[...]`` tokens — e.g. a model emitting a
