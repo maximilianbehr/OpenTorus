@@ -26,6 +26,7 @@ and builds an honesty-linted report.
 | [nystrom-submodularity](nystrom-submodularity/) | Is the nuclear-norm Nyström approximation error submodular for SDD/SDDM positive-definite matrices? | no | `bash nystroem_submodularity.sh` |
 | [matrix-sign-approximation](matrix-sign-approximation/) | Asymptotic minimax error of the best degree-`2^m`-computable polynomial approximating the matrix sign function on `[-1,-δ] ∪ [δ,1]` (arXiv:2504.01500). | no | `bash sign.sh` |
 | [random-nla](random-nla/) | Adaptive sketch size for randomized low-rank approximation: an a posteriori error estimate driving an adaptive `ℓ = k + p` in the randomized SVD / range finder, and the oversampling each spectral-decay profile needs (Martinsson & Tropp survey, arXiv:2002.01387). | yes (agent-written, containerized) | `bash adaptive_sketch_size.sh` |
+| [tensor-concentration](tensor-concentration/) | The type-2 constant of tensors (Conjecture 16): does `E‖Σ gᵢTᵢ‖_{ℐₚ} ≤ Õ_{r,p}(d^{1/2−1/p}·√Σ‖Tᵢ‖_{ℐₚ}²)` for the symmetric injective `ℓₚ` norm? Settled for `p ≥ 2r` (arXiv:2411.10633); open for `p < 2r` and rank `r ≥ 3` (Lucca, randomstrasse101 blog). | yes (agent-written, containerized) | `bash tensor_concentration.sh` |
 
 Each directory has its own README with the full problem statement, a step-by-step
 description of the workflow, and prerequisites.
