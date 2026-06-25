@@ -682,6 +682,13 @@ def lint_dossier_report(ot_dir: Path, problem_id: str) -> list[ReportIssue]:
     store.require_dossier(ot_dir, problem_id)
     report_path = store.dossier_dir(ot_dir, problem_id) / "report.md"
     text = report_path.read_text("utf-8") if report_path.is_file() else ""
+    # Don't re-lint the report's own "Honesty Warnings" section: it quotes the very
+    # phrases the linter flags (e.g. 'is proved'), which would re-trigger and report
+    # phantom warnings on the warning text itself. That section is the linter's output,
+    # not dossier prose.
+    marker = text.rfind("## Honesty Warnings")
+    if marker != -1:
+        text = text[:marker]
     has_proof, has_ref, has_thm = honesty_context(ot_dir, problem_id)
     return lint_report(
         text,

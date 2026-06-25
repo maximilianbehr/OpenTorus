@@ -12,6 +12,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remains bounded by `context.token_budget`, which triggers compaction.
 
 ### Fixed
+- The honesty linter no longer raises phantom warnings on its own output. Two
+  self-inflicted false positives are fixed: (1) the proof-sketch bootstrap scaffold's
+  gap placeholder said "do not claim the theorem **is proved** while gaps remain",
+  which tripped the result-assertion check — reworded so OpenTorus-generated text never
+  self-trips; (2) `lint_dossier_report` re-linted the report's own "Honesty Warnings"
+  section, whose entries quote the flagged phrase (e.g. `'is proved'`) and re-triggered
+  the linter, double-counting every warning — that section is now excluded from
+  re-linting.
 - Citation grounding no longer rejects results that exist deep in a paper. `read_paper`
   persists only a 280-char outline per section in `structure.json`, and the citation
   corpus was built from that outline — so a real result in a later section (e.g.

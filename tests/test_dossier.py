@@ -319,6 +319,36 @@ def test_eval008_report_useful_when_open(tmp_path: Path) -> None:
     assert not lint_dossier_report(base, pid)
 
 
+def test_bootstrap_scaffold_does_not_self_trip_honesty_linter() -> None:
+    # The deliverable-bootstrap scaffold is OpenTorus-generated text; its own
+    # placeholders must not trip the honesty linter (regression: the gaps placeholder
+    # said "do not claim the theorem is proved …", flagged as an 'is proved' overclaim).
+    from opentorus.research.dossier.honesty import lint_report
+    from opentorus.research.dossier.nl_proof import bootstrap_proof_write_args
+
+    args = bootstrap_proof_write_args("PROBLEM-0001", "type-2 constant", statement="X")
+    body = "\n".join(
+        [args["theorem"], args["definitions"], args["main_proof"], args["gaps_markdown"]]
+    )
+    assert not lint_report(body, has_supported_theorem=False)
+
+
+def test_lint_does_not_relint_own_warnings_section(tmp_path: Path) -> None:
+    # The persisted report's "Honesty Warnings" section quotes the phrases it flags;
+    # re-linting must skip that section so a warning does not flag its own quoted text.
+    base, pid = _problem(tmp_path)
+    claims.add_claim(base, pid, claim_type="CONJECTURE", statement="X holds")
+    build_report(base, pid)
+    report_path = store.dossier_dir(base, pid) / "report.md"
+    report_path.write_text(
+        report_path.read_text("utf-8")
+        + "\n- line 1 [result_claim] 'is proved': sample quoted warning text.\n",
+        encoding="utf-8",
+    )
+    # The injected line lives under "## Honesty Warnings" and must not be re-flagged.
+    assert not lint_dossier_report(base, pid)
+
+
 # --- Strategy templates -------------------------------------------------------
 
 

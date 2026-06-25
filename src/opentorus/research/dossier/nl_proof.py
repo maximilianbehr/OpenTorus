@@ -306,7 +306,8 @@ def bootstrap_proof_write_args(
             "Use [GAP-1] for any unjustified step._"
         ),
         "gaps_markdown": (
-            "_Enumerate every gap; do not claim the theorem is proved while gaps remain._"
+            "_List each open gap explicitly; while gaps remain this stays a sketch, "
+            "not a settled result._"
         ),
         "evidence_notes": "",
         "gaps": ["Initial scaffold — replace placeholders before marking task done."],
