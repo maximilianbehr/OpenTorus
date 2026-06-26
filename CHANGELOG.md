@@ -23,6 +23,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (epistemic invariant #3); it is only more actionable about the fix.
 
 ### Fixed
+- Literature search no longer livelocks on unsupported query operators. Models write
+  Google-style queries (`"phrase"`, `-exclude`, `author:`, `OR`), but the connectors do
+  not honor them — and arXiv's `all:` field actively misreads a leading `-` as a token to
+  *include*. So when a model tried to remove off-topic hits by appending
+  `-microwave -qcd …`, the query *broadened* (to ~1.9M results) and surfaced exactly the
+  physics papers it was excluding; the model kept adding exclusions and the same junk kept
+  ranking higher, burning the whole literature-phase budget in `opentorus prove`. Queries
+  are now normalized to clean positive keywords before any connector sees them (negations
+  and quotes dropped, `field:` qualifiers reduced to their value) — translating to arXiv's
+  `ANDNOT`/phrase syntax was tested and found unreliable, so we strip rather than translate.
+  `lit_search` also now reports when a search surfaced **no new papers** (or repeats an
+  earlier query this session), so the model stops re-issuing near-identical searches and
+  moves on to fetching/reading. Repeat queries are still never blocked.
 - The honesty linter no longer raises phantom warnings on its own output. Two
   self-inflicted false positives are fixed: (1) the proof-sketch bootstrap scaffold's
   gap placeholder said "do not claim the theorem **is proved** while gaps remain",

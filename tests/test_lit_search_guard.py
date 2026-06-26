@@ -115,3 +115,28 @@ def test_paper_list_allows_repeat_calls(tmp_path: Path) -> None:
         if m.role == "tool" and "Blocked repeat paper_list" in m.content
     ]
     assert not blocked
+
+
+def test_lit_search_flags_no_new_results(tmp_path: Path, monkeypatch) -> None:
+    # A second identical search returns the same papers: the tool must SAY nothing is new
+    # (so the model stops re-querying) — but still succeed, never block.
+    from opentorus.research.sources.base import SourceRecord
+    from opentorus.tools.base import ToolCall
+    from opentorus.tools.builtin import LiteratureSearchTool
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    config = default_config()
+
+    monkeypatch.setattr(
+        "opentorus.research.sources.search_all",
+        lambda *a, **k: [SourceRecord(source="arxiv", title="Paper A", arxiv_id="2401.1")],
+    )
+    tool = LiteratureSearchTool(config, ot)
+
+    first = tool.run(ToolCall(id="1", name="lit_search", args={"query": "backward error"}))
+    assert first.ok and "already returned" not in first.content
+
+    second = tool.run(ToolCall(id="2", name="lit_search", args={"query": "backward error"}))
+    assert second.ok  # never blocked
+    assert "already returned" in second.content

@@ -219,6 +219,48 @@ class _FakeSource(LiteratureSource):
         return self._records
 
 
+def test_normalize_search_query_strips_unsupported_operators() -> None:
+    from opentorus.research.sources import normalize_search_query
+
+    # The arXiv-livelock query: negations the connectors cannot honor must be removed,
+    # never inverted into inclusions (which broadened the search to physics junk).
+    out = normalize_search_query(
+        '"backward error" "condition number" linear system -microwave -qcd -PSD'
+    )
+    assert "microwave" not in out and "qcd" not in out and "psd" not in out.lower()
+    assert "backward error condition number linear system" in out
+    assert '"' not in out  # quotes dropped (phrase syntax is unreliable across sources)
+
+
+def test_normalize_search_query_keeps_clean_query_and_hyphens() -> None:
+    from opentorus.research.sources import normalize_search_query
+
+    assert normalize_search_query("backward error condition number") == (
+        "backward error condition number"
+    )
+    # Field qualifiers reduce to their value; OR is dropped; hyphenated words survive.
+    assert normalize_search_query('author:"Yuji Nakatsukasa" OR Navier-Stokes') == (
+        "Yuji Nakatsukasa Navier-Stokes"
+    )
+
+
+def test_search_all_normalizes_query_before_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    class _Capture(_FakeSource):
+        def search(self, query: str, limit: int = 10) -> list[SourceRecord]:
+            seen.append(query)
+            return []
+
+    source = _Capture("arxiv", [])
+    monkeypatch.setattr(
+        "opentorus.research.sources.registry.available_sources",
+        lambda config: [source],
+    )
+    search_all(default_config(), 'linear system -microwave -qcd')
+    assert seen == ["linear system"]  # negations stripped before the connector sees them
+
+
 def test_search_all_dedupes_and_survives_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     good = _FakeSource(
         "openalex",

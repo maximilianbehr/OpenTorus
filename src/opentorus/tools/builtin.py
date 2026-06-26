@@ -356,6 +356,11 @@ class LiteratureSearchTool(Tool):
     def __init__(self, config, ot_dir=None) -> None:  # noqa: ANN001
         self._config = config
         self._ot_dir = ot_dir
+        # Per-session memory so a search that surfaces nothing new can SAY so, instead of
+        # letting the model re-issue near-identical queries (an observed lit-phase loop).
+        # Never used to block — repeat queries stay allowed (see test_lit_search_guard).
+        self._seen_ids: set[str] = set()
+        self._recent_queries: list[str] = []
 
     def _egress_guard(self):  # noqa: ANN202
         # Mirror PaperFetchTool: host authorization + per-host rate limit + the daily
@@ -377,11 +382,18 @@ class LiteratureSearchTool(Tool):
 
     def run(self, call: ToolCall) -> ToolResult:
         from opentorus.research.egress import EgressBlocked
-        from opentorus.research.sources import search_all, sources_for_field
+        from opentorus.research.sources import (
+            normalize_search_query,
+            search_all,
+            sources_for_field,
+        )
 
         query = str(call.args.get("query", "")).strip()
         if not query:
             return self.fail(call, "lit_search requires a non-empty 'query'.")
+        normalized = normalize_search_query(query)
+        repeated = bool(normalized) and normalized in self._recent_queries
+        self._recent_queries = [*self._recent_queries[-5:], normalized]
         limit = int(call.args.get("limit", 5))
         # Default to the math field so a math problem does not query bio/CS/astro DBs.
         field = str(call.args.get("field", "") or "math").strip()
@@ -399,8 +411,13 @@ class LiteratureSearchTool(Tool):
         if not records:
             return self.ok(call, "No results (or no literature sources enabled).")
         lines = []
+        new_count = 0
         for r in records:
             fetch_id = r.doi or r.arxiv_id
+            key = (fetch_id or r.url or r.title or "").lower()
+            if key and key not in self._seen_ids:
+                new_count += 1
+                self._seen_ids.add(key)
             oa = "OA" if r.is_open_access else "closed"
             year = r.year or "n.d."
             if fetch_id:
@@ -411,6 +428,20 @@ class LiteratureSearchTool(Tool):
             else:
                 ident = r.url or "(no fetch id)"
                 lines.append(f"[{r.source}] {r.title} ({year}) — {oa} — {ident}")
+        # Advisory (never blocking): tell the model when a search added nothing new, so it
+        # stops re-issuing near-identical queries instead of fetching/reading what it found.
+        if new_count == 0:
+            lines.append(
+                "\nNote: every result here was already returned by an earlier search this "
+                "session. Refine with different keywords, or move on — paper_fetch the hits "
+                "worth reading and record memory_add(kind=observations). Operators like "
+                '"-exclude", quotes, and OR are ignored by the sources; use plain keywords.'
+            )
+        elif repeated:
+            lines.append(
+                f"\nNote: this query repeats an earlier search; {new_count} of "
+                f"{len(records)} results are new."
+            )
         return self.ok(call, "\n".join(lines), count=len(records))
 
 

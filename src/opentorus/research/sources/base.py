@@ -9,6 +9,7 @@ search.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -70,6 +71,32 @@ class LiteratureSource(ABC):
     def lookup_doi(self, doi: str) -> SourceRecord | None:  # pragma: no cover - optional
         """Resolve a single DOI to a record, if the source supports it."""
         return None
+
+
+_BOOLEAN_OPS = re.compile(r"\b(?:AND|OR|NOT|ANDNOT)\b")
+
+
+def normalize_search_query(query: str) -> str:
+    """Reduce a free-form query to clean positive keywords every connector can handle.
+
+    Models write Google-style queries — quoted phrases, ``-exclusions``, ``author:`` /
+    ``OR`` operators. The connector APIs do not honor these, and arXiv's ``all:`` field
+    actively misreads them: a leading ``-`` is parsed as a token to *include*, so an
+    exclusion backfires — the query broadens to millions of hits and surfaces exactly the
+    off-topic papers the model tried to remove. That produced an observed ``opentorus
+    prove`` livelock where the model kept appending ``-microwave -qcd …`` and the same
+    junk kept ranking higher. Dropping the operators and keeping the positive terms gives
+    a focused, predictable query (and ``ANDNOT`` / quoted-phrase translation was found
+    unreliable on arXiv, so we do not attempt it). Idempotent on already-clean queries.
+    """
+    q = query
+    q = re.sub(r'-"[^"]*"', " ", q)  # drop negated quoted phrases: -"polar decomposition"
+    q = re.sub(r"(?<!\S)-\s*\S+", " ", q)  # drop negated bare terms: -microwave, - laa
+    q = _BOOLEAN_OPS.sub(" ", q)  # drop standalone boolean operators (terms implicitly AND)
+    q = re.sub(r"\b\w+:", " ", q)  # strip field qualifiers (author:, cat:, ti:), keep value
+    q = q.replace('"', " ")  # phrase quoting is unreliable across connectors
+    # Keep only tokens with an alphanumeric (drops stray punctuation like a lone '-').
+    return " ".join(tok for tok in q.split() if re.search(r"\w", tok))
 
 
 def build_url(base: str, params: dict[str, object]) -> str:

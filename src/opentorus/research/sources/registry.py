@@ -96,6 +96,11 @@ def search_all(
     Results are deduplicated by DOI then arXiv id.
     """
     from opentorus.research.egress import EgressBlocked
+    from opentorus.research.sources.base import normalize_search_query
+
+    # Strip Google-style operators the connectors cannot honor (notably arXiv, where a
+    # leading '-' is read as include, so an exclusion backfires into millions of hits).
+    query = normalize_search_query(query) or query
 
     chosen = available_sources(config)
     if sources:
