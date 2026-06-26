@@ -146,6 +146,62 @@ def available_theorem_numbers(corpus: str) -> list[str]:
     return sorted(found, key=lambda s: [int(p) for p in s.split(".")])
 
 
+# Common words that carry no topical signal; excluded so content matching keys on the
+# mathematical vocabulary (e.g. "richardson", "psd", "convergence") rather than glue words.
+_STOPWORDS = frozenset(
+    "the a an and or of to in for on with that this we our by is are be as it its any all "
+    "from at which can not no than then thus so given let each their has have if when where "
+    "such these those there here also been was were will would may might one two".split()
+)
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Lowercased content words (≥3 chars, minus stopwords) used for overlap scoring."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return {w for w in words if len(w) >= 3 and w not in _STOPWORDS}
+
+
+def _mention_context(body: str, paper_id: str, *, width: int = 200) -> str:
+    """The prose surrounding each mention of ``paper_id`` — what the proof says it cites."""
+    pid = paper_id.upper()
+    spans = [
+        body[max(0, m.start() - width) : m.end() + width]
+        for m in re.finditer(re.escape(pid), body, re.I)
+    ]
+    return " ".join(spans)
+
+
+def suggest_results_by_content(
+    corpus_raw: str, query: str, available: list[str], *, k: int = 3
+) -> list[tuple[str, str]]:
+    """Rank a paper's real numbered results by keyword overlap with ``query`` prose.
+
+    When a model cites a nonexistent number, a bare list of the *real* numbers does not
+    tell it which one states the result it described — so it keeps guessing (the loop that
+    grinds until the no-progress backstop). Matching the prose around the bad citation
+    against each result's statement lets the rejection say "you meant Theorem 3.3", which
+    is what actually breaks the loop. Returns ``(number, statement_snippet)`` pairs.
+    Deterministic: ranked by overlap, ties broken by the (numeric) result number.
+    """
+    q = _content_tokens(query)
+    if not q or not corpus_raw:
+        return []
+    scored: list[tuple[int, list[int], str, str]] = []
+    for number in available:
+        context = theorem_context(corpus_raw, number)
+        if not context:
+            continue
+        score = len(q & _content_tokens(context))
+        if score > 0:
+            try:
+                order = [int(p) for p in number.split(".")]
+            except ValueError:
+                order = []
+            scored.append((score, order, number, context))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [(number, context) for _score, _order, number, context in scored[:k]]
+
+
 def corpus_has_numbered_theorems(corpus: str) -> bool:
     """Whether the parsed text contains *any* numbered theorem/lemma environment.
 
@@ -209,6 +265,9 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
         # incomplete and a citation can be neither confirmed nor refuted — so a
         # missing number is a non-blocking warning, not a hard "you invented it".
         has_numbering = corpus_has_numbered_theorems(corpus)
+        # Prose the proof writes around this paper's id — used to point the model at the
+        # result it actually meant, so a wrong number is corrected by content not guessed.
+        mention_text = _mention_context(body, pid) if has_numbering else ""
         for thm in sorted(theorems):
             if not theorem_in_corpus(corpus, thm):
                 if has_numbering:
@@ -219,9 +278,22 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
                         present = f" The parsed text contains: {shown}{more}."
                     else:
                         present = ""
+                    if corpus_raw is None:
+                        corpus_raw = _paper_corpus(ot_dir, pid, lower=False) or ""
+                    suggestions = suggest_results_by_content(corpus_raw, mention_text, available)
+                    suggest = ""
+                    if suggestions:
+                        plural = "es" if len(suggestions) > 1 else ""
+                        quoted = "; ".join(
+                            f'{num} — "{ctx[:120].strip()}…"' for num, ctx in suggestions
+                        )
+                        suggest = (
+                            f" Closest match{plural} by content (cite the one whose "
+                            f"statement fits): {quoted}."
+                        )
                     errors.append(
                         f"{pid} does not contain a numbered result {thm} "
-                        f"(theorem/lemma/corollary/definition/remark/…).{present} "
+                        f"(theorem/lemma/corollary/definition/remark/…).{present}{suggest} "
                         "Cite one of those numbers, describe the result in prose, or mark "
                         "the step [GAP-n] — do not invent numbers."
                     )
