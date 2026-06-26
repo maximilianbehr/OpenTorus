@@ -10,6 +10,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Raised the default `context.history_turns` 10 → 50, so more recent session turns are
   replayed into each request (less amnesia about earlier papers/claims/proof steps). It
   remains bounded by `context.token_budget`, which triggers compaction.
+- When a proof cites a theorem number that does not exist in a paper, the citation
+  grounding rejection now points at the result the proof *meant*. It ranks the paper's
+  real numbered results by keyword overlap with the prose around the citation and names
+  the closest matches with a snippet of each statement (e.g. cites a fabricated
+  "Theorem 1.2" but described Richardson's universal-convergence result → the rejection
+  surfaces "Theorem 3.3 — '…universal convergence rate…'"). This breaks a livelock seen
+  in `opentorus prove`: a model could retry the same nonexistent number dozens of times
+  because a bare list of available numbers gave it no way to map its described result
+  onto the right one, exhausting the gap-fill no-progress backstop with the gap still
+  open. The check still blocks the invented number — no fabricated authority is admitted
+  (epistemic invariant #3); it is only more actionable about the fix.
 
 ### Fixed
 - The honesty linter no longer raises phantom warnings on its own output. Two

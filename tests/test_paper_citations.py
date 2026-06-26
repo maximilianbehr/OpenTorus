@@ -172,6 +172,48 @@ def test_available_theorem_numbers_sorted_numerically() -> None:
     assert available_theorem_numbers(corpus) == ["1", "2.1", "2.10", "10.1"]
 
 
+def test_blocked_citation_suggests_the_right_result_by_content(tmp_path: Path) -> None:
+    # Reproduces the PAPER-0001 livelock: the model cites a nonexistent number but its
+    # prose describes a result that DOES exist under a different number. The rejection
+    # must point at that result by content so the model stops guessing the number.
+    ot = _ot(tmp_path)
+    record = SourceRecord(source="arxiv", title="Backward error", arxiv_id="2401.00021")
+    paper = acquire_paper(ot, record, downloader=lambda u: b"%PDF")
+    pages = [
+        "Results\n"
+        "Theorem 3.3 (Richardson iteration). After k steps of Richardson iteration on a "
+        "PSD linear system, the backward error decays at a universal convergence rate.\n"
+        "Theorem 5.1. For general systems the rate depends logarithmically on the "
+        "condition number.\n"
+    ]
+    read_paper(ot, paper.id, page_extractor=lambda path: pages)
+
+    body = (
+        "By Theorem 1.2 of PAPER-0001, Richardson iteration on a PSD system achieves a "
+        "universal convergence rate independent of the condition number."
+    )
+    errors, _ = validate_proof_citations(ot, body)
+    assert errors
+    err = " ".join(errors)
+    # Still rejects the invented number...
+    assert "1.2" in err
+    # ...but now names the real result the prose described, with a snippet of its statement.
+    assert "3.3" in err
+    assert "Closest match" in err and "Richardson" in err
+
+
+def test_content_suggestion_ranks_by_overlap(tmp_path: Path) -> None:
+    from opentorus.research.paper_citations import suggest_results_by_content
+
+    corpus = (
+        "Theorem 3.3 (Richardson iteration). Universal convergence on PSD systems.\n"
+        "Theorem 9.9 (unrelated). A statement about random graphs and colorings.\n"
+    )
+    query = "Richardson iteration gives universal convergence on PSD systems"
+    suggestions = suggest_results_by_content(corpus, query, ["3.3", "9.9"])
+    assert suggestions and suggestions[0][0] == "3.3"
+
+
 def test_literature_tool_gate_blocks_proof_write() -> None:
     gate = literature_tool_gate()
     msg = gate("proof_write", {"problem_id": "PROBLEM-0001", "title": "x"})
