@@ -6,7 +6,11 @@ graph treat every source the same way. HTTP fetching is separated from response
 parsing so connectors are testable offline with canned fixtures.
 """
 
-from opentorus.research.sources.base import LiteratureSource, SourceRecord
+from opentorus.research.sources.base import (
+    LiteratureSource,
+    SourceRecord,
+    normalize_search_query,
+)
 from opentorus.research.sources.registry import (
     available_sources,
     search_all,
@@ -17,6 +21,7 @@ __all__ = [
     "LiteratureSource",
     "SourceRecord",
     "available_sources",
+    "normalize_search_query",
     "search_all",
     "sources_for_field",
 ]
