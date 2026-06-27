@@ -114,3 +114,45 @@ def test_explicit_gaps_counts_unicode_hyphen_markers() -> None:
     body = "We use Lemma 1 [GAP‑1] and bound the residual [GAP–2]."
     merged = explicit_gaps(gaps=[], body=body)
     assert len(merged) == 2  # both Unicode-hyphen markers found
+
+
+def test_explicit_gaps_ignores_a_gaps_closed_summary() -> None:
+    # Regression: a "Summary of gaps closed" section references [GAP-1], [GAP-2], [GAP-3]
+    # to say they are *resolved*. Those must NOT be re-counted as open gaps — otherwise
+    # the count never reaches zero and the prove loop stalls while the model insists it is
+    # done. Both signals are exercised: the section heading and the "[GAP-n] <verb>" form.
+    from opentorus.research.dossier.nl_proof import explicit_gaps
+
+    body = (
+        "## Main proof\n\nThe argument runs as usual.\n\n"
+        "7. **Summary of gaps closed.**\n"
+        "   - *[GAP‑1]* handled rigorously via the ceiling inequality.\n"
+        "   - *[GAP‑2]* supplied quantitative cost expressions.\n"
+        "   - *[GAP‑3]* provided a concrete spectral mapping.\n"
+    )
+    assert explicit_gaps(gaps=[], body=body) == []
+
+
+def test_explicit_gaps_still_counts_open_marker_alongside_closed_ones() -> None:
+    # A genuinely open gap in the body is still counted even when a closure summary is
+    # present, so the closure-detection cannot hide real remaining work.
+    from opentorus.research.dossier.nl_proof import explicit_gaps
+
+    body = (
+        "We still need [GAP-4] a bound on the constant C.\n\n"
+        "## Gaps resolved\n- [GAP-1] closed via the ceiling inequality.\n"
+    )
+    merged = explicit_gaps(gaps=[], body=body)
+    assert merged == ["Marked in text: [GAP-4]"]
+
+
+def test_explicit_gaps_drops_none_sentinel() -> None:
+    # A literal "None" (or "no gaps remain") passed as a gap is the model saying there are
+    # no gaps — it must not be stored as a gap named "None".
+    from opentorus.research.dossier.nl_proof import explicit_gaps
+
+    assert explicit_gaps(gaps=["None"], body="A clean proof with no markers.") == []
+    assert explicit_gaps(gaps=["no gaps remain"], body="A clean proof.") == []
+    # A real gap that merely starts with "None" is kept.
+    kept = explicit_gaps(gaps=["None of the bounds are tight yet"], body="Body.")
+    assert kept == ["None of the bounds are tight yet"]

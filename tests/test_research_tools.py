@@ -254,3 +254,15 @@ def test_normalize_gap_args_handles_dicts_and_dedupes() -> None:
 
     merged = explicit_gaps(gaps=norm, body="Main argument [GAP-1] and [GAP-2]; new [GAP-3].")
     assert len(merged) == 3  # GAP-1/GAP-2 deduped, GAP-3 added once (no doubling)
+
+
+def test_normalize_gap_args_drops_none_sentinels() -> None:
+    # A model that means "no gaps" by passing "None" / "no gaps remain" must not have that
+    # stored as a gap named "None" — which would pin the gap count above zero.
+    from opentorus.tools.research import _normalize_gap_args
+
+    assert _normalize_gap_args("None") == []
+    assert _normalize_gap_args(["None"]) == []
+    assert _normalize_gap_args(["no gaps remain", "N/A", "—"]) == []
+    # Real gaps survive alongside a stray sentinel.
+    assert _normalize_gap_args(["none", "[GAP-1] derive the bound"]) == ["[GAP-1] derive the bound"]

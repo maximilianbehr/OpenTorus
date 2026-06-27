@@ -93,6 +93,8 @@ def _normalize_gap_args(value: object) -> list[str]:
     if not isinstance(items, (list, tuple)):
         items = [items]
 
+    from opentorus.research.dossier.nl_proof import is_no_gaps_sentinel
+
     out: list[str] = []
     for gap in items:
         if isinstance(gap, dict):
@@ -107,7 +109,9 @@ def _normalize_gap_args(value: object) -> list[str]:
             s = str(gap).strip()
             if s:
                 out.append(s)
-    return out
+    # Drop "no gaps" sentinels (a literal "None", "no gaps remain", …) so the model's way
+    # of saying "there are nothing left" never becomes a gap *named* "None".
+    return [s for s in out if not is_no_gaps_sentinel(s)]
 
 
 def _paper_line(paper, ot_dir: Path | None = None) -> str:

@@ -7,16 +7,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
-- The hostile referee now feeds back into `opentorus prove`: when the model declares a
-  sketch gap-free, the deterministic referee gets the final say before the loop accepts
-  "done". If it blocks (unsupported result-claims like "we prove"/"provably" with no
-  backing THEOREM, or contradictions) the loop *reopens* the proof's gap list with the
-  referee's findings (tagged `[REFEREE]`) and keeps working; the run settles only once the
-  proof is gap-free *and* the referee passes. This closes an escape where a model emptied
-  `gaps` by relabelling unresolved steps as prose "Open Problems" — observed as a prove run
-  that "stopped very early" with `max_steps=inf` and `prove_until_gaps_closed=true`, leaving
-  a referee-blocked HEURISTIC_ONLY report. The existing no-progress backstop still bounds a
-  model that cannot satisfy the referee. Controlled by the new
+- The hostile referee now feeds back into `opentorus prove`: on every completion check the
+  deterministic referee gets a say before the loop accepts "done". If it blocks (unsupported
+  result-claims like "we prove"/"provably" with no backing THEOREM, or contradictions) the
+  loop *reopens* the proof's gap list with the referee's findings (tagged `[REFEREE]`) and
+  keeps working; when it passes, those gaps are stripped. The run settles only once the
+  proof is gap-free *and* the referee passes. Running on every check — not just when the
+  model's own gap count is zero — means a *miscounted* gap state cannot hide a referee
+  block either. This closes an escape where a model emptied `gaps` by relabelling unresolved
+  steps as prose "Open Problems" — observed as a prove run that "stopped very early" with
+  `max_steps=inf` and `prove_until_gaps_closed=true`, leaving a referee-blocked
+  HEURISTIC_ONLY report. The existing no-progress backstop still bounds a model that cannot
+  satisfy the referee, and a referee failure can never break the run. Controlled by the new
   `agent.prove_referee_reopens_gaps` (default `true`); active only while
   `prove_until_gaps_closed`. The referee remains record-only — it never upgrades truth
   status, and the epistemic invariants are unchanged.
@@ -36,6 +38,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (epistemic invariant #3); it is only more actionable about the fix.
 
 ### Fixed
+- The proof gap counter could never reach zero on a finished proof, stalling
+  `opentorus prove`. Two miscounts: (1) a "Summary of gaps closed" section that references
+  `[GAP-1]`, `[GAP-2]`, … to say they are *resolved* was re-counted as that many *open*
+  gaps by the body-marker scan; (2) a literal `gaps: "None"` (the model's way of saying
+  "no gaps left") was stored as a gap *named* "None". Together they pinned the count above
+  zero, so the completion gate never saw `gaps == 0`: the model kept declaring "all gaps
+  closed" while the loop kept insisting gaps remained, until a backstop ended the run with
+  a contradictory, referee-blocked artifact. `explicit_gaps` now excludes markers the body
+  describes as closed (under a gaps-closed heading, or immediately followed by a closure
+  verb like "handled"/"resolved") and drops "no gaps" sentinels; `_normalize_gap_args`
+  drops the same sentinels before they are stored. Genuinely open gaps — including one
+  mentioned alongside a closure summary — are still counted. This also lets the
+  referee-reopen gate (above) engage: once a clean proof reaches `gaps == 0`, the referee
+  gets its say instead of the count being stuck.
 - HTML report export now renders display equations that were written as indented LaTeX
   without `$$` delimiters. Proof bodies commonly write a display equation as a 4-space
   indented line of raw LaTeX (e.g. `k ≥ \frac{…}{…}`); the Markdown→HTML converter stripped
