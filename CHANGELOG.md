@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.6] — 2026-06-27
+
+This release makes `opentorus prove` finish *honestly*. The hostile referee now feeds back
+into the loop and the proof gap counter can actually reach zero, so a sketch can no longer
+"stop early" by relabelling unresolved steps as prose "Open Problems" or by a self-inflicted
+gap miscount — yet a genuinely complete proof still settles. It also clears a batch of
+literature-search, citation-grounding, report-export, and trace-rendering papercuts that were
+burning prove-loop budget or surfacing false rejections.
+
 ### Changed
 - The hostile referee now feeds back into `opentorus prove`: on every completion check the
   deterministic referee gets a say before the loop accepts "done". If it blocks (unsupported
