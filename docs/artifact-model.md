@@ -138,6 +138,16 @@ machine-readable `REFEREE-*.json` plus a human `.md` under `<dossier>/referee/`
 and returns a `pass` / `revise` / `block` verdict. A reusable prompt lives at
 `prompts/referee.md`.
 
+During `opentorus prove` the referee also runs *in-loop* (without persisting a
+record) the moment the model declares the sketch gap-free: a `block` verdict
+reopens the proof's gap list with the referee's findings (each tagged
+`[REFEREE]`), so the loop keeps working instead of accepting an overclaiming
+"done". The run settles only when the proof is gap-free *and* the referee no
+longer blocks. This is governed by `agent.prove_referee_reopens_gaps` (default
+on) and is active only while `agent.prove_until_gaps_closed`; the no-progress
+backstop still bounds a model that cannot satisfy the referee. The referee
+remains record-only — it reopens gaps but never upgrades truth status.
+
 ## Experiment-citation integrity
 
 An experiment citation must point at a real `EXP-*` manifest: citing an id that

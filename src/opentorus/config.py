@@ -96,6 +96,12 @@ class AgentConfig(BaseModel):
     # a model cannot close gaps; a model that IS shrinking the gap list resets the window
     # and keeps going. Positive integer, or inf / unlimited / -1 to disable.
     prove_gap_fill_no_progress_steps: float = 16
+    # When the model declares the sketch gap-free, give the hostile referee the final say:
+    # if it blocks (unsupported result-claims, contradictions) the loop reopens the proof's
+    # gap list with the referee's findings and keeps working instead of accepting an
+    # overclaiming "done". Closes the escape where a model empties `gaps` by relabelling
+    # unresolved steps as prose "Open Problems". Only active while prove_until_gaps_closed.
+    prove_referee_reopens_gaps: bool = True
 
     @field_validator(
         "max_steps", "prove_gap_fill_max_steps", "prove_gap_fill_no_progress_steps", mode="before"
