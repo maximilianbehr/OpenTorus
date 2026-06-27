@@ -86,7 +86,81 @@ def build_proof_gap_recovery_hint(ot_dir: Path, problem_id: str) -> str:
         "paper_fetch, or exp_run as needed; then proof_write(scope=primary) to fill "
         "[GAP-n] or shrink the gap list. Do not stop with a chat-only summary."
     )
+    if any(g.startswith(_REFEREE_GAP_PREFIX) for g in latest.gaps):
+        hint += (
+            f" The {_REFEREE_GAP_PREFIX} gap(s) were reopened by the hostile referee and "
+            "reappear until resolved — deleting them does not close them. Fix the flagged "
+            "language (e.g. replace 'we prove'/'provably' with 'we conjecture'/'a sketch "
+            "argues') or record a supporting THEOREM/verification artifact, then rewrite the "
+            "proof. Relabelling an unresolved step as an 'Open Problem' in prose does not "
+            "close its gap."
+        )
     return _append_known_bad_citations(ot_dir, pid, hint)
+
+
+# Referee-reopened gaps carry this marker so the loop can tell them from the model's own
+# gaps (replace-on-recheck, keep model gaps) and the recovery hint can explain them.
+_REFEREE_GAP_PREFIX = "[REFEREE]"
+
+
+def referee_block_gaps(report) -> list[str]:  # noqa: ANN001 - RefereeReport (lazy import)
+    """Turn a *blocking* referee verdict into actionable, deduped proof gaps.
+
+    Only the hard, blocking findings become gaps: contradictions and overclaims that
+    assert an unsupported result (``experiment_proof`` / ``proof_claim`` / ``result_claim``).
+    Soft ``revise`` findings (e.g. a claim merely classified heuristic) are not reopened —
+    presenting those honestly as conjecture is legitimate.
+    """
+    gaps: list[str] = []
+    for c in report.contradictions:
+        gaps.append(
+            f"{_REFEREE_GAP_PREFIX} Contradiction flagged by the referee: {c} "
+            "Reconcile this before the result can stand."
+        )
+    for o in report.overclaims:
+        if o.kind not in ("experiment_proof", "proof_claim", "result_claim"):
+            continue
+        gaps.append(
+            f"{_REFEREE_GAP_PREFIX} Unsupported {o.kind} at {o.location}: '{o.phrase}'. "
+            f"{o.suggestion}"
+        )
+    seen: set[str] = set()
+    out: list[str] = []
+    for g in gaps:
+        if g not in seen:
+            seen.add(g)
+            out.append(g)
+    return out
+
+
+def reopen_referee_gaps(ot_dir: Path, problem_id: str) -> list[str]:
+    """Run the hostile referee on a gap-free proof; if it blocks, write its findings as gaps.
+
+    Returns the referee-derived gaps now on the latest attempt — empty when the referee
+    does not block, i.e. the gap-free proof is *honestly* complete. Idempotent: any prior
+    referee-injected gaps are replaced with the current verdict's findings while the model's
+    own gaps are preserved, so re-running on an unchanged proof reproduces the same list.
+    """
+    from opentorus.research.dossier import store
+    from opentorus.research.dossier.models import utcnow
+    from opentorus.research.dossier.referee import referee_review
+
+    pid = problem_id.strip().upper()
+    report = referee_review(ot_dir, pid, persist=False)
+    gaps = referee_block_gaps(report) if report.verdict == "block" else []
+    proofs = store.list_proof_attempts(ot_dir, pid)
+    if not proofs:
+        return gaps
+    latest = proofs[-1]
+    # Keep the model's own gaps; replace any prior referee-injected ones. When the referee
+    # no longer blocks (gaps == []) this strips stale [REFEREE] gaps so the proof can settle.
+    kept = [g for g in latest.gaps if not g.startswith(_REFEREE_GAP_PREFIX)]
+    new_gaps = kept + gaps
+    if new_gaps != latest.gaps:
+        latest.gaps = new_gaps
+        latest.updated_at = utcnow()
+        store.rewrite_proof_attempts(ot_dir, pid, proofs)
+    return gaps
 
 
 def _append_known_bad_citations(ot_dir: Path, problem_id: str, text: str) -> str:
@@ -662,6 +736,9 @@ def run_prove(
         "best_step": None,
         "evidence": None,
     }
+    # Memoize the referee gate per model step so a single text-only turn (which probes
+    # _proof_deliverable_complete several times) runs the deterministic referee at most once.
+    _referee_gate: dict[str, int] = {"step": -1, "count": 0}
 
     def _evidence_count() -> int:
         # Genuine progress signals beyond the gap count: a parsed paper or a recorded
@@ -684,7 +761,20 @@ def run_prove(
             return True
         gaps = latest_proof_gap_count(ot_dir, pid)
         if gaps == 0:
-            return True
+            # The model declares the sketch gap-free. Before accepting "done", let the
+            # hostile referee have the final say: if it blocks (unsupported result-claims,
+            # contradictions) it reopens the gap list and the loop keeps working. This
+            # closes the escape where a model empties `gaps` by relabelling unresolved
+            # steps as prose "Open Problems" — the trace's "proof stopped very early" bug.
+            if not config.agent.prove_referee_reopens_gaps:
+                return True
+            step = proof_loop_holder[0].steps_run if proof_loop_holder else -1
+            if _referee_gate["step"] != step:
+                _referee_gate["step"] = step
+                _referee_gate["count"] = len(reopen_referee_gaps(ot_dir, pid))
+            if _referee_gate["count"] == 0:
+                return True
+            gaps = _referee_gate["count"]  # fall through to gap-fill bookkeeping
         if not proof_loop_holder:
             return False
         loop = proof_loop_holder[0]

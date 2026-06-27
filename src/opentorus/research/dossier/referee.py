@@ -213,8 +213,14 @@ def referee_review(
     *,
     provider=None,  # noqa: ANN001 - reserved for optional narrated summary
     apply_downgrades: bool = False,
+    persist: bool = True,
 ) -> RefereeReport:
-    """Run the hostile referee over a dossier and persist a JSON + markdown report."""
+    """Run the hostile referee over a dossier and persist a JSON + markdown report.
+
+    With ``persist=False`` the verdict is computed without writing a REFEREE-* record;
+    the prove loop uses this for its in-loop gap-reopen check so a single run still
+    persists exactly one final referee record rather than one per gate evaluation.
+    """
     from opentorus.research.dossier.report import honesty_context
     from opentorus.research.dossier.status_gate import derive_status
 
@@ -303,7 +309,8 @@ def referee_review(
         summary=summary,
         created_at=utcnow().isoformat(),
     )
-    _persist(ot_dir, problem_id, report)
+    if persist:
+        _persist(ot_dir, problem_id, report)
     return report
 
 

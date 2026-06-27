@@ -7,6 +7,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- The hostile referee now feeds back into `opentorus prove`: when the model declares a
+  sketch gap-free, the deterministic referee gets the final say before the loop accepts
+  "done". If it blocks (unsupported result-claims like "we prove"/"provably" with no
+  backing THEOREM, or contradictions) the loop *reopens* the proof's gap list with the
+  referee's findings (tagged `[REFEREE]`) and keeps working; the run settles only once the
+  proof is gap-free *and* the referee passes. This closes an escape where a model emptied
+  `gaps` by relabelling unresolved steps as prose "Open Problems" — observed as a prove run
+  that "stopped very early" with `max_steps=inf` and `prove_until_gaps_closed=true`, leaving
+  a referee-blocked HEURISTIC_ONLY report. The existing no-progress backstop still bounds a
+  model that cannot satisfy the referee. Controlled by the new
+  `agent.prove_referee_reopens_gaps` (default `true`); active only while
+  `prove_until_gaps_closed`. The referee remains record-only — it never upgrades truth
+  status, and the epistemic invariants are unchanged.
 - Raised the default `context.history_turns` 10 → 50, so more recent session turns are
   replayed into each request (less amnesia about earlier papers/claims/proof steps). It
   remains bounded by `context.token_budget`, which triggers compaction.
@@ -23,6 +36,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (epistemic invariant #3); it is only more actionable about the fix.
 
 ### Fixed
+- HTML report export now renders display equations that were written as indented LaTeX
+  without `$$` delimiters. Proof bodies commonly write a display equation as a 4-space
+  indented line of raw LaTeX (e.g. `k ≥ \frac{…}{…}`); the Markdown→HTML converter stripped
+  the indent and emitted a plain paragraph, so MathJax never saw math delimiters and
+  `\frac{…}` leaked to the page as literal text. Indented blocks containing a TeX macro
+  are now wrapped in `\[…\]` so MathJax typesets them (indented blocks without a macro keep
+  their prior paragraph rendering). Re-run `opentorus problem export` to regenerate an
+  existing report's HTML. (Inline math written without `$…$` in prose, and lemmas stored
+  as structured data, are separate authoring-side issues not addressed here.)
 - Literature search no longer livelocks on unsupported query operators. Models write
   Google-style queries (`"phrase"`, `-exclude`, `author:`, `OR`), but the connectors do
   not honor them — and arXiv's `all:` field actively misreads a leading `-` as a token to

@@ -638,3 +638,193 @@ def test_run_prove_bootstraps_proof_write_on_chat_only(tmp_path: Path) -> None:
     )
     assert outcome.proof_ids == ["PROOF-0001"]
     assert outcome.tool_calls >= 1
+
+
+def test_reopen_referee_gaps_blocks_overclaiming_gapfree_proof(tmp_path: Path) -> None:
+    """A gap-free proof that overclaims is not 'done': the referee reopens its gaps.
+
+    Pins the fix for the trace where the prove loop stopped very early — the model had
+    emptied `gaps` (relabelling unresolved steps as prose 'Open Problems') while the body
+    still asserted an unsupported result, and the loop accepted it.
+    """
+    from opentorus.agent.prove_loop import _REFEREE_GAP_PREFIX, reopen_referee_gaps
+    from opentorus.research.dossier import claims
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    dossier = store.create_dossier(ot, "Does property P hold for all matrices A?", title="P")
+    pid = dossier.id
+
+    # Gap-free sketch, but the body asserts an unsupported result with no verification.
+    claims.add_proof_attempt(
+        ot,
+        pid,
+        title="overclaiming sketch",
+        body="We prove that property P holds for all matrices A. QED.",
+        kind="sketch",
+        gaps=[],
+    )
+    reopened = reopen_referee_gaps(ot, pid)
+    assert reopened, "the hostile referee must reopen gaps on a gap-free overclaiming proof"
+    assert all(g.startswith(_REFEREE_GAP_PREFIX) for g in reopened)
+    assert store.list_proof_attempts(ot, pid)[-1].gaps == reopened  # written back onto the proof
+
+    # Idempotent: re-running on the unchanged proof reproduces the same gaps (no growth).
+    assert reopen_referee_gaps(ot, pid) == reopened
+    assert store.list_proof_attempts(ot, pid)[-1].gaps == reopened
+
+    # Fixing the body (honest language) lets the referee pass; stale referee gaps are cleared.
+    latest = store.list_proof_attempts(ot, pid)[-1]
+    assert latest.body_path is not None
+    (store.dossier_dir(ot, pid) / latest.body_path).write_text(
+        "# fixed\n\nWe conjecture that property P holds; a sketch argues the main step.\n",
+        encoding="utf-8",
+    )
+    assert reopen_referee_gaps(ot, pid) == []
+    assert store.list_proof_attempts(ot, pid)[-1].gaps == []
+
+
+def test_run_prove_continues_when_referee_blocks_gapfree_proof(tmp_path: Path) -> None:
+    """End-to-end: the loop does NOT stop at the first gap-free 'done' if the referee blocks;
+    it reopens gaps, keeps working, and finishes once the overclaim is fixed."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    root = tmp_path
+    statement = "Is there an optimal restart length m* for restarted Arnoldi f(A)b methods?"
+    store.create_dossier(ot, statement, title="Restart length")
+
+    class OverclaimThenFixProvider:
+        def __init__(self) -> None:
+            self._n = 0
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            from opentorus.providers.base import ProviderResponse
+
+            self._n += 1
+            if self._n == 1:
+                # Gap-free, but overclaims ("we prove") with no verification artifact.
+                return ProviderResponse(
+                    kind="tool_call",
+                    content="",
+                    tool_name="proof_write",
+                    tool_args={
+                        "problem_id": "PROBLEM-0001",
+                        "title": "Restart length sketch",
+                        "theorem": "An optimal restart length m* exists for restarted Arnoldi.",
+                        "main_proof": (
+                            "For restarted Arnoldi f(A)b methods we prove that an optimal "
+                            "restart length m* exists and is finite. QED."
+                        ),
+                        "gaps_markdown": "None.",
+                        "gaps": [],
+                    },
+                )
+            if self._n == 2:
+                # First "done": the referee blocks (we prove) → it reopens gaps → loop continues.
+                return ProviderResponse(kind="message", content="Proof complete; no gaps.")
+            if self._n == 3:
+                # After the referee reopened gaps, fix the overclaim and stay gap-free.
+                return ProviderResponse(
+                    kind="tool_call",
+                    content="",
+                    tool_name="proof_write",
+                    tool_args={
+                        "problem_id": "PROBLEM-0001",
+                        "title": "Restart length sketch (honest)",
+                        "theorem": "An optimal restart length m* for restarted Arnoldi.",
+                        "main_proof": (
+                            "For restarted Arnoldi f(A)b methods we conjecture an optimal restart "
+                            "length m*; a sketch argues it balances per-cycle cost against decay."
+                        ),
+                        "gaps_markdown": "None.",
+                        "gaps": [],
+                    },
+                )
+            # Second "done": the honest body passes the referee → the run settles cleanly.
+            return ProviderResponse(kind="message", content="Honest sketch recorded.")
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+    from opentorus.config import default_config
+
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = 12
+    config.agent.prove_gap_fill_max_steps = 8
+    config.agent.prove_until_gaps_closed = True
+    outcome = run_prove(
+        root, ot, OverclaimThenFixProvider(), config, "PROBLEM-0001", literature_first=False
+    )
+    # Two proof_writes ran: the loop continued past the first overclaiming "done" because
+    # the referee reopened gaps, and only settled once the body was made honest.
+    assert outcome.tool_calls >= 2
+    assert outcome.gaps_remaining == 0
+    assert outcome.referee_verdict != "block"
+
+
+def test_run_prove_referee_reopen_can_be_disabled(tmp_path: Path) -> None:
+    """With prove_referee_reopens_gaps=False the loop keeps the old behavior: a gap-free
+    proof ends the run even if it overclaims (the referee only records, post-hoc)."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    root = tmp_path
+    store.create_dossier(ot, "Does property P hold for all matrices A?", title="P")
+
+    class OverclaimProvider:
+        def __init__(self) -> None:
+            self._n = 0
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            from opentorus.providers.base import ProviderResponse
+
+            self._n += 1
+            if self._n == 1:
+                return ProviderResponse(
+                    kind="tool_call",
+                    content="",
+                    tool_name="proof_write",
+                    tool_args={
+                        "problem_id": "PROBLEM-0001",
+                        "title": "Overclaim sketch",
+                        "theorem": "Property P holds for all matrices A.",
+                        "main_proof": "We prove that property P holds for all matrices A. QED.",
+                        "gaps_markdown": "None.",
+                        "gaps": [],
+                    },
+                )
+            return ProviderResponse(kind="message", content="Done; no gaps.")
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+    from opentorus.config import default_config
+
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = 12
+    config.agent.prove_until_gaps_closed = True
+    config.agent.prove_referee_reopens_gaps = False
+    outcome = run_prove(
+        root, ot, OverclaimProvider(), config, "PROBLEM-0001", literature_first=False
+    )
+    assert outcome.tool_calls == 1  # stopped at the first gap-free "done"
+    assert outcome.gaps_remaining == 0
