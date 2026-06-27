@@ -146,7 +146,10 @@ def reopen_referee_gaps(ot_dir: Path, problem_id: str) -> list[str]:
     from opentorus.research.dossier.referee import referee_review
 
     pid = problem_id.strip().upper()
-    report = referee_review(ot_dir, pid, persist=False)
+    try:
+        report = referee_review(ot_dir, pid, persist=False)
+    except Exception:  # noqa: BLE001 - the referee must never break the prove run
+        return []
     gaps = referee_block_gaps(report) if report.verdict == "block" else []
     proofs = store.list_proof_attempts(ot_dir, pid)
     if not proofs:
@@ -738,7 +741,7 @@ def run_prove(
     }
     # Memoize the referee gate per model step so a single text-only turn (which probes
     # _proof_deliverable_complete several times) runs the deterministic referee at most once.
-    _referee_gate: dict[str, int] = {"step": -1, "count": 0}
+    _referee_gate: dict[str, int] = {"step": -1}
 
     def _evidence_count() -> int:
         # Genuine progress signals beyond the gap count: a parsed paper or a recorded
@@ -759,22 +762,22 @@ def run_prove(
             return False
         if not config.agent.prove_until_gaps_closed:
             return True
-        gaps = latest_proof_gap_count(ot_dir, pid)
-        if gaps == 0:
-            # The model declares the sketch gap-free. Before accepting "done", let the
-            # hostile referee have the final say: if it blocks (unsupported result-claims,
-            # contradictions) it reopens the gap list and the loop keeps working. This
-            # closes the escape where a model empties `gaps` by relabelling unresolved
-            # steps as prose "Open Problems" — the trace's "proof stopped very early" bug.
-            if not config.agent.prove_referee_reopens_gaps:
-                return True
+        # Let the hostile referee weigh in on every completion check (memoized per model
+        # step, since the referee is deterministic and local). When it blocks (unsupported
+        # result-claims, contradictions) it reopens `[REFEREE]` gaps; when it passes it
+        # strips them. The gap count is re-read afterwards, so the run can only settle once
+        # the proof is genuinely gap-free AND the referee no longer blocks — a real overclaim
+        # surfaces even if the model's own gap count is a miscount. This also closes the
+        # escape where a model empties `gaps` by relabelling unresolved steps as prose
+        # "Open Problems" (the trace's "proof stopped very early" bug).
+        if config.agent.prove_referee_reopens_gaps:
             step = proof_loop_holder[0].steps_run if proof_loop_holder else -1
             if _referee_gate["step"] != step:
                 _referee_gate["step"] = step
-                _referee_gate["count"] = len(reopen_referee_gaps(ot_dir, pid))
-            if _referee_gate["count"] == 0:
-                return True
-            gaps = _referee_gate["count"]  # fall through to gap-fill bookkeeping
+                reopen_referee_gaps(ot_dir, pid)
+        gaps = latest_proof_gap_count(ot_dir, pid)
+        if gaps == 0:
+            return True
         if not proof_loop_holder:
             return False
         loop = proof_loop_holder[0]

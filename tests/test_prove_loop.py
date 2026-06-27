@@ -728,7 +728,7 @@ def test_run_prove_continues_when_referee_blocks_gapfree_proof(tmp_path: Path) -
                     },
                 )
             if self._n == 2:
-                # First "done": the referee blocks (we prove) → it reopens gaps → loop continues.
+                # First "done": the referee blocks (we prove) → reopens gaps → loop continues.
                 return ProviderResponse(kind="message", content="Proof complete; no gaps.")
             if self._n == 3:
                 # After the referee reopened gaps, fix the overclaim and stay gap-free.
@@ -828,3 +828,69 @@ def test_run_prove_referee_reopen_can_be_disabled(tmp_path: Path) -> None:
     )
     assert outcome.tool_calls == 1  # stopped at the first gap-free "done"
     assert outcome.gaps_remaining == 0
+
+
+def test_run_prove_referee_runs_even_at_nonzero_gap_count(tmp_path: Path) -> None:
+    """Hardening: the referee gate runs on every completion check, not only at gaps==0, so a
+    nonzero (possibly miscounted) gap state cannot hide a referee block. An overclaiming
+    proof that still has a real open gap gets a [REFEREE] gap injected regardless."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    root = tmp_path
+    store.create_dossier(ot, "Does property P hold for all matrices A?", title="P")
+
+    class OverclaimWithOpenGapProvider:
+        def __init__(self) -> None:
+            self._n = 0
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            from opentorus.providers.base import ProviderResponse
+
+            self._n += 1
+            if self._n == 1:
+                # A real open gap AND an overclaim, so the gap count is nonzero (== 1).
+                return ProviderResponse(
+                    kind="tool_call",
+                    content="",
+                    tool_name="proof_write",
+                    tool_args={
+                        "problem_id": "PROBLEM-0001",
+                        "title": "Sketch with an open gap and an overclaim",
+                        "theorem": "Property P holds for all matrices A.",
+                        "main_proof": (
+                            "We prove that property P holds for all matrices A. "
+                            "[GAP-1] derive the constant bound."
+                        ),
+                        "gaps_markdown": "[GAP-1] derive the constant bound.",
+                        "gaps": ["[GAP-1] derive the constant bound"],
+                    },
+                )
+            # Never fixes anything; repeated chat-only stalls the gap-fill loop.
+            return ProviderResponse(kind="message", content="Still drafting.")
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+    from opentorus.config import default_config
+
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = 12
+    config.agent.prove_until_gaps_closed = True
+    run_prove(
+        root, ot, OverclaimWithOpenGapProvider(), config, "PROBLEM-0001", literature_first=False
+    )
+    # The referee ran despite the nonzero gap count and injected a [REFEREE] gap for the
+    # "we prove" overclaim, alongside the model's own [GAP-1].
+    latest = store.list_proof_attempts(ot, "PROBLEM-0001")[-1]
+    assert any(g.startswith("[REFEREE]") for g in latest.gaps)
+    assert any("GAP-1" in g for g in latest.gaps)

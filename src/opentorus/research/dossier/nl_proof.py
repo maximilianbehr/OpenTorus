@@ -31,6 +31,67 @@ _GAP_MARKER = re.compile(rf"\[GAP(?:[{_HYPHENS}\s]?\d+)?(?::[^\]]*)?\]", re.I)
 _CONNECTION_HEADING = re.compile(r"^##\s+Connection to dossier\s*$", re.M | re.I)
 _MIN_BRIDGE_CHARS = 60
 
+# A "[GAP-n]" marker the body itself describes as *closed* must not be re-counted as an
+# open gap. Without this a "Summary of gaps closed" section (which references [GAP-1],
+# [GAP-2], … to say they are resolved) pins the gap count above zero forever: the prove
+# loop's completion gate never sees gaps==0, so the model declares "done" while the counter
+# disagrees, and the run stalls into a backstop with a contradictory artifact.
+# Two signals, both conservative (whole-word, anchored) so genuine open gaps still count:
+#   (a) a heading/title line that names a gaps-closed section, and
+#   (b) a marker immediately followed by a past-tense closure verb ("[GAP-1] handled …").
+_GAP_CLOSED_SECTION = re.compile(
+    r"\b(?:gaps?\s+(?:closed|resolved|addressed|filled|eliminated)"
+    r"|(?:closed|resolved|addressed)\s+gaps?)\b",
+    re.I,
+)
+_GAP_CLOSED_VERB = re.compile(
+    r"^(?:handled|resolved|closed|addressed|supplied|provided|filled|eliminated"
+    r"|established|completed|fixed|proved|proven)\b",
+    re.I,
+)
+_HEADING_LINE = re.compile(r"^(?:#{1,6}\s|\d+\.\s|\*\*)")
+
+# Sentinel strings a model uses to say "there are no gaps" — must never become a gap.
+_NO_GAPS_PHRASES = frozenset(
+    {
+        "none",
+        "n/a",
+        "na",
+        "nil",
+        "null",
+        "no",
+        "-",
+        "--",
+        "—",
+        "–",
+        "no gap",
+        "no gaps",
+        "no open gaps",
+        "no remaining gaps",
+        "no known gaps",
+        "no gaps remain",
+        "no gaps remaining",
+        "no gaps left",
+        "none remaining",
+        "all gaps closed",
+        "all gaps resolved",
+        "gaps none",
+        "gaps: none",
+    }
+)
+
+
+def is_no_gaps_sentinel(text: str) -> bool:
+    """True when a gap string is really the model saying 'there are no gaps'.
+
+    A literal ``"None"`` (or ``"no gaps remain"`` etc.) passed as a gap would otherwise be
+    stored as a gap *named* "None", keeping the count above zero. Matches only when the
+    whole string is a sentinel, so a real gap like "None of the bounds are tight" is kept.
+    """
+    t = text.strip().strip("*_`").strip()
+    t = re.sub(r"[\s.]+$", "", t).lower()
+    return t in _NO_GAPS_PHRASES
+
 _STOPWORDS = frozenset(
     {
         "what",
@@ -257,23 +318,49 @@ def _gap_marker_key(text: str) -> str | None:
     return re.sub(rf"[{_HYPHENS}\s]", "-", match.group(0)).upper()
 
 
+def _open_body_markers(body: str) -> dict[str, str]:
+    """Map each *open* [GAP-n] marker in the body to its first occurrence text.
+
+    A marker is open unless every occurrence is in a closed context — under a
+    gaps-closed section heading, or immediately followed by a closure verb ("[GAP-1]
+    handled …"). One open occurrence anywhere keeps the marker open, so a gap mentioned
+    as both open and (later) resolved is still counted.
+    """
+    open_markers: dict[str, str] = {}
+    in_closed_section = False
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if _HEADING_LINE.match(line):
+            in_closed_section = bool(_GAP_CLOSED_SECTION.search(line))
+        for m in _GAP_MARKER.finditer(line):
+            after = line[m.end() :].lstrip(" *_:.)-—–")
+            if in_closed_section or _GAP_CLOSED_VERB.match(after):
+                continue
+            marker = m.group(0)
+            key = _gap_marker_key(marker) or marker
+            open_markers.setdefault(key, marker)
+    return open_markers
+
+
 def explicit_gaps(*, gaps: list[str], body: str) -> list[str]:
-    """Merge explicit gap strings with [GAP-n] markers found in the body.
+    """Merge explicit gap strings with the *open* [GAP-n] markers found in the body.
 
     A gap that appears both as an explicit string (e.g. "[GAP-1] derive bound") and as
     a bare body marker ("[GAP-1]") is counted once: the explicit string already carries
     the marker, so the auto-detected body marker is not appended again. Without this the
     gap count is doubled, which confuses the model and inflates gap-fill budgeting.
+
+    "No gaps" sentinels (a literal "None", "no gaps remain", …) and markers the body
+    describes as *closed* are excluded, so a finished proof's gap count can actually reach
+    zero instead of being pinned above it by a "Summary of gaps closed" section.
     """
-    merged = [g.strip() for g in gaps if g.strip()]
+    merged = [g.strip() for g in gaps if g.strip() and not is_no_gaps_sentinel(g)]
     seen = {key for g in merged if (key := _gap_marker_key(g))}
-    for marker in sorted(set(_GAP_MARKER.findall(body))):
-        key = _gap_marker_key(marker)
-        if key is not None and key in seen:
+    for key in sorted(open_markers := _open_body_markers(body)):
+        if key in seen:
             continue
-        if key is not None:
-            seen.add(key)
-        merged.append(f"Marked in text: {marker}")
+        seen.add(key)
+        merged.append(f"Marked in text: {open_markers[key]}")
     return merged
 
 
