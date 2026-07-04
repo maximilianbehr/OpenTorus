@@ -9,8 +9,10 @@ without invoking any real container.
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
+from pathlib import Path
 
 from opentorus.execution.base import WORKDIR_TARGET as _WORKDIR_TARGET
 from opentorus.execution.base import ExecutionRequest, Mount
@@ -50,8 +52,11 @@ class LocalBackend:
         return shlex.split(request.command)
 
     def run(self, request: ExecutionRequest) -> ShellResult:
+        # Windows: hand the command string to CreateProcess verbatim — POSIX
+        # tokenization corrupts C:\-style paths (see run_shell).
+        argv: list[str] | str = request.command if os.name == "nt" else self.build_argv(request)
         return run_argv(
-            self.build_argv(request),
+            argv,
             cwd=request.workdir,
             timeout=request.limits.timeout,
             label=request.command,
@@ -79,7 +84,14 @@ class _OciBackend:
         mounts = list(request.mounts)
         if not any(m.target == _WORKDIR_TARGET for m in mounts):
             mounts.insert(
-                0, Mount(source=str(request.workdir), target=_WORKDIR_TARGET, read_only=False)
+                0,
+                Mount(
+                    # as_posix: container CLIs accept C:/-style sources on
+                    # Windows, and the argv is recorded in manifests.
+                    source=Path(request.workdir).as_posix(),
+                    target=_WORKDIR_TARGET,
+                    read_only=False,
+                ),
             )
         return mounts
 

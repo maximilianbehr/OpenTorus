@@ -70,10 +70,12 @@ def _resolve_user_path(root: Path, user_path: str | Path) -> Path:
 
 
 def _rel_to_workspace(root: Path, path: Path) -> str:
+    # POSIX form regardless of host OS: the string is persisted in workspace
+    # state, so a dossier prepared on Windows must replay elsewhere.
     try:
-        return str(path.resolve().relative_to(root.resolve()))
+        return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
-        return str(path.resolve())
+        return path.resolve().as_posix()
 
 
 def _find_containerfile_in_dir(directory: Path) -> Path | None:

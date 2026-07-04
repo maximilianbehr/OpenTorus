@@ -33,10 +33,13 @@ def test_docker_sandbox_argv_marks_readonly_workspace(tmp_path: Path) -> None:
     req = _req(tmp_path, mounts=sandboxed_mounts(tmp_path))
     argv = DockerBackend().build_argv(req)
     joined = " ".join(argv)
-    assert f"{tmp_path}:/work:ro" in joined
+    # Mount sources are recorded in POSIX form on every host (C:/-style on
+    # Windows), so compare against as_posix, not the native separator.
+    posix_tmp = tmp_path.as_posix()
+    assert f"{posix_tmp}:/work:ro" in joined
     # The results mount is read-write (no :ro suffix).
-    assert f"{tmp_path}/results:/work/results" in joined
-    assert f"{tmp_path}/results:/work/results:ro" not in joined
+    assert f"{posix_tmp}/results:/work/results" in joined
+    assert f"{posix_tmp}/results:/work/results:ro" not in joined
 
 
 def test_default_run_has_no_network(tmp_path: Path) -> None:

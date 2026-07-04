@@ -60,6 +60,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deleting gap markers is not closing gaps — failed attempts are first-class.
 
 ### Fixed
+- Windows support, caught by the new CI matrix on its first run: guarded shell
+  execution tokenized every command with POSIX `shlex` rules, which eat the
+  backslashes in `C:\...\python.exe` — so on Windows every local command,
+  experiment, replay, and quality gate failed with exit 127 (`WinError 2`).
+  Windows now hands the command string to `CreateProcess` verbatim (still no
+  shell); POSIX hosts are unchanged. Container mount sources and the recorded
+  `containerfile` workspace path are now written in POSIX form on every host,
+  so manifests prepared on Windows replay elsewhere.
 - `SECURITY.md` pointed vulnerability reports at a nonexistent repository
   (`opentorus/opentorus`); it now targets this repo, and private vulnerability
   reporting is enabled. The Apache-2.0 LICENSE copyright placeholder is filled in.

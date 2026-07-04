@@ -35,7 +35,7 @@ class ShellResult(BaseModel):
 
 
 def run_argv(
-    argv: list[str],
+    argv: list[str] | str,
     cwd: Path | str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     *,
@@ -46,8 +46,11 @@ def run_argv(
 
     ``label`` is the human-readable command string recorded on the result (useful
     when the real argv is a container invocation wrapping a logical command).
+    On Windows ``argv`` may be the raw command string: it is handed to
+    ``CreateProcess`` verbatim (still no shell), because POSIX tokenization
+    corrupts ``C:\\``-style paths.
     """
-    command = label or " ".join(argv)
+    command = label or (argv if isinstance(argv, str) else " ".join(argv))
     if not argv:
         return ShellResult(command=command, stdout="", stderr="empty command", exit_code=1)
     run_env = {**os.environ, **env} if env else None
@@ -92,8 +95,14 @@ def run_argv(
 def run_shell(
     command: str, cwd: Path | str | None = None, timeout: int = DEFAULT_TIMEOUT
 ) -> ShellResult:
-    """Execute ``command`` without a shell, capturing output and exit code."""
-    return run_argv(shlex.split(command), cwd=cwd, timeout=timeout, label=command)
+    """Execute ``command`` without a shell, capturing output and exit code.
+
+    POSIX hosts tokenize with ``shlex``; Windows passes the string through to
+    ``CreateProcess`` (shlex's POSIX rules would eat the backslashes in
+    ``C:\\...\\python.exe`` and nothing would be found to run).
+    """
+    argv: list[str] | str = command if os.name == "nt" else shlex.split(command)
+    return run_argv(argv, cwd=cwd, timeout=timeout, label=command)
 
 
 def _summarize(text: str, limit: int = 500) -> str | None:

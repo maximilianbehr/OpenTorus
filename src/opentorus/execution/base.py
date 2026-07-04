@@ -59,12 +59,15 @@ def sandboxed_mounts(
     The container becomes the policy boundary — it cannot mutate the workspace
     except through the dedicated writable directory.
     """
+    # POSIX form on every host: mount sources feed container CLIs (which accept
+    # C:/-style paths on Windows) and recorded manifests, both of which must
+    # not vary with the host's path separator.
     work = Path(workdir)
-    mounts = [Mount(source=str(work), target=_WORKDIR_TARGET, read_only=True)]
+    mounts = [Mount(source=work.as_posix(), target=_WORKDIR_TARGET, read_only=True)]
     if writable_subdir:
         mounts.append(
             Mount(
-                source=str(work / writable_subdir),
+                source=(work / writable_subdir).as_posix(),
                 target=f"{_WORKDIR_TARGET}/{writable_subdir}",
                 read_only=False,
             )
