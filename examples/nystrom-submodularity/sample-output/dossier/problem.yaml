@@ -1,0 +1,14 @@
+id: PROBLEM-0001
+title: Diminishing returns of the nuclear Nystrom error for SDDM/SDD matrices
+status: open
+domain: numerical linear algebra
+created_at: '2026-07-04T05:39:06.020248Z'
+updated_at: '2026-07-04T05:39:06.020256Z'
+formalization_status: informal
+known_equivalent_forms: []
+known_obstructions: []
+minimal_examples: []
+tags:
+- nystrom
+- submodularity
+- counterexample-search

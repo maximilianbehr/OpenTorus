@@ -1,0 +1,5 @@
+L is symmetric, strictly diagonally dominant (SDD), positive-definite: OK
+f(S+i)-f(S) = -207777829717/1469109624035
+f(T+i)-f(T) = -156716773/1107431115
+expected     -207777829717/1469109624035 and -156716773/1107431115
+CONFIRMED: f(S∪{i}) - f(S) > f(T∪{i}) - f(T)  — diminishing error-reduction fails on this SDD-PD instance (exact arithmetic, two independent implementations).

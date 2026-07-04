@@ -6,6 +6,75 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `CITATION.cff`, so GitHub offers "Cite this repository" and the tool is citable
+  in papers; `pyproject.toml` now names the actual author.
+- CI now tests on macOS and Windows and on Python 3.13/3.14 (previously
+  Ubuntu-only, 3.11/3.12), and the README carries status badges (tests, lint,
+  release, Python, OS, license) instead of a hardcoded — and stale — version line.
+
+### Changed
+- `opentorus problem report --lint` now **builds** `report.md` from the dossier's
+  artifacts before linting, matching its documented "build + honesty-lint"
+  behavior. Previously it only linted whatever file existed — including the
+  "report not built yet" placeholder, which passed with "No honesty warnings"
+  without any report having been generated. The linter itself now also flags an
+  unbuilt/empty report (new `not_built` issue kind) instead of blessing it.
+- `opentorus doctor` runs the same tool-calling probe as `prove`, so a provider
+  that cannot actually work (missing API key, unreachable server, missing model)
+  turns the `model` check red with the "Likely cause / Next action" guidance
+  instead of reporting a false green. The probe runs under a hard 20-second
+  deadline on a daemon thread: provider SDKs default to multi-minute read
+  timeouts, and an accept-then-stall endpoint must not hang the diagnostics
+  command users run precisely when their setup is broken.
+- `opentorus init`/`suggest` next-steps now recommend the README golden path
+  (`problem new` → `prove` → `problem report --lint`) and the same example model
+  as the quickstart (`gpt-oss:120b`), instead of `llama3` and a `run --plan`
+  workflow the README never mentions.
+- Example drivers default to Ollama's standard port 11434 (was the non-default
+  11435) and honor `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL` overrides; all eight
+  examples now default to `gpt-oss:120b`, and each example README matches what
+  its script actually sets.
+- The mock provider prints its "no LLM configured" disclaimer once per session
+  instead of on every fall-through turn, and the streaming display printer now
+  closes its pending line at each provider-turn boundary (via the existing
+  `on_llm_response` hook), so consecutive streamed replies no longer render
+  glued together ("…Validation not run.Here is what I found:…"). The streamed
+  chunks themselves still reassemble to exactly the reply text, and verbose
+  `--verbose/--debug` trace output is untouched — the trace session closes its
+  own lines.
+
+- `proof_write` now challenges gap-laundering: a rewrite of the dossier's primary
+  answer that closes **two or more numbered `[GAP-n]` markers at once** is rejected
+  unless new evidence (a parsed paper or a recorded experiment) arrived since the
+  previous write. Observed failure: a model wrote an honest 3-gap sketch, then one
+  rewrite later declared every gap "resolved" in prose — no new paper, no experiment,
+  and a calculus error inside the "resolution" — which ended the prove run in ~4
+  minutes. Closing a single gap by pure reasoning stays unrestricted, unmarked
+  descriptive gap entries are not counted, and referee-reopened `[REFEREE]` gaps are
+  exempt (they answer to the referee's recheck, so rewording flagged language is never
+  blocked). Backed by a new `evidence_snapshot` field on proof attempts (parsed papers
+  + experiments at last write; older records without it are never challenged), shared
+  with the prove loop's no-progress signal so the tool and the loop agree on what
+  counts as new work. Enforces epistemic invariant 5 at the artifact boundary:
+  deleting gap markers is not closing gaps — failed attempts are first-class.
+
+### Fixed
+- `SECURITY.md` pointed vulnerability reports at a nonexistent repository
+  (`opentorus/opentorus`); it now targets this repo, and private vulnerability
+  reporting is enabled. The Apache-2.0 LICENSE copyright placeholder is filled in.
+- The `problem report --lint` warning printer passed the issue kind through rich
+  markup, so the `[experiment_proof]`-style tag was swallowed as an unknown
+  style and never displayed; the tag (and the phrase/suggestion) are now
+  escaped and visible.
+- Explicit `gaps` entries written bare ("GAP-1", no brackets) — the form models
+  most often pass — did not dedupe against the body's `[GAP-1]` markers, doubling
+  the recorded gap count (observed: 3 gaps recorded as 6). This inflated gap-fill
+  budgeting and made the subsequent "closed all gaps" rewrite look even more
+  productive than it was. `gap_marker_key` now keys any numbered marker — "GAP-1",
+  "[GAP-1]", "[GAP-1: description]" — on its number, so all forms collapse to one
+  gap; prose like "the spectral gap 2" is still never counted as a marker.
+
 ## [0.0.6] — 2026-06-27
 
 This release makes `opentorus prove` finish *honestly*. The hostile referee now feeds back

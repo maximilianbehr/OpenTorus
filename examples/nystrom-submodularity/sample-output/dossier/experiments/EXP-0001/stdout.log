@@ -1,0 +1,3 @@
+sddm: checked 90 nested-pair inequalities on 15 random matrices (n=6, seed=7)
+strict violations of diminishing error-reduction: 0
+supports the property on these instances (no violation found)

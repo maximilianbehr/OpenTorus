@@ -27,7 +27,7 @@ The driver `minberr_backward_error.sh` runs an end-to-end OpenTorus workflow:
 ## Prerequisites
 
 - **Docker** — to build and run the `python-sci` container for the numerical experiments.
-- **A tool-calling model** — the script targets a local Ollama model on port 11435 (`gpt-oss:120b`); set `model.provider`, `model.name`, and `model.base_url` for your own setup.
+- **A tool-calling model** — the script defaults to a local Ollama model on port 11434 (`gpt-oss:120b`); override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL` or edit the `opentorus config set model.*` lines.
 - The script **resets the local workspace** (`rm -rf .opentorus`).
 
 ## Run

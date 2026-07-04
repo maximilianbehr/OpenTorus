@@ -19,7 +19,7 @@
 # Prerequisites:
 #   - `opentorus` on PATH (activate the env where you installed it)
 #   - Docker, for the python-sci container
-#   - a tool-calling model; this script targets a local Ollama server on :11435
+#   - a tool-calling model; this script targets a local Ollama server on :11434 (override with OPENTORUS_MODEL / OPENTORUS_BASE_URL)
 #   - the bundled notes.md (five problems) and scripts/ (seed experiments)
 #
 # WARNING: step 1 runs `rm -rf .opentorus` in this directory.
@@ -38,10 +38,10 @@ rm -rf .opentorus
 opentorus init
 
 # --- 2. Model & agent configuration -----------------------------------------
-# Edit these for your provider/model. Defaults: a local Ollama model on :11435.
+# Edit these for your provider/model. Defaults: a local Ollama model on :11434 (override with OPENTORUS_MODEL / OPENTORUS_BASE_URL).
 opentorus config set model.provider ollama
-opentorus config set model.name gemma4:31b              # or: gpt-oss:120b, gpt-4o-mini, …
-opentorus config set model.base_url http://localhost:11435
+opentorus config set model.name "${OPENTORUS_MODEL:-gpt-oss:120b}"              # or: gemma4:31b, gpt-4o-mini, …
+opentorus config set model.base_url "${OPENTORUS_BASE_URL:-http://localhost:11434}"
 opentorus config set model.timeout_seconds 1200         # raise for large local models
 opentorus config set agent.style autonomous            # fewer prompts; destructive ops still confirmed
 opentorus config set agent.max_steps inf               # no overall step cap (Ctrl-C to stop)

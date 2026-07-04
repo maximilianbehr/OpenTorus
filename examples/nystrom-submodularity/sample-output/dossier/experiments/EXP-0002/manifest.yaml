@@ -1,0 +1,18 @@
+experiment_id: EXP-0002
+problem_id: PROBLEM-0001
+title: 'SDD sweep: 90 nested-pair checks, exact rationals'
+command: python3 scripts/check_nystrom_submodularity.py --cls sdd --n 6 --trials 15
+  --pairs 6 --seed 7
+working_directory: .
+python_version: 3.14.2
+dependencies_hash: 97ba4c7134b64de1
+git_commit: null
+random_seed: 7
+input_artifacts: []
+output_artifacts: []
+claim_links:
+- CLAIM-0002
+created_at: '2026-07-04T05:39:29.172508Z'
+result_summary: exit=0; stdout 1824 chars, stderr 0 chars.
+status: succeeded
+stdout_sha256: 13fff6664131508d28e8cfd5b0e9227ad4344037602849afc3ebd9da06d70917

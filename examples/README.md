@@ -9,9 +9,10 @@ and builds an honesty-linted report.
 > experiments, claims, and an audit trail under `.opentorus/`. The model does the
 > reasoning; OpenTorus makes the work inspectable, reproducible, and honest.
 
-> **Each driver resets the local workspace** (`rm -rf .opentorus`) and targets a
-> local Ollama model on `http://localhost:11435`. Run it in a scratch directory
-> and edit the `opentorus config set model.*` lines for your own provider.
+> **Each driver resets the local workspace** (`rm -rf .opentorus`) and defaults to
+> a local Ollama model on `http://localhost:11434`. Run it in a scratch directory;
+> override the model or endpoint with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL`, or
+> edit the `opentorus config set model.*` lines for your own provider.
 
 ---
 
@@ -23,7 +24,7 @@ and builds an honesty-linted report.
 | [matrix-functions](matrix-functions/) | Five open problems on limited-memory polynomial methods for `f(A)b` (Güttel, Kressner, Lund; arXiv:2002.01682): optimal restart length, a posteriori error estimation, stable first column of `f(H_m)`, two-pass Lanczos orthogonality loss, spectrum-adaptive polynomial methods. | yes (agent-written, containerized) | `./matrix_functions_open_problems.sh [PROBLEM-ID]` |
 | [polynomial-hirsch](polynomial-hirsch/) | Polynomial Hirsch Conjecture: does a polynomial `p(n,d)` bound the graph diameter of every `d`-dimensional polytope with `n` facets? A literature + citation-honest dossier. | no | `bash poly_hirsch_sota.sh` |
 | [backward-error-convergence](backward-error-convergence/) | Is randomness necessary for condition-number-independent backward-error convergence in general linear-system solvers? (arXiv:2604.16075) | no | `bash minberr_backward_error.sh` |
-| [nystrom-submodularity](nystrom-submodularity/) | Is the nuclear-norm Nyström approximation error submodular for SDD/SDDM positive-definite matrices? | no | `bash nystroem_submodularity.sh` |
+| [nystrom-submodularity](nystrom-submodularity/) | Is the nuclear-norm Nyström approximation error submodular for SDD/SDDM positive-definite matrices? Ships a finished [sample dossier](nystrom-submodularity/sample-output/). | yes (agent-written, containerized) | `bash nystroem_submodularity.sh` |
 | [matrix-sign-approximation](matrix-sign-approximation/) | Asymptotic minimax error of the best degree-`2^m`-computable polynomial approximating the matrix sign function on `[-1,-δ] ∪ [δ,1]` (arXiv:2504.01500). | no | `bash sign.sh` |
 | [random-nla](random-nla/) | Adaptive sketch size for randomized low-rank approximation: an a posteriori error estimate driving an adaptive `ℓ = k + p` in the randomized SVD / range finder, and the oversampling each spectral-decay profile needs (Martinsson & Tropp survey, arXiv:2002.01387). | yes (agent-written, containerized) | `bash adaptive_sketch_size.sh` |
 | [tensor-concentration](tensor-concentration/) | The type-2 constant of tensors (Conjecture 16): does `E‖Σ gᵢTᵢ‖_{ℐₚ} ≤ Õ_{r,p}(d^{1/2−1/p}·√Σ‖Tᵢ‖_{ℐₚ}²)` for the symmetric injective `ℓₚ` norm? Settled for `p ≥ 2r` (arXiv:2411.10633); open for `p < 2r` and rank `r ≥ 3` (Lucca, randomstrasse101 blog). | yes (agent-written, containerized) | `bash tensor_concentration.sh` |
@@ -52,8 +53,9 @@ description of the workflow, and prerequisites.
 ## Prerequisites
 
 - **Docker** for the `python-sci` container (the numerical example).
-- **A tool-calling model.** The scripts use a local Ollama model on port 11435;
-  set `model.provider` / `model.name` / `model.base_url` to your own provider with
+- **A tool-calling model.** The scripts default to a local Ollama model on port
+  11434; override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL`, or set
+  `model.provider` / `model.name` / `model.base_url` to your own provider with
   `opentorus config set …`. The default `mock` provider is an offline smoke test
   only.
 

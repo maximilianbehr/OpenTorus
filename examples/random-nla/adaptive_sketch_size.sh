@@ -22,7 +22,7 @@
 # Prerequisites:
 #   - `opentorus` on PATH (activate the env where you installed it)
 #   - Docker, for the python-sci container
-#   - a tool-calling model; this script targets a local Ollama server on :11435
+#   - a tool-calling model; this script targets a local Ollama server on :11434 (override with OPENTORUS_MODEL / OPENTORUS_BASE_URL)
 #
 # WARNING: step 1 runs `rm -rf .opentorus` in this directory.
 # Usage: ./adaptive_sketch_size.sh [PROBLEM-ID]   (defaults to PROBLEM-0001)
@@ -41,13 +41,13 @@ rm -f notes.md
 opentorus init
 
 # --- 2. Model & agent configuration -----------------------------------------
-# Edit these for your provider/model. Defaults: a local Ollama model on :11435.
+# Edit these for your provider/model. Defaults: a local Ollama model on :11434 (override with OPENTORUS_MODEL / OPENTORUS_BASE_URL).
 # A local OpenAI-compatible server works too (cost then reads "$0 (local)"):
 #   opentorus config set model.provider openai
-#   opentorus config set model.base_url http://localhost:11435   # add /v1 if your server needs it
+#   opentorus config set model.base_url http://localhost:11434   # add /v1 if your server needs it
 opentorus config set model.provider ollama
-opentorus config set model.name gpt-oss:120b            # or: gemma4:31b, gpt-4o-mini, …
-opentorus config set model.base_url http://localhost:11435
+opentorus config set model.name "${OPENTORUS_MODEL:-gpt-oss:120b}"            # or: gemma4:31b, gpt-4o-mini, …
+opentorus config set model.base_url "${OPENTORUS_BASE_URL:-http://localhost:11434}"
 opentorus config set model.timeout_seconds 1200         # raise for large local models
 opentorus config set agent.style autonomous            # fewer prompts; destructive ops still confirmed
 opentorus config set agent.max_steps inf               # no overall step cap (Ctrl-C to stop)

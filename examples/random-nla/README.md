@@ -36,9 +36,9 @@ The driver `adaptive_sketch_size.sh` runs an end-to-end OpenTorus workflow:
 ## Prerequisites
 
 - **Docker** — to build and run the `python-sci` container for the spectral-decay sweeps.
-- **A tool-calling model** — the script targets a local Ollama model on port 11435
-  (`gpt-oss:120b`); set `model.provider`, `model.name`, and `model.base_url` for your own
-  setup. A local OpenAI-compatible server also works (cost then reads `$0 (local)`).
+- **A tool-calling model** — the script defaults to a local Ollama model on port 11434
+  (`gpt-oss:120b`); override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL` or edit the
+  `opentorus config set model.*` lines. A local OpenAI-compatible server also works (cost then reads `$0 (local)`).
   OpenTorus refuses or warns up front if the configured model cannot call tools.
 - The script **resets the local workspace** (`rm -rf .opentorus`).
 

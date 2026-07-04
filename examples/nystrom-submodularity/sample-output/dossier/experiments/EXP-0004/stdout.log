@@ -1,0 +1,4 @@
+inverse Laplacian (gamma=1/1000, n=6): 48 exact checks
+  violations of literal 'f submodular' reading: 47
+  violations of diminishing error-reduction:    0
+the diminishing error-reduction reading matches the known case

@@ -1,0 +1,42 @@
+{
+  "id": "REFEREE-0001",
+  "problem_id": "PROBLEM-0001",
+  "verdict": "block",
+  "report_status": "INVALID",
+  "assessments": [
+    {
+      "claim_id": "CLAIM-0001",
+      "claim_type": "CONJECTURE",
+      "statement": "Setting (1): for every SDDM positive-definite L, the nuclear Nystrom error of K = L^{-1} satisfies diminishing error-reduction on non-empty nested index sets: f(S u {i}) - f(S) <= f(T u {i}) - f(T) for all non-empty S subset of T, i not in T.",
+      "status": "supported",
+      "classification": "heuristic",
+      "rationale": "Supported only by experiments/sketches/notes \u2014 evidence, not verification.",
+      "recommended_type": null
+    },
+    {
+      "claim_id": "CLAIM-0002",
+      "claim_type": "CONJECTURE",
+      "statement": "Setting (2): for every SDD positive-definite L (mixed-sign off-diagonals allowed), the nuclear Nystrom error of K = L^{-1} satisfies diminishing error-reduction on non-empty nested index sets.",
+      "status": "contradicted",
+      "classification": "refuted",
+      "rationale": "Contradicted or refuted by recorded evidence.",
+      "recommended_type": null
+    },
+    {
+      "claim_id": "CLAIM-0003",
+      "claim_type": "COUNTEREXAMPLE_CANDIDATE",
+      "statement": "Candidate counterexample to setting (2): the 6x6 SDD positive-definite matrix L* with rows [8, 3/2, -1/4, -3/4, 1, -3/2], [3/2, 26/3, -3/2, -1/3, 4/3, 1], [-1/4, -3/2, 9/2, -1, -1/2, -1/4], [-3/4, -1/3, -1, 61/12, -3/2, 1/2], [1, 4/3, -1/2, -3/2, 28/3, -2], [-3/2, 1, -1/4, 1/2, -2, 33/4], with S={0}, T={0,3}, i=5, gives f(S u {i}) - f(S) = -207777829717/1469109624035 > -156716773/1107431115 = f(T u {i}) - f(T) in exact rational arithmetic, so the diminishing-error-reduction inequality fails on this instance. Independent confirmation of the general statement's failure still requires an external verification record.",
+      "status": "supported",
+      "classification": "heuristic",
+      "rationale": "Supported only by experiments/sketches/notes \u2014 evidence, not verification.",
+      "recommended_type": null
+    }
+  ],
+  "contradictions": [
+    "CLAIM-0002 is contradicted; it must not be relied upon as a result."
+  ],
+  "overclaims": [],
+  "downgrades_recommended": [],
+  "summary": "Referee verdict: block. Derived report status: INVALID. Claims by classification: 2 heuristic, 1 refuted. 1 contradiction(s), 0 overclaim(s).",
+  "created_at": "2026-07-04T05:39:59.631404+00:00"
+}

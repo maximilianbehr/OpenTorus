@@ -1,11 +1,23 @@
 # ◎ OpenTorus
 
+[![tests](https://github.com/maximilianbehr/OpenTorus/actions/workflows/tests.yml/badge.svg)](https://github.com/maximilianbehr/OpenTorus/actions/workflows/tests.yml)
+[![lint](https://github.com/maximilianbehr/OpenTorus/actions/workflows/lint.yml/badge.svg)](https://github.com/maximilianbehr/OpenTorus/actions/workflows/lint.yml)
+[![release](https://img.shields.io/github/v/tag/maximilianbehr/OpenTorus?label=release&sort=semver)](https://github.com/maximilianbehr/OpenTorus/releases)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/maximilianbehr/OpenTorus/blob/main/pyproject.toml)
+[![os](https://img.shields.io/badge/os-linux%20|%20macos%20|%20windows-lightgrey)](https://github.com/maximilianbehr/OpenTorus/actions/workflows/tests.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+
 > **An AI agent for open mathematical problems.** It surveys the literature, runs
 > reproducible experiments, searches for counterexamples, and drafts proofs —
 > recording every step as inspectable artifacts on your own machine, and never
 > mistaking evidence for proof.
 
-**v0.0.3 — early release. Inspect it, run it, and report issues.**
+![OpenTorus demo: the honesty linter flags "experiments prove" because no verification artifact backs it](docs/media/demo.gif)
+
+*No API key needed for this demo — it runs on the offline mock provider and is
+reproducible from [docs/media/demo.tape](docs/media/demo.tape).*
+
+**Early release — inspect it, run it, and report issues.**
 
 ---
 
@@ -112,12 +124,18 @@ within bounds and reports honestly when validation fails.
 
 ## Quickstart
 
-Python **3.11+**. Install in editable mode (a `src` layout, setuptools backend):
+Python **3.11+**. Not yet on PyPI — install from a clone (six lightweight
+dependencies, no ML framework; installs in seconds):
 
 ```bash
-pip install -e ".[dev]"
+git clone https://github.com/maximilianbehr/OpenTorus.git
+cd OpenTorus
+pip install -e .
 opentorus init
 ```
+
+(Contributors: `pip install -e ".[dev]"` adds pytest, ruff, and mypy — see
+[CONTRIBUTING.md](CONTRIBUTING.md).)
 
 Point it at a model (the default is an offline, deterministic `mock` for smoke
 tests):
@@ -125,7 +143,7 @@ tests):
 ```bash
 # A local Ollama model — no API key, nothing leaves your machine:
 opentorus config set model.provider ollama
-opentorus config set model.name qwen2.5-coder
+opentorus config set model.name gpt-oss:120b
 opentorus config set model.base_url http://localhost:11434
 
 # …or a hosted provider (reads OPENAI_API_KEY / ANTHROPIC_API_KEY from the env):
@@ -153,7 +171,12 @@ dossier step by step. For interactive use: `opentorus chat` (type `/help`).
 ## Examples
 
 Real, runnable workflows on actual open problems (each resets a scratch
-`.opentorus/` and targets a local model — see [examples/README.md](examples/README.md)):
+`.opentorus/` and targets a local model — see [examples/README.md](examples/README.md)).
+To browse a finished dossier **without installing anything**, read the
+[sample dossier](examples/nystrom-submodularity/sample-output/) — claims,
+reproducible experiments, recorded dead ends, and a referee verdict, built by
+hand through the same CLI artifact surface the agent drives (provenance in its
+README):
 
 | Example | Problem |
 |---------|---------|
@@ -161,8 +184,10 @@ Real, runnable workflows on actual open problems (each resets a scratch
 | [matrix-functions](examples/matrix-functions/) | Five open problems on limited-memory polynomial methods for `f(A)b` (arXiv:2002.01682), with agent-written numerics. |
 | [polynomial-hirsch](examples/polynomial-hirsch/) | Polynomial Hirsch Conjecture — a literature + citation-honest dossier. |
 | [backward-error-convergence](examples/backward-error-convergence/) | Is randomness necessary for condition-number-independent backward-error convergence? (arXiv:2604.16075) |
-| [nystrom-submodularity](examples/nystrom-submodularity/) | Submodularity of the nuclear Nyström approximation error for SDD/SDDM matrices. |
+| [nystrom-submodularity](examples/nystrom-submodularity/) | Submodularity of the nuclear Nyström error for SDD/SDDM matrices — ships a finished [sample dossier](examples/nystrom-submodularity/sample-output/) with an exact-arithmetic counterexample candidate. |
 | [matrix-sign-approximation](examples/matrix-sign-approximation/) | Best degree-`2^m` polynomial approximating the matrix sign function (arXiv:2504.01500). |
+| [random-nla](examples/random-nla/) | Adaptive sketch size for randomized low-rank approximation — an a posteriori error estimate driving the randomized SVD (arXiv:2002.01387), with agent-written numerics. |
+| [tensor-concentration](examples/tensor-concentration/) | The type-2 constant of tensors (Conjecture 16, randomstrasse101): open for `p < 2r`, rank `r ≥ 3` (arXiv:2411.10633), with agent-written numerics. |
 
 ---
 
