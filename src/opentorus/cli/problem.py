@@ -860,10 +860,24 @@ def problem_export(
         console.print(f"[green]PDF[/green] → {result.pdf_path}")
     if result.html_path is not None:
         console.print(f"[green]HTML[/green] → {result.html_path}")
-        console.print(
-            "[yellow]No LaTeX engine found on PATH; wrote HTML instead of PDF. "
-            "Install TeX Live / MacTeX for PDF output.[/yellow]"
-        )
+        if result.html_reason == "no-engine":
+            console.print(
+                "[yellow]No LaTeX engine found on PATH; wrote HTML instead of PDF. "
+                "Install TeX Live / MacTeX for PDF output.[/yellow]"
+            )
+        else:
+            # Surface the REAL failure: telling a user with TeX installed to
+            # install TeX hides compile errors and honesty refusals.
+            from rich.markup import escape
+
+            reason = result.html_reason or "unknown error"
+            console.print(
+                f"[yellow]PDF was not produced; wrote HTML instead.[/yellow]\n{escape(reason)}"
+            )
+            if result.tex_path is not None:
+                console.print(
+                    f"[yellow]LaTeX source kept for inspection:[/yellow] {result.tex_path}"
+                )
     elif pdf and result.pdf_path is None:
         console.print("[yellow]PDF was not written.[/yellow]")
 

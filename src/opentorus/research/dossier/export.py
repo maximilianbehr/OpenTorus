@@ -22,6 +22,11 @@ class ProblemExportResult:
     pdf_path: Path | None = None
     tex_path: Path | None = None
     html_path: Path | None = None
+    # Why HTML was written instead of a PDF (None when a PDF was produced).
+    # "no-engine" → no LaTeX toolchain on PATH; anything else is the actual
+    # compile/honesty failure text, so the CLI can surface the real cause
+    # instead of wrongly telling a user with TeX installed to install TeX.
+    html_reason: str | None = None
 
 
 def assemble_export_markdown(ot_dir: Path, problem_id: str, *, refresh_report: bool = True) -> str:
@@ -81,6 +86,7 @@ def export_problem(
     written_pdf: Path | None = None
     written_tex: Path | None = None
     written_html: Path | None = None
+    html_reason: str | None = None
     if pdf:
         from opentorus.research.dossier.pdf_export import compose_and_render_pdf, tex_available
 
@@ -94,6 +100,7 @@ def export_problem(
                 markdown_to_html(markdown, title=f"{pid} — OpenTorus report"),
                 encoding="utf-8",
             )
+            html_reason = "no-engine"
             if hooks and hooks.on_progress:
                 hooks.on_progress(
                     f"No LaTeX engine on PATH; wrote HTML instead of PDF: {written_html}"
@@ -126,6 +133,7 @@ def export_problem(
                     markdown_to_html(markdown, title=f"{pid} — OpenTorus report"),
                     encoding="utf-8",
                 )
+                html_reason = str(exc)
                 if tex_target.exists():
                     written_tex = tex_target
                 if hooks and hooks.on_progress:
@@ -139,4 +147,5 @@ def export_problem(
         pdf_path=written_pdf,
         tex_path=written_tex,
         html_path=written_html,
+        html_reason=html_reason,
     )

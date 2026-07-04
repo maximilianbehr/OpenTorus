@@ -68,6 +68,35 @@ def test_export_problem_pdf_calls_renderer(tmp_path: Path) -> None:
 
     assert result.pdf_path is not None
     assert result.pdf_path.is_file()
+    assert result.html_reason is None
+
+
+def test_export_problem_html_fallback_reports_real_reason(tmp_path: Path) -> None:
+    """A LaTeX compile failure must surface AS a compile failure, not as a missing
+    TeX install. Regression: every HTML fallback printed 'No LaTeX engine found on
+    PATH' — on machines with TeX installed this hid the actual compile error."""
+    from opentorus.errors import OpenTorusError
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Prove Z.", title="Problem Z")
+
+    with (
+        patch("opentorus.research.dossier.pdf_export.tex_available", return_value=True),
+        patch(
+            "opentorus.research.dossier.pdf_export.compose_and_render_pdf",
+            side_effect=OpenTorusError("Undefined control sequence \\frobnicate at line 12"),
+        ),
+    ):
+        result = export_problem(ot, "PROBLEM-0001", pdf=True, compose_llm=False)
+    assert result.pdf_path is None
+    assert result.html_path is not None and result.html_path.is_file()
+    assert result.html_reason is not None
+    assert "frobnicate" in result.html_reason
+
+    with patch("opentorus.research.dossier.pdf_export.tex_available", return_value=False):
+        result = export_problem(ot, "PROBLEM-0001", pdf=True, compose_llm=False)
+    assert result.html_reason == "no-engine"
 
 
 def test_problem_export_cli(tmp_path: Path, monkeypatch) -> None:
