@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from opentorus.research.dossier import store
@@ -52,7 +53,7 @@ def test_dossier_replay_reports_reproducibility(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)
     pid = store.create_dossier(ot, "A problem.").id
-    exp = create_experiment(ot, pid, title="det", command='python3 -c "print(42)"')
+    exp = create_experiment(ot, pid, title="det", command=f'"{sys.executable}" -c "print(42)"')
 
     first = run_experiment(ot, pid, exp.experiment_id)
     assert first.status == "succeeded"

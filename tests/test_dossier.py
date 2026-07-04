@@ -6,6 +6,7 @@ honest are more important than any single feature.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -191,7 +192,13 @@ def test_eval004_failed_attempts_persisted(tmp_path: Path) -> None:
 def test_eval005_experiment_manifest_is_reproducible(tmp_path: Path) -> None:
     base, pid = _problem(tmp_path)
     exp = create_experiment(
-        base, pid, title="random sweep", command="python3 -c 'print(42)'", random_seed=123
+        # sys.executable, double-quoted: resolvable and correctly tokenized on
+        # every host (Windows has no `python3` and no single-quote parsing).
+        base,
+        pid,
+        title="random sweep",
+        command=f'"{sys.executable}" -c "print(42)"',
+        random_seed=123,
     )
     assert exp.random_seed == 123
     assert exp.python_version

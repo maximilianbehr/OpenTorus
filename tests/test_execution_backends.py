@@ -48,7 +48,8 @@ def test_docker_argv_defaults_no_network_and_workdir_mount(tmp_path: Path) -> No
     assert "--network" in argv and argv[argv.index("--network") + 1] == "none"
     assert "--workdir" in argv and argv[argv.index("--workdir") + 1] == "/work"
     # Workspace is mounted read-write at /work; image precedes the command.
-    assert f"{tmp_path}:/work" in argv
+    # Mount sources are POSIX-form on every host (C:/-style on Windows).
+    assert f"{tmp_path.as_posix()}:/work" in argv
     assert "julia:1.10" in argv
     assert argv[-2:] == ["julia", "run.jl"]
 
@@ -86,7 +87,7 @@ def test_apptainer_argv_prefixes_docker_ref_and_isolates_net(tmp_path: Path) -> 
     assert argv[:2] == ["apptainer", "exec"]
     assert "--net" in argv and "none" in argv
     assert "docker://julia:1.10" in argv
-    assert f"{tmp_path}:/work" in " ".join(argv)
+    assert f"{tmp_path.as_posix()}:/work" in " ".join(argv)
 
 
 def test_apptainer_keeps_local_sif_image(tmp_path: Path) -> None:
