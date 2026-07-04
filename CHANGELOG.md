@@ -60,6 +60,46 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deleting gap markers is not closing gaps — failed attempts are first-class.
 
 ### Fixed
+- Experiment provenance corrections, found auditing real containerized runs:
+  the manifest's `environment:` block silently recorded the HOST interpreter
+  (e.g. `python_version: 3.14.2`) for runs that executed inside a
+  `python:3.11-slim` container — it now carries `captured_from: host` so the
+  runtime is identified by the image fields, not misread from the host capture;
+  locally-built images (`…:local`) recorded `image_digest: null` because the
+  "digest" was only parsed from the ref, never resolved — the runtime image ID
+  is now resolved via `docker/podman image inspect` (best-effort) into a new
+  `image_id` manifest field, so digest-less local builds are still pinned to
+  exact content; and the workspace experiment record now persists a one-line
+  factual `result_summary` ("exit 0; stdout: …") on every run, so reports and
+  `problem show` no longer re-derive it from the results directory. Also, curly
+  apostrophes/quotes/ellipses now map to LaTeX-safe ASCII in PDF export instead
+  of being dropped by the NFKD fallback ("Stewart's bound" no longer typesets
+  as "Stewarts bound").
+- Agent-run experiments were invisible to every dossier consumer: the report
+  rendered "## Experiments … (none)" over 7 completed docker runs, the status
+  gate could never derive `EXPERIMENTAL_ONLY` from `exp_new`/`exp_run` work, the
+  PDF export skipped their stdout, and citing one as evidence was rejected as a
+  fabricated EXP-* id. Root cause: those tools record the WORKSPACE experiment
+  store (`.opentorus/experiments/EXP-*`) while report/status-gate/PDF/citation
+  checks read only the dossier store (`problems/<pid>/experiments/`). A merged
+  view (`list_problem_experiments` / `get_problem_experiment`) adapts attributed
+  workspace runs (same attribution rule as `problem show`: tagged with the
+  problem, plus untagged in single-dossier workspaces) and now backs all four
+  consumers plus `proof_evidence_count`.
+- `problem export --pdf` blamed a missing TeX install for EVERY HTML fallback:
+  the CLI printed "No LaTeX engine found on PATH — install TeX Live" even when
+  engines were installed and the real cause was a LaTeX compile failure or the
+  export honesty gate refusing to typeset an overclaiming document (observed
+  live: a refusal over 4 'provably' overclaims surfaced as "install TeX").
+  `ProblemExportResult` now carries `html_reason`; the CLI prints the actual
+  compile error or refusal text and points at the kept `.tex` source, reserving
+  the install hint for a genuinely missing toolchain.
+- Structured `lemmas`/`definitions` entries passed as JSON objects leaked Python
+  dict reprs into proof bodies ("{'citation': ['PAPER-0005 Theorem 2.1'],
+  'statement': …}"), which then flowed verbatim into report.md, the HTML export,
+  and the PDF. `proof_write` now renders such items as markdown — statement text
+  plus a visible "*(cited: …)*" line — so the citation stays scannable by the
+  grounding check and reports read as prose.
 - Experiments recorded by the agent's `exp_new`/`exp_run` tools (workspace-level
   `.opentorus/experiments/EXP-*`) were invisible to `proof_evidence_count`, which
   only read the dossier-level store — so real experiment work never counted as new
