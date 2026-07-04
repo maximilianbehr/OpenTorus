@@ -281,6 +281,21 @@ def downgrade_claim_type(
     return updated
 
 
+def proof_evidence_count(ot_dir: Path, problem_id: str) -> int:
+    """Parsed papers plus recorded experiments — the "new work" signal for gap closure.
+
+    This is the same signal the prove loop's no-progress window uses: a parsed paper
+    or a recorded experiment is genuinely new input a rewrite can build on; re-reading
+    or re-wording the same sketch is not. Snapshotted on every proof write so a later
+    rewrite that mass-closes gaps can be challenged when nothing new arrived.
+    """
+    from opentorus.research.dossier.experiments import list_experiments
+    from opentorus.research.papers import is_paper_parsed, list_papers
+
+    parsed = sum(1 for p in list_papers(ot_dir) if is_paper_parsed(ot_dir, p))
+    return parsed + len(list_experiments(ot_dir, problem_id))
+
+
 def add_proof_attempt(
     ot_dir: Path,
     problem_id: str,
@@ -317,6 +332,7 @@ def add_proof_attempt(
         body_path=rel_body,
         gaps=gaps or [],
         claim_links=claim_links or [],
+        evidence_snapshot=proof_evidence_count(ot_dir, problem_id),
     )
     return store.append_proof_attempt(ot_dir, proof)
 
@@ -370,6 +386,7 @@ def update_proof_attempt(
         f"# {proof_id} — {title}\n\n_Status: {kind} (NOT machine-checked){scope_note}_\n\n{body}\n",
         encoding="utf-8",
     )
+    snapshot = proof_evidence_count(ot_dir, problem_id)
     for p in proofs:
         if p.id == proof_id:
             p.title = title
@@ -379,6 +396,7 @@ def update_proof_attempt(
             for cid in claim_links or []:
                 if cid not in p.claim_links:
                     p.claim_links.append(cid)
+            p.evidence_snapshot = snapshot
             p.updated_at = utcnow()
     store.rewrite_proof_attempts(ot_dir, problem_id, proofs)
     updated = next(p for p in store.list_proof_attempts(ot_dir, problem_id) if p.id == proof_id)

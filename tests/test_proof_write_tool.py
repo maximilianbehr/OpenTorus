@@ -172,6 +172,132 @@ def test_proof_write_coerces_stringified_gaps(tmp_path: Path) -> None:
     ]
 
 
+def test_explicit_gaps_bare_strings_dedupe_against_body_markers() -> None:
+    """Explicit "GAP-1" (no brackets) and a body "[GAP-1]" are ONE gap, not two.
+
+    Regression: a model that passed gaps=["GAP-1", "GAP-2", "GAP-3"] alongside body
+    markers had 6 gaps recorded, doubling the gap-fill budget it then "closed" at once.
+    """
+    body = "step one [GAP-1] and [GAP-2] then [GAP-3]"
+    assert len(explicit_gaps(gaps=["GAP-1", "GAP-2", "GAP-3"], body=body)) == 3
+    # Bracketed-with-description forms collapse onto the same number too.
+    assert explicit_gaps(gaps=["[GAP-1] derive bound"], body="uses [GAP-1: sharpen]") == [
+        "[GAP-1] derive bound"
+    ]
+    # Prose "gap 2" in the body is not a marker.
+    assert explicit_gaps(gaps=[], body="the spectral gap 2 between eigenvalues") == []
+
+
+def _write_sign_proof(tool: ProofWriteTool, *, call_id: str, gaps: list[str], closing: bool):
+    """One on-topic primary proof_write; ``closing`` drops the [GAP-n] body markers."""
+    main = (
+        "We relate epsilon_m^* to the best polynomial approximation of sign on I with "
+        "gap delta. The asymptotic error follows from Chebyshev bounds."
+        if closing
+        else (
+            "We relate epsilon_m^* to the best polynomial approximation of sign on I "
+            "with gap delta. [GAP-1] sharp constant. [GAP-2] delta scaling. "
+            "[GAP-3] lower bound."
+        )
+    )
+    return tool.run(
+        ToolCall(
+            id=call_id,
+            name="proof_write",
+            args={
+                "problem_id": "PROBLEM-0001",
+                "title": "Asymptotic polynomial sign approximation",
+                "theorem": SIGN_STATEMENT,
+                "main_proof": main,
+                "gaps": gaps,
+            },
+        )
+    )
+
+
+def test_proof_write_challenges_mass_gap_closure_without_new_evidence(tmp_path: Path) -> None:
+    """Emptying a multi-gap list with no new paper/experiment is challenged, not saved.
+
+    Regression: a model closed all three recorded gaps in one rewrite by declaring
+    them resolved in prose ("This resolves GAP-1") without any new evidence, which
+    ended the prove run after ~4 minutes (gap-laundering exit)."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, SIGN_STATEMENT, title="Sign function")
+    tool = ProofWriteTool(ot)
+    assert _write_sign_proof(tool, call_id="1", gaps=["GAP-1", "GAP-2", "GAP-3"], closing=False).ok
+    result = _write_sign_proof(tool, call_id="2", gaps=[], closing=True)
+    assert not result.ok
+    assert "Gap-closure challenge" in result.content
+    # The prior honest gap list is preserved untouched.
+    proofs = store.list_proof_attempts(ot, "PROBLEM-0001")
+    assert len(proofs[0].gaps) == 3
+
+
+def test_proof_write_allows_single_gap_closure_without_new_evidence(tmp_path: Path) -> None:
+    """Closing one gap by pure reasoning needs no new artifact."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, SIGN_STATEMENT, title="Sign function")
+    tool = ProofWriteTool(ot)
+    assert _write_sign_proof(tool, call_id="1", gaps=["GAP-1", "GAP-2", "GAP-3"], closing=False).ok
+    result = tool.run(
+        ToolCall(
+            id="2",
+            name="proof_write",
+            args={
+                "problem_id": "PROBLEM-0001",
+                "title": "Asymptotic polynomial sign approximation",
+                "theorem": SIGN_STATEMENT,
+                "main_proof": (
+                    "We relate epsilon_m^* to the best polynomial approximation of sign "
+                    "on I with gap delta. [GAP-2] delta scaling. [GAP-3] lower bound."
+                ),
+                "gaps": ["GAP-2", "GAP-3"],
+            },
+        )
+    )
+    assert result.ok
+    proofs = store.list_proof_attempts(ot, "PROBLEM-0001")
+    assert len(proofs[0].gaps) == 2
+
+
+def test_proof_write_allows_mass_gap_closure_with_new_evidence(tmp_path: Path) -> None:
+    """A new recorded experiment since the last write unlocks closing several gaps."""
+    from opentorus.research.dossier.experiments import create_experiment
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, SIGN_STATEMENT, title="Sign function")
+    tool = ProofWriteTool(ot)
+    assert _write_sign_proof(tool, call_id="1", gaps=["GAP-1", "GAP-2", "GAP-3"], closing=False).ok
+    create_experiment(ot, "PROBLEM-0001", title="sweep m vs error", command="python sweep.py")
+    result = _write_sign_proof(tool, call_id="2", gaps=[], closing=True)
+    assert result.ok
+    proofs = store.list_proof_attempts(ot, "PROBLEM-0001")
+    assert proofs[0].gaps == []
+
+
+def test_proof_write_referee_gaps_exempt_from_closure_challenge(tmp_path: Path) -> None:
+    """[REFEREE]-reopened gaps answer to the referee's recheck, not the evidence gate:
+    rewording flagged language must not be blocked for lack of a new artifact."""
+    from opentorus.research.dossier.referee import REFEREE_GAP_PREFIX
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, SIGN_STATEMENT, title="Sign function")
+    tool = ProofWriteTool(ot)
+    assert _write_sign_proof(tool, call_id="1", gaps=[], closing=True).ok
+    proofs = store.list_proof_attempts(ot, "PROBLEM-0001")
+    proofs[0].gaps = [
+        f"{REFEREE_GAP_PREFIX} Unsupported result_claim at PROOF-0001 body: 'provably'.",
+        f"{REFEREE_GAP_PREFIX} Unsupported proof_claim at PROOF-0001 body: 'we prove'.",
+    ]
+    store.rewrite_proof_attempts(ot, "PROBLEM-0001", proofs)
+    result = _write_sign_proof(tool, call_id="2", gaps=[], closing=True)
+    assert result.ok
+
+
 def test_proof_write_accepts_on_topic_sign_sketch(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)

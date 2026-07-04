@@ -100,7 +100,10 @@ def build_proof_gap_recovery_hint(ot_dir: Path, problem_id: str) -> str:
 
 # Referee-reopened gaps carry this marker so the loop can tell them from the model's own
 # gaps (replace-on-recheck, keep model gaps) and the recovery hint can explain them.
-_REFEREE_GAP_PREFIX = "[REFEREE]"
+# Canonical value lives with the referee; proof_write's gap-closure gate exempts it too.
+from opentorus.research.dossier.referee import (  # noqa: E402
+    REFEREE_GAP_PREFIX as _REFEREE_GAP_PREFIX,
+)
 
 
 def referee_block_gaps(report) -> list[str]:  # noqa: ANN001 - RefereeReport (lazy import)
@@ -748,12 +751,11 @@ def run_prove(
         # experiment is new evidence the model can fold into the proof. Counting these
         # lets the no-progress window credit active evidence-gathering (a model that runs
         # experiments toward closing a gap is NOT stuck) without letting bare re-reads or
-        # re-writes of the same sketch reset it.
-        from opentorus.research.dossier.experiments import list_experiments
-        from opentorus.research.papers import is_paper_parsed, list_papers
+        # re-writes of the same sketch reset it. Shared with proof_write's gap-closure
+        # gate so the loop and the tool agree on what counts as new work.
+        from opentorus.research.dossier.claims import proof_evidence_count
 
-        parsed = sum(1 for p in list_papers(ot_dir) if is_paper_parsed(ot_dir, p))
-        return parsed + len(list_experiments(ot_dir, pid))
+        return proof_evidence_count(ot_dir, pid)
 
     def _proof_deliverable_complete() -> bool:
         # A proof must actually exist for THIS dossier; otherwise the model may have

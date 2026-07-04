@@ -92,6 +92,7 @@ def is_no_gaps_sentinel(text: str) -> bool:
     t = re.sub(r"[\s.]+$", "", t).lower()
     return t in _NO_GAPS_PHRASES
 
+
 _STOPWORDS = frozenset(
     {
         "what",
@@ -310,11 +311,30 @@ def assemble_nl_proof_body(
     return "\n\n".join(parts) + "\n"
 
 
-def _gap_marker_key(text: str) -> str | None:
-    """Comparable key for a [GAP-n] marker (hyphen/whitespace/case normalized)."""
-    match = _GAP_MARKER.search(text)
+# Bare "GAP-3" (no brackets) — how models often write the explicit ``gaps`` list
+# entries. Gaps-list entries can themselves be descriptive prose ("handle the
+# gap 2 case"), so the bare form must be strict: uppercase, hyphenated or fused
+# only. Case-insensitive or space-separated matching would key such prose on an
+# incidental digit and silently merge distinct descriptive gaps. Bracketed
+# markers stay lenient in _GAP_MARKER above — the brackets disambiguate.
+_BARE_GAP = re.compile(rf"\bGAP[{_HYPHENS}]?\d+\b")
+
+
+def gap_marker_key(text: str) -> str | None:
+    """Comparable key for a gap marker (hyphen/whitespace/case normalized).
+
+    Accepts bracketed markers ("[GAP-1]", "[GAP-1: bound]") and the bare "GAP-1"
+    form models pass in the explicit ``gaps`` list. A numbered marker keys on its
+    number so "GAP-1", "[GAP-1]" and "[GAP-1: …]" all collapse to one gap instead
+    of doubling the recorded count. Descriptive entries with no marker key to None
+    (they cannot be tracked across rewrites).
+    """
+    match = _GAP_MARKER.search(text) or _BARE_GAP.search(text)
     if not match:
         return None
+    num = re.search(r"\d+", match.group(0))
+    if num is not None:
+        return f"GAP-{num.group(0)}"
     return re.sub(rf"[{_HYPHENS}\s]", "-", match.group(0)).upper()
 
 
@@ -337,7 +357,7 @@ def _open_body_markers(body: str) -> dict[str, str]:
             if in_closed_section or _GAP_CLOSED_VERB.match(after):
                 continue
             marker = m.group(0)
-            key = _gap_marker_key(marker) or marker
+            key = gap_marker_key(marker) or marker
             open_markers.setdefault(key, marker)
     return open_markers
 
@@ -355,7 +375,7 @@ def explicit_gaps(*, gaps: list[str], body: str) -> list[str]:
     zero instead of being pinned above it by a "Summary of gaps closed" section.
     """
     merged = [g.strip() for g in gaps if g.strip() and not is_no_gaps_sentinel(g)]
-    seen = {key for g in merged if (key := _gap_marker_key(g))}
+    seen = {key for g in merged if (key := gap_marker_key(g))}
     for key in sorted(open_markers := _open_body_markers(body)):
         if key in seen:
             continue

@@ -114,6 +114,57 @@ def _normalize_gap_args(value: object) -> list[str]:
     return [s for s in out if not is_no_gaps_sentinel(s)]
 
 
+def _gap_close_challenge(
+    ot_dir: Path,
+    problem_id: str,
+    existing,  # noqa: ANN001 - ProofAttempt (lazy import)
+    *,
+    new_gaps: list[str],
+) -> str | None:
+    """Challenge a primary-proof rewrite that mass-closes gaps with no new evidence.
+
+    Counted in distinct numbered ``GAP-n`` markers — the itemized unresolved steps the
+    prompts mandate. Closing ONE numbered gap per rewrite is always allowed (a genuine
+    reasoning fix needs no new artifact); closing two or more at once requires new
+    evidence (a parsed paper or a recorded experiment) since the previous write, or the
+    rewrite is deleting gap markers, not closing gaps, and failed attempts stop being
+    first-class. Descriptive entries with no marker aren't tracked across rewrites and
+    referee-reopened ``[REFEREE]`` gaps answer to the referee's own recheck, so neither
+    counts here. Records written before evidence snapshots existed are not challenged.
+    """
+    from opentorus.research.dossier.claims import proof_evidence_count
+    from opentorus.research.dossier.nl_proof import gap_marker_key
+    from opentorus.research.dossier.referee import REFEREE_GAP_PREFIX
+
+    snapshot = getattr(existing, "evidence_snapshot", None)
+    if snapshot is None:
+        return None
+    old_keys = {
+        k
+        for g in existing.gaps
+        if not g.startswith(REFEREE_GAP_PREFIX) and (k := gap_marker_key(g))
+    }
+    new_keys = {
+        k for g in new_gaps if not g.startswith(REFEREE_GAP_PREFIX) and (k := gap_marker_key(g))
+    }
+    closed_keys = sorted(old_keys - new_keys)
+    if len(closed_keys) < 2:
+        return None
+    current = proof_evidence_count(ot_dir, problem_id)
+    if current > snapshot:
+        return None
+    return (
+        f"Gap-closure challenge: this rewrite closes {len(closed_keys)} numbered gaps at "
+        f"once ({', '.join(closed_keys)}) but no new evidence — no parsed paper, no "
+        "experiment — was added since the previous write. Declaring gaps resolved in "
+        "prose does not close them; failed attempts are first-class. Either (1) gather "
+        "the missing support first (paper_fetch a source that justifies the steps, or "
+        "exp_new + exp_run a numeric check of the claimed result), then rewrite; or "
+        "(2) close ONE gap per proof_write, spelling out the completed argument for that "
+        "gap while keeping the others listed."
+    )
+
+
 def _paper_line(paper, ot_dir: Path | None = None) -> str:
     from opentorus.research.papers import format_paper_agent_line
 
@@ -922,6 +973,11 @@ class ProofWriteTool(Tool):
                 else None
             )
             if existing_primary is not None:
+                challenge = _gap_close_challenge(
+                    self._ot_dir, problem_id, existing_primary, new_gaps=gaps
+                )
+                if challenge:
+                    return self.fail(call, challenge)
                 proof = claim_ops.update_proof_attempt(
                     self._ot_dir,
                     problem_id,

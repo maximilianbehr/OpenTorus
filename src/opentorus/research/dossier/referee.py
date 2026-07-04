@@ -41,6 +41,12 @@ RefereeVerdict = Literal["pass", "revise", "block"]
 # Claim types that assert a mathematical result and so must be backed to stand.
 _THEOREM_LIKE: frozenset[str] = frozenset({"THEOREM", "LEMMA_ATTEMPT", "CLAIM"})
 
+# Marker prefix on proof gaps the prove loop reopens from a blocking referee verdict.
+# Canonical here (the referee owns the marker); the prove loop injects/strips these,
+# and proof_write's gap-closure gate exempts them (they answer to the referee's own
+# recheck, not to new-evidence accounting).
+REFEREE_GAP_PREFIX = "[REFEREE]"
+
 
 class ClaimAssessment(BaseModel):
     claim_id: str

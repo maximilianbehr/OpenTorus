@@ -368,5 +368,10 @@ class ProofAttempt(BaseModel):
     # Only set when an actual verifier accepted the proof.
     verifier: str | None = None
     verification_artifact: str | None = None
+    # Parsed papers + recorded experiments visible when this attempt was last
+    # written. Lets proof_write challenge a rewrite that mass-closes gaps with no
+    # new evidence since the previous write (deleting gap markers is not closing
+    # gaps). None on records written before this field existed — the gate skips.
+    evidence_snapshot: int | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

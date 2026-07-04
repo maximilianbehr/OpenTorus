@@ -148,6 +148,22 @@ on) and is active only while `agent.prove_until_gaps_closed`; the no-progress
 backstop still bounds a model that cannot satisfy the referee. The referee
 remains record-only — it reopens gaps but never upgrades truth status.
 
+## Gap-closure challenge
+
+Every proof attempt stores an `evidence_snapshot` — the number of parsed papers
+plus recorded experiments at the moment it was last written (the same "new work"
+signal the prove loop's no-progress window uses). When a `proof_write` refines
+the dossier's primary answer and would close **two or more numbered `[GAP-n]`
+markers at once** with the snapshot unchanged — no new parsed paper, no new
+experiment — the write is rejected with a challenge: gather the missing support
+first, or close one gap per rewrite with the completed argument spelled out.
+Closing a single gap by pure reasoning is always allowed; descriptive gap
+entries without a `GAP-n` marker and referee-reopened `[REFEREE]` gaps are not
+counted (the latter answer to the referee's own recheck, so rewording flagged
+language is never blocked). Attempts recorded before the snapshot field existed
+are never challenged. This enforces invariant 5 at the artifact boundary:
+deleting gap markers is not closing gaps.
+
 ## Experiment-citation integrity
 
 An experiment citation must point at a real `EXP-*` manifest: citing an id that
