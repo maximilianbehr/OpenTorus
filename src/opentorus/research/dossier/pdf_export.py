@@ -303,6 +303,14 @@ _UNICODE_SPACES = str.maketrans(
         "\u2014": "--",
         "\u2015": "-",
         "\u2212": "-",
+        # Curly quotes/apostrophes and ellipsis \u2192 LaTeX-safe ASCII. NFKD has no
+        # ASCII decomposition for these, so the last-resort transliteration used
+        # to DROP them ("Stewart's bound" rendered as "Stewarts bound").
+        "\u2018": "`",
+        "\u2019": "'",
+        "\u201c": "``",
+        "\u201d": "''",
+        "\u2026": "...",
     }
 )
 

@@ -440,3 +440,16 @@ def test_llm_compose_fallback_to_template(tmp_path: Path) -> None:
         )
     assert pdf.is_file()
     assert pdf.with_suffix(".tex").is_file()
+
+
+def test_curly_punctuation_survives_latex_sanitization() -> None:
+    """Curly apostrophes/quotes map to LaTeX-safe ASCII instead of being dropped.
+
+    Regression: NFKD has no ASCII decomposition for ’, so the last-resort
+    transliteration deleted it — "Stewart's bound" typeset as "Stewarts bound"."""
+    from opentorus.research.dossier.pdf_export import sanitize_latex_body
+
+    out = sanitize_latex_body("Stewart’s bound “as stated” … done")
+    assert "Stewart's bound" in out
+    assert "``as stated''" in out
+    assert "..." in out

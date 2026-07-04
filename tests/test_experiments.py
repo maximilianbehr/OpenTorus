@@ -57,6 +57,31 @@ def test_run_experiment_captures_logs_and_completes(tmp_path: Path) -> None:
     stdout = (base / exp.path / "results" / "stdout.txt").read_text(encoding="utf-8")
     assert "metric" in stdout  # the template prints a JSON result
     assert list_actions(base)[-1].tool_name == "run_experiment"
+    # One factual line persisted on the record so reports need not re-derive it.
+    assert exp.result_summary.startswith("exit 0; stdout:")
+
+
+def test_manifest_labels_host_captured_environment(tmp_path: Path) -> None:
+    """The environment block describes the orchestrator; a containerized run
+    executes on the image's interpreter. The label prevents misattributing a
+    python:3.11 container run to the host's Python."""
+    base = _ws(tmp_path)
+    new_experiment(base, "runnable")
+    exp, _ = run_experiment(base, "EXP-0001")
+    manifest = yaml.safe_load(
+        (base / exp.path / "results" / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert manifest["environment"]["captured_from"] == "host"
+
+
+def test_resolve_local_image_id_guards() -> None:
+    from opentorus.execution.pinning import resolve_local_image_id
+
+    assert resolve_local_image_id("local", "whatever:latest") is None
+    assert resolve_local_image_id("docker", None) is None
+    # A missing runtime binary or unknown image must be tolerated (best-effort).
+    resolved = resolve_local_image_id("podman", "no-such-image-xyz:latest")
+    assert resolved is None or resolved.startswith("sha256:")
 
 
 def test_run_unknown_experiment_raises(tmp_path: Path) -> None:

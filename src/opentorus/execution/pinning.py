@@ -43,6 +43,32 @@ def image_digest(image: str | None) -> str | None:
     return match.group(0)[1:] if match else None
 
 
+def resolve_local_image_id(runtime: str, image: str | None) -> str | None:
+    """Best-effort ``sha256:`` image ID of a local image via the container runtime.
+
+    Locally-built images (e.g. ``opentorus-python-sci:local``) carry no repo
+    digest, so :func:`image_digest` records nothing for them; the runtime image
+    ID still pins exactly which image content executed a run. Docker/Podman only;
+    never raises — provenance capture must not break a run.
+    """
+    if not image or runtime not in ("docker", "podman"):
+        return None
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            [runtime, "image", "inspect", "--format", "{{.Id}}", image],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    image_id = out.stdout.strip()
+    return image_id if out.returncode == 0 and _DIGEST_ONLY_RE.match(image_id) else None
+
+
 def _strip_digest(image: str) -> str:
     return _DIGEST_RE.sub("", image)
 

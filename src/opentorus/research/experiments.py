@@ -102,6 +102,9 @@ class Experiment(BaseModel):
     # Problem dossier this experiment was created under (attribution). None for
     # legacy records or experiments created outside any active problem.
     problem_id: str | None = None
+    # One factual line about the last run (exit code + first stdout line), so
+    # reports and `problem show` need not re-derive it from the results dir.
+    result_summary: str = ""
     # Datasets consumed as inputs (provenance for the result manifest, M71).
     datasets: list[DatasetRef] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
@@ -366,11 +369,26 @@ class ResultManifest(BaseModel):
     tool_versions: dict = Field(default_factory=dict)
     # Scale & HPC reproducibility (Phase 21): pinned digest, SIF cache, result cache.
     image_digest: str | None = None
+    # Runtime image ID for locally-built (digest-less) images.
+    image_id: str | None = None
     sif_cache: str | None = None
     cache_hit: bool = False
     cache_key: str | None = None
     # Dataset inputs consumed by this run, pinned by content hash (Phase 23, M71).
     datasets: list[dict] = Field(default_factory=list)
+
+
+def _result_summary_line(exit_code: int, stdout: str) -> str:
+    """One factual line about a run: exit code plus the first non-empty stdout line.
+
+    Observation only — conclusions belong to claims/evidence, never here.
+    """
+    first = next((ln.strip() for ln in stdout.splitlines() if ln.strip()), "")
+    if not first:
+        return f"exit {exit_code}; no stdout"
+    if len(first) > 120:
+        first = first[:117] + "..."
+    return f"exit {exit_code}; stdout: {first}"
 
 
 def _git_commit_dirty(root: Path) -> tuple[str | None, bool | None]:
@@ -394,6 +412,12 @@ def _capture_environment(root: Path, config: Config, exp_dir: Path) -> dict:
     """Capture environment metadata, gated by ``config.environment`` flags."""
     environment: dict = {}
     if config.environment.capture_os_info:
+        # This block describes the ORCHESTRATOR, not necessarily the runtime: a
+        # containerized run executes on the image's interpreter (see image_ref /
+        # image_digest / image_id in the manifest), not this Python. Label it so
+        # a manifest reader doesn't attribute a python:3.11 container run to the
+        # host's 3.14.
+        environment["captured_from"] = "host"
         environment["python_version"] = platform.python_version()
         environment["platform"] = platform.platform()
         environment["working_directory"] = str(root)
@@ -436,6 +460,9 @@ class ExecProvenance(BaseModel):
     image_ref: str | None = None
     tool_versions: dict = Field(default_factory=dict)
     image_digest: str | None = None
+    # Locally-built images have no repo digest; the runtime image ID (config
+    # sha256) still pins exactly which image content executed the run.
+    image_id: str | None = None
     sif_cache: str | None = None
 
 
@@ -518,7 +545,7 @@ def _run_via_backend(
     )
     result = backend.run(request)
     from opentorus.execution.pinning import image_digest as _digest
-    from opentorus.execution.pinning import sif_cache_path
+    from opentorus.execution.pinning import resolve_local_image_id, sif_cache_path
 
     digest = _digest(image)
     sif_cache = str(sif_cache_path(digest)) if (digest and backend.name == "apptainer") else None
@@ -528,6 +555,9 @@ def _run_via_backend(
         tool_environment=env_name,
         image_ref=image if backend.requires_image else None,
         image_digest=digest if backend.requires_image else None,
+        # A locally-built image (":local") has no repo digest; record the runtime
+        # image ID so the manifest still pins exactly which content executed.
+        image_id=(resolve_local_image_id(backend.name, image) if backend.requires_image else None),
         sif_cache=sif_cache,
     )
     return result, provenance
@@ -582,6 +612,11 @@ def _try_cache_hit(
     )
 
     experiment.status = manifest.status
+    stdout_file = results_dir / "stdout.txt"
+    cached_stdout = (
+        stdout_file.read_text(encoding="utf-8", errors="replace") if stdout_file.is_file() else ""
+    )
+    experiment.result_summary = _result_summary_line(manifest.exit_code, cached_stdout)
     experiment.updated_at = _utcnow()
     _save_meta(ot_dir, experiment)
     _write_summary(ot_dir, experiment)
@@ -632,6 +667,7 @@ def run_experiment(ot_dir: Path, exp_id: str, timeout: int = 120) -> tuple[Exper
     (results_dir / "stderr.txt").write_text(result.stderr, encoding="utf-8")
 
     experiment.status = "completed" if result.exit_code == 0 else "failed"
+    experiment.result_summary = _result_summary_line(result.exit_code, result.stdout)
     experiment.updated_at = _utcnow()
     _save_meta(ot_dir, experiment)
 
@@ -659,6 +695,7 @@ def run_experiment(ot_dir: Path, exp_id: str, timeout: int = 120) -> tuple[Exper
         image_ref=provenance.image_ref,
         tool_versions=provenance.tool_versions,
         image_digest=provenance.image_digest,
+        image_id=provenance.image_id,
         sif_cache=provenance.sif_cache,
         cache_hit=False,
         cache_key=key,
