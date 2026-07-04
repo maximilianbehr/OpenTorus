@@ -53,6 +53,34 @@ def _as_str_list(value: object) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _structured_item_text(item: object) -> str:
+    """Render one structured proof-field item as markdown, never as a dict repr.
+
+    Models pass ``lemmas`` entries like ``{"citation": ["PAPER-0005 Theorem 2.1"],
+    "statement": "…"}``. ``str(item)`` leaks the Python repr into the proof body,
+    and from there into report.md / HTML / the PDF. Extract the text and keep the
+    citation visible (the citation-grounding check scans the body for PAPER-* ids).
+    """
+    if not isinstance(item, dict):
+        return str(item).strip()
+    text = ""
+    for key in ("statement", "text", "body", "description", "content"):
+        raw = item.get(key)
+        if raw:
+            text = str(raw).strip()
+            break
+    cite = item.get("citation") or item.get("cite") or item.get("source")
+    if isinstance(cite, (list, tuple)):
+        cite = ", ".join(str(c).strip() for c in cite if str(c).strip())
+    cite = str(cite).strip() if cite else ""
+    if not text:
+        # Unknown shape — keep every value rather than dropping content.
+        return " — ".join(str(v).strip() for v in item.values() if str(v).strip())
+    if cite and cite not in text:
+        return f"{text}\n\n*(cited: {cite})*"
+    return text
+
+
 def _as_text(value: object) -> str:
     """Coerce a structured free-text proof field to a string.
 
@@ -62,8 +90,10 @@ def _as_text(value: object) -> str:
     """
     if value is None:
         return ""
+    if isinstance(value, dict):
+        return _structured_item_text(value)
     if isinstance(value, (list, tuple)):
-        return "\n\n".join(str(x).strip() for x in value if str(x).strip())
+        return "\n\n".join(text for x in value if (text := _structured_item_text(x)))
     return str(value)
 
 

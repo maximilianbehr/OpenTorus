@@ -317,6 +317,44 @@ def test_proof_write_referee_gaps_exempt_from_closure_challenge(tmp_path: Path) 
     assert result.ok
 
 
+def test_proof_write_renders_dict_lemmas_as_markdown(tmp_path: Path) -> None:
+    """Structured lemma objects must never leak Python dict reprs into the body.
+
+    Regression: bodies contained "{'citation': ['PAPER-0005 Theorem 2.1'],
+    'statement': …}" verbatim, which then flowed into report.md, HTML, and PDF."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, SIGN_STATEMENT, title="Sign function")
+    tool = ProofWriteTool(ot)
+    result = tool.run(
+        ToolCall(
+            id="1",
+            name="proof_write",
+            args={
+                "problem_id": "PROBLEM-0001",
+                "title": "Asymptotic polynomial sign approximation",
+                "theorem": SIGN_STATEMENT,
+                "lemmas": [
+                    {
+                        "citation": ["Eremenko & Yuditskii 2007, Thm 1"],
+                        "statement": "Minimax sign error on I decays like exp(-c m delta).",
+                    }
+                ],
+                "main_proof": (
+                    "We relate epsilon_m^* to the best polynomial approximation of sign on "
+                    "I with gap delta. [GAP-1] Sharp asymptotics in m remain open."
+                ),
+            },
+        )
+    )
+    assert result.ok
+    proofs = store.list_proof_attempts(ot, "PROBLEM-0001")
+    body = (store.dossier_dir(ot, "PROBLEM-0001") / proofs[0].body_path).read_text("utf-8")
+    assert "{'citation'" not in body
+    assert "Minimax sign error on I decays like exp(-c m delta)." in body
+    assert "Eremenko & Yuditskii 2007, Thm 1" in body
+
+
 def test_proof_write_accepts_on_topic_sign_sketch(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)
