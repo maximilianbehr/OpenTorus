@@ -54,6 +54,83 @@ def get_experiment(ot_dir: Path, problem_id: str, exp_id: str) -> ExperimentReco
     return ExperimentRecord.model_validate(yaml.safe_load(manifest.read_text("utf-8")))
 
 
+# The agent's exp_new/exp_run tools use the WORKSPACE-level experiment store
+# (``.opentorus/experiments/EXP-*``, statuses created/running/completed/failed),
+# not this dossier-level one. Reports, the status gate, PDF export, and the
+# experiment-citation check must see both, or completed agent runs render as
+# "(none)" and EXPERIMENTAL_ONLY can never derive from agent work.
+_WS_STATUS_MAP = {
+    "created": "planned",
+    "running": "running",
+    "completed": "succeeded",
+    "failed": "failed",
+}
+
+
+def _workspace_experiment_record(ot_dir: Path, exp) -> ExperimentRecord:  # noqa: ANN001
+    """Adapt a workspace-level experiment for dossier rendering (record-only view)."""
+    summary = getattr(exp, "result_summary", "") or ""
+    if not summary:
+        # Records written before result_summary existed: derive from the manifest.
+        manifest = ot_dir / exp.path / "results" / "manifest.yaml"
+        if manifest.is_file():
+            data = yaml.safe_load(manifest.read_text("utf-8")) or {}
+            code = data.get("exit_code")
+            summary = f"ran (exit {code}); results under .opentorus/{exp.path}/results/"
+    return ExperimentRecord(
+        experiment_id=exp.id,
+        problem_id=exp.problem_id or "",
+        title=exp.title,
+        command=exp.command or "",
+        status=_WS_STATUS_MAP.get(exp.status, "planned"),  # type: ignore[arg-type]
+        result_summary=summary,
+        created_at=exp.created_at,
+    )
+
+
+def _attributed_workspace_experiments(ot_dir: Path, problem_id: str) -> list:
+    """Workspace experiments belonging to this problem (same rule as `problem show`):
+    tagged with the problem id, plus untagged ones when the workspace has a single
+    dossier (legacy records can only belong to it)."""
+    from opentorus.research.experiments import list_experiments as ws_list
+
+    pid = problem_id.strip().upper()
+    records = ws_list(ot_dir)
+    single_dossier = len(store.list_dossiers(ot_dir)) == 1
+    return [
+        e
+        for e in records
+        if (e.problem_id or "").strip().upper() == pid or (e.problem_id is None and single_dossier)
+    ]
+
+
+def list_problem_experiments(ot_dir: Path, problem_id: str) -> list[ExperimentRecord]:
+    """Dossier experiments plus the agent's workspace experiments for this problem.
+
+    On an id collision across the two stores the dossier record wins (harvested
+    records continue the dossier numbering, so collisions are rare and transient).
+    """
+    records = list_experiments(ot_dir, problem_id)
+    seen = {getattr(r, "experiment_id", None) for r in records}
+    for exp in _attributed_workspace_experiments(ot_dir, problem_id):
+        if exp.id in seen:
+            continue
+        records.append(_workspace_experiment_record(ot_dir, exp))
+    return records
+
+
+def get_problem_experiment(ot_dir: Path, problem_id: str, exp_id: str) -> ExperimentRecord | None:
+    """Look up an EXP-* in the dossier store, then among attributed workspace runs."""
+    rec = get_experiment(ot_dir, problem_id, exp_id)
+    if rec is not None:
+        return rec
+    wanted = exp_id.strip().upper()
+    for exp in _attributed_workspace_experiments(ot_dir, problem_id):
+        if exp.id.strip().upper() == wanted:
+            return _workspace_experiment_record(ot_dir, exp)
+    return None
+
+
 def _save_manifest(ot_dir: Path, exp: ExperimentRecord) -> None:
     path = _manifest_path(ot_dir, exp.problem_id, exp.experiment_id)
     path.parent.mkdir(parents=True, exist_ok=True)

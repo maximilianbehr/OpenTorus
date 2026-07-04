@@ -208,6 +208,8 @@ def derive_status(
 
 
 def _list_experiments(ot_dir: Path, problem_id: str):  # noqa: ANN202
-    from opentorus.research.dossier.experiments import list_experiments
+    # Merged view: agent-run workspace experiments count toward the status gate
+    # too (EXPERIMENTAL_ONLY must be derivable from exp_new/exp_run work).
+    from opentorus.research.dossier.experiments import list_problem_experiments
 
-    return list_experiments(ot_dir, problem_id)
+    return list_problem_experiments(ot_dir, problem_id)

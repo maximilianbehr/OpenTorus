@@ -138,12 +138,14 @@ def add_evidence(
     # (its results do not exist yet, so citing them as settled would be dishonest).
     exp_advisory: str | None = None
     if evidence_type == "EXPERIMENT":
-        from opentorus.research.dossier.experiments import get_experiment
+        # Merged lookup: the agent's exp_new/exp_run runs live in the workspace
+        # store — citing one of those is citing a real manifest, not a fabrication.
+        from opentorus.research.dossier.experiments import get_problem_experiment
 
         for art in source_artifacts or []:
             if not _EXP_ID_RE.match(art.strip()):
                 continue
-            exp = get_experiment(ot_dir, problem_id, art.strip())
+            exp = get_problem_experiment(ot_dir, problem_id, art.strip())
             if exp is None:
                 raise OpenTorusError(
                     f"Cannot cite experiment '{art}': no such EXP-* manifest in dossier "
@@ -290,21 +292,18 @@ def proof_evidence_count(ot_dir: Path, problem_id: str) -> int:
     rewrite that mass-closes gaps can be challenged when nothing new arrived.
 
     Experiments live in TWO stores: the agent's ``exp_new``/``exp_run`` tools record
-    workspace-level ``.opentorus/experiments/EXP-*`` (often without a problem link),
-    while the dossier CRUD records ``problems/<pid>/experiments/``. Count both — an
-    experiment the model actually ran must never be invisible to this gate (observed:
-    a prove run with 7 real EXP-* was still challenged, and experiment work never
-    reset the loop's no-progress window). ``exp_new`` dedupes by command, so re-running
-    the same experiment does not inflate the count.
+    workspace-level ``.opentorus/experiments/EXP-*``, while the dossier CRUD records
+    ``problems/<pid>/experiments/``. The merged view counts both — an experiment the
+    model actually ran must never be invisible to this gate (observed: a prove run
+    with 7 real EXP-* was still challenged, and experiment work never reset the
+    loop's no-progress window). ``exp_new`` dedupes by command, so re-running the
+    same experiment does not inflate the count.
     """
-    from opentorus.research.dossier.experiments import list_experiments as dossier_experiments
-    from opentorus.research.experiments import list_experiments as workspace_experiments
+    from opentorus.research.dossier.experiments import list_problem_experiments
     from opentorus.research.papers import is_paper_parsed, list_papers
 
     parsed = sum(1 for p in list_papers(ot_dir) if is_paper_parsed(ot_dir, p))
-    return (
-        parsed + len(dossier_experiments(ot_dir, problem_id)) + len(workspace_experiments(ot_dir))
-    )
+    return parsed + len(list_problem_experiments(ot_dir, problem_id))
 
 
 def add_proof_attempt(

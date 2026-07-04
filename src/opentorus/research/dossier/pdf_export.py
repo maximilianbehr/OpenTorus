@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 from opentorus.actions import list_actions
 from opentorus.errors import OpenTorusError
 from opentorus.research.dossier import store
-from opentorus.research.dossier.experiments import experiment_dir, list_experiments
+from opentorus.research.dossier.experiments import experiment_dir, list_problem_experiments
 from opentorus.research.memory import VALID_KINDS, list_memory
 from opentorus.research.papers import is_paper_parsed, list_papers
 
@@ -92,14 +92,16 @@ def _llm_usable(provider: BaseProvider | None) -> TypeGuard[BaseProvider]:
 
 
 def _read_experiment_stdout(ot_dir: Path, problem_id: str, exp_id: str) -> str:
-    base = experiment_dir(ot_dir, problem_id, exp_id)
-    for name in ("stdout.log", "results/stdout.txt", "stdout.txt"):
-        path = base / name
-        if path.is_file():
-            text = path.read_text(encoding="utf-8", errors="replace")
-            if len(text) > _STDOUT_TAIL:
-                return text[-_STDOUT_TAIL:]
-            return text
+    # Agent-run experiments live in the workspace store (.opentorus/experiments/),
+    # dossier CRUD ones under problems/<pid>/experiments/ — check both homes.
+    for base in (experiment_dir(ot_dir, problem_id, exp_id), ot_dir / "experiments" / exp_id):
+        for name in ("stdout.log", "results/stdout.txt", "stdout.txt"):
+            path = base / name
+            if path.is_file():
+                text = path.read_text(encoding="utf-8", errors="replace")
+                if len(text) > _STDOUT_TAIL:
+                    return text[-_STDOUT_TAIL:]
+                return text
     return ""
 
 
@@ -189,7 +191,7 @@ def gather_dossier_facts(ot_dir: Path, problem_id: str) -> dict[str, Any]:
     ]
 
     experiments = []
-    for exp in list_experiments(ot_dir, pid):
+    for exp in list_problem_experiments(ot_dir, pid):
         experiments.append(
             {
                 "id": exp.experiment_id,

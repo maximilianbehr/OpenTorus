@@ -672,9 +672,11 @@ def build_report(ot_dir: Path, problem_id: str, *, harvest_session: bool = True)
 
 
 def _safe_experiments(ot_dir: Path, problem_id: str):  # noqa: ANN201
-    from opentorus.research.dossier.experiments import list_experiments
+    # Merged view: dossier CRUD experiments plus the agent's exp_new/exp_run
+    # workspace records — otherwise a report renders "(none)" over real runs.
+    from opentorus.research.dossier.experiments import list_problem_experiments
 
-    return list_experiments(ot_dir, problem_id)
+    return list_problem_experiments(ot_dir, problem_id)
 
 
 def lint_dossier_report(ot_dir: Path, problem_id: str) -> list[ReportIssue]:
