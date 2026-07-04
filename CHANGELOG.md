@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.7] — 2026-07-04
+
+This release makes the recorded artifacts match what actually happened, end to end.
+Gap-laundering is challenged at the artifact boundary (deleting `[GAP-n]` markers is
+not closing gaps), agent-run experiments become visible to reports, the status gate,
+PDF export, citations, and the evidence gate, PDF export failures state their real
+cause instead of blaming a missing TeX install, and experiment manifests stop
+misattributing containerized runs to the host interpreter — verified by re-running
+every recorded example experiment with byte-identical outputs. Windows becomes a
+working platform (CreateProcess execution, POSIX-form manifests, cross-platform CI
+on macOS/Windows and Python 3.11–3.14), and the project is citable via CITATION.cff
+with a working security-reporting channel.
+
 ### Added
 - `CITATION.cff`, so GitHub offers "Cite this repository" and the tool is citable
   in papers; `pyproject.toml` now names the actual author.
