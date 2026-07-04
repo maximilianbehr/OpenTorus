@@ -278,6 +278,25 @@ def test_proof_write_allows_mass_gap_closure_with_new_evidence(tmp_path: Path) -
     assert proofs[0].gaps == []
 
 
+def test_proof_write_counts_workspace_experiments_as_evidence(tmp_path: Path) -> None:
+    """The exp_new tool records WORKSPACE-level EXP-* (no dossier copy, often no
+    problem link); those must count as new evidence too. Regression: a prove run
+    with 7 real workspace experiments was still gap-closure-challenged because only
+    the dossier-level store was counted."""
+    from opentorus.research.experiments import new_experiment
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, SIGN_STATEMENT, title="Sign function")
+    tool = ProofWriteTool(ot)
+    assert _write_sign_proof(tool, call_id="1", gaps=["GAP-1", "GAP-2", "GAP-3"], closing=False).ok
+    new_experiment(ot, "delta sweep", command="python scripts/sweep.py")
+    result = _write_sign_proof(tool, call_id="2", gaps=[], closing=True)
+    assert result.ok
+    proofs = store.list_proof_attempts(ot, "PROBLEM-0001")
+    assert proofs[0].gaps == []
+
+
 def test_proof_write_referee_gaps_exempt_from_closure_challenge(tmp_path: Path) -> None:
     """[REFEREE]-reopened gaps answer to the referee's recheck, not the evidence gate:
     rewording flagged language must not be blocked for lack of a new artifact."""

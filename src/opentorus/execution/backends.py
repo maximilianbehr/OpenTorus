@@ -166,7 +166,9 @@ class ApptainerBackend:
         argv += ["--pwd", _WORKDIR_TARGET]
         bound_work = any(m.target == _WORKDIR_TARGET for m in request.mounts)
         if not bound_work:
-            argv += ["--bind", f"{request.workdir}:{_WORKDIR_TARGET}"]
+            # as_posix: bind sources are recorded in manifests and must not
+            # vary with the host's path separator.
+            argv += ["--bind", f"{Path(request.workdir).as_posix()}:{_WORKDIR_TARGET}"]
         for mount in request.mounts:
             suffix = ":ro" if mount.read_only else ""
             argv += ["--bind", f"{mount.source}:{mount.target}{suffix}"]

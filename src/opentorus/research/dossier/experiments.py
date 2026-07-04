@@ -123,7 +123,12 @@ def create_experiment(
     (edir / "artifacts" / ".gitkeep").touch()
     seed_line = f"export PYTHONHASHSEED={random_seed}\n" if random_seed is not None else ""
     (edir / "run.sh").write_text(
-        f"#!/usr/bin/env bash\nset -euo pipefail\n{seed_line}{command}\n", encoding="utf-8"
+        f"#!/usr/bin/env bash\nset -euo pipefail\n{seed_line}{command}\n",
+        encoding="utf-8",
+        # LF always: a CRLF run.sh (Windows text-mode default) breaks bash
+        # ("set -euo pipefail\r"), and the script's bytes should not depend on
+        # which host scaffolded the experiment.
+        newline="\n",
     )
     (edir / "run.sh").chmod(0o755)
     (edir / "result.md").write_text(
@@ -163,6 +168,12 @@ def run_experiment(
         (edir / "stderr.log").write_text(f"Timed out after {timeout}s.\n", encoding="utf-8")
         exp.status = "inconclusive"
         exp.result_summary = f"Timed out after {timeout}s."
+        _save_manifest(ot_dir, exp)
+        return exp
+    except FileNotFoundError as exc:  # no bash on this host (e.g. bare Windows)
+        (edir / "stderr.log").write_text(f"{exc}\n", encoding="utf-8")
+        exp.status = "failed"
+        exp.result_summary = "bash is required to run experiments (on Windows, install Git Bash)."
         _save_manifest(ot_dir, exp)
         return exp
 

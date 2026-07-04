@@ -288,12 +288,23 @@ def proof_evidence_count(ot_dir: Path, problem_id: str) -> int:
     or a recorded experiment is genuinely new input a rewrite can build on; re-reading
     or re-wording the same sketch is not. Snapshotted on every proof write so a later
     rewrite that mass-closes gaps can be challenged when nothing new arrived.
+
+    Experiments live in TWO stores: the agent's ``exp_new``/``exp_run`` tools record
+    workspace-level ``.opentorus/experiments/EXP-*`` (often without a problem link),
+    while the dossier CRUD records ``problems/<pid>/experiments/``. Count both — an
+    experiment the model actually ran must never be invisible to this gate (observed:
+    a prove run with 7 real EXP-* was still challenged, and experiment work never
+    reset the loop's no-progress window). ``exp_new`` dedupes by command, so re-running
+    the same experiment does not inflate the count.
     """
-    from opentorus.research.dossier.experiments import list_experiments
+    from opentorus.research.dossier.experiments import list_experiments as dossier_experiments
+    from opentorus.research.experiments import list_experiments as workspace_experiments
     from opentorus.research.papers import is_paper_parsed, list_papers
 
     parsed = sum(1 for p in list_papers(ot_dir) if is_paper_parsed(ot_dir, p))
-    return parsed + len(list_experiments(ot_dir, problem_id))
+    return (
+        parsed + len(dossier_experiments(ot_dir, problem_id)) + len(workspace_experiments(ot_dir))
+    )
 
 
 def add_proof_attempt(
