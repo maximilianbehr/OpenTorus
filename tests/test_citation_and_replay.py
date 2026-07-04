@@ -53,10 +53,15 @@ def test_dossier_replay_reports_reproducibility(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)
     pid = store.create_dossier(ot, "A problem.").id
-    exp = create_experiment(ot, pid, title="det", command=f'"{sys.executable}" -c "print(42)"')
+    exp = create_experiment(
+        ot, pid, title="det", command=f'"{Path(sys.executable).as_posix()}" -c "print(42)"'
+    )
 
     first = run_experiment(ot, pid, exp.experiment_id)
-    assert first.status == "succeeded"
+    edir = store.dossier_dir(ot, pid) / "experiments" / exp.experiment_id
+    stderr_log = edir / "stderr.log"
+    diagnostics = stderr_log.read_text("utf-8") if stderr_log.is_file() else "(no stderr.log)"
+    assert first.status == "succeeded", f"run failed; stderr: {diagnostics}"
     assert first.stdout_sha256  # baseline recorded
 
     second = run_experiment(ot, pid, exp.experiment_id)
