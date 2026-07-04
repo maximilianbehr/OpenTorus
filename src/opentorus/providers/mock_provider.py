@@ -18,6 +18,9 @@ class MockProvider(BaseProvider):
     name = "mock"
     supports_streaming = True
 
+    def __init__(self) -> None:
+        self._fallback_seen = False
+
     def respond(
         self,
         messages: list[SessionMessage],
@@ -67,6 +70,17 @@ class MockProvider(BaseProvider):
                 kind="tool_call", tool_name="memory_list", tool_args={"kind": "facts"}
             )
 
+        # The full disclaimer once per session; a multi-step loop (e.g. `prove`)
+        # otherwise re-prints it on every fall-through turn.
+        if self._fallback_seen:
+            return ProviderResponse(
+                kind="message",
+                content=(
+                    "Mock provider: nothing further to add on this task. "
+                    "Configure a real provider for real agent work."
+                ),
+            )
+        self._fallback_seen = True
         return ProviderResponse(
             kind="message",
             content=(

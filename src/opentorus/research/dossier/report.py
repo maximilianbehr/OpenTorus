@@ -682,6 +682,24 @@ def lint_dossier_report(ot_dir: Path, problem_id: str) -> list[ReportIssue]:
     store.require_dossier(ot_dir, problem_id)
     report_path = store.dossier_dir(ot_dir, problem_id) / "report.md"
     text = report_path.read_text("utf-8") if report_path.is_file() else ""
+    # A missing or never-built report must not lint clean: "no honesty warnings"
+    # on the placeholder stub would vacuously bless a report that does not exist.
+    # Exact match against the stub store.create_dossier writes — a prefix match
+    # would false-positive on a built report whose title starts the same way.
+    stub = (
+        f"# {problem_id} — report not built yet\n\nRun `opentorus problem report {problem_id}`.\n"
+    )
+    if not text.strip() or text == stub:
+        from opentorus.research.dossier.honesty import IssueKind
+
+        return [
+            ReportIssue(
+                line=1,
+                phrase="report not built yet",
+                kind=IssueKind.NOT_BUILT,
+                suggestion=f"Build it first: run `opentorus problem report {problem_id}`.",
+            )
+        ]
     # Don't re-lint the report's own "Honesty Warnings" section: it quotes the very
     # phrases the linter flags (e.g. 'is proved'), which would re-trigger and report
     # phantom warnings on the warning text itself. That section is the linter's output,

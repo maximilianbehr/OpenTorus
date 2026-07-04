@@ -56,8 +56,8 @@ def suggest_next_commands(
         )
         out.append(
             CommandSuggestion(
-                "opentorus config set model.name llama3",
-                "Set the model id your provider expects (replace llama3 with yours).",
+                "opentorus config set model.name gpt-oss:120b",
+                "Set the model id your provider expects (the README quickstart uses gpt-oss:120b).",
                 priority=21,
             )
         )
@@ -158,9 +158,9 @@ def suggest_next_commands(
     if not papers:
         out.append(
             CommandSuggestion(
-                'opentorus run --plan --fresh "Survey papers/inbox; pick an open problem"',
-                "Good first workflow once a model is configured "
-                "(see examples/simons-eigenvalue-problems/).",
+                'opentorus problem new "State one open problem, precisely"',
+                "Golden path once a model is configured: problem new → prove → "
+                "problem report --lint (see the README Quickstart).",
                 priority=50,
             )
         )

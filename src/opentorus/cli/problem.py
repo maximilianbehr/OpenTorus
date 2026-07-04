@@ -595,7 +595,9 @@ def problem_report(
     problem_id: str | None = typer.Argument(
         None, help="Dossier id (defaults to the active problem)."
     ),
-    lint: bool = typer.Option(False, "--lint", help="Only run the honesty linter on report.md."),
+    lint: bool = typer.Option(
+        False, "--lint", help="Build report.md, then run the honesty linter on it."
+    ),
     changelog: bool = typer.Option(
         False, "--changelog", help="Only print the epistemic status-change log for the dossier."
     ),
@@ -637,13 +639,23 @@ def problem_report(
                 )
             return
         if lint:
+            # Build first so the linter always judges a report generated from the
+            # dossier's artifacts — never a stale file or the "not built yet" stub.
+            build_report(base, pid)
             issues = lint_dossier_report(base, pid)
             if not issues:
                 console.print("[green]No honesty warnings.[/green] Report matches its artifacts.")
                 return
+            from rich.markup import escape
+
             console.print(f"[yellow]{len(issues)} honesty warning(s):[/yellow]")
             for i in issues:
-                console.print(f"  line {i.line} [{i.kind.value}] '{i.phrase}': {i.suggestion}")
+                # escape(): "[experiment_proof]" is rich markup otherwise and
+                # the kind tag silently disappears from the output.
+                console.print(
+                    f"  line {i.line} {escape(f'[{i.kind.value}]')} "
+                    f"'{escape(i.phrase)}': {escape(i.suggestion)}"
+                )
             raise typer.Exit(code=1) from None
         build_report(base, pid)
         if compose_llm:

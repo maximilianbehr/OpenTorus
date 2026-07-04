@@ -144,6 +144,19 @@ def test_full_workflow_produces_honest_report(tmp_path: Path, monkeypatch) -> No
     assert "No honesty warnings" in lint.stdout
 
 
+def test_report_lint_builds_report_first(tmp_path: Path, monkeypatch) -> None:
+    # `problem report --lint` is documented as "build + honesty-lint": on a fresh
+    # dossier it must not lint (and bless) the "report not built yet" stub.
+    _init(tmp_path, monkeypatch)
+    assert runner.invoke(app, ["problem", "new", "Does every widget fold?"]).exit_code == 0
+    lint = runner.invoke(app, ["problem", "report", "PROBLEM-0001", "--lint"])
+    assert lint.exit_code == 0
+    assert "No honesty warnings" in lint.stdout
+    report = (tmp_path / WORKSPACE_DIRNAME / "problems" / "PROBLEM-0001" / "report.md").read_text()
+    assert "report not built yet" not in report
+    assert "## Summary" in report
+
+
 def test_problem_show_prints_full_multiline_statement(tmp_path: Path, monkeypatch) -> None:
     _init(tmp_path, monkeypatch)
     from opentorus.research.dossier.store import create_dossier

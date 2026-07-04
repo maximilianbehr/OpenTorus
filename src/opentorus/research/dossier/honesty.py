@@ -27,6 +27,7 @@ class IssueKind(StrEnum):
     EXPERIMENT_PROOF = "experiment_proof"
     RESULT_CLAIM = "result_claim"
     WEASEL = "weasel"
+    NOT_BUILT = "not_built"
 
 
 @dataclass(frozen=True)

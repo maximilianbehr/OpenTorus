@@ -257,7 +257,7 @@ def test_search_all_normalizes_query_before_dispatch(monkeypatch: pytest.MonkeyP
         "opentorus.research.sources.registry.available_sources",
         lambda config: [source],
     )
-    search_all(default_config(), 'linear system -microwave -qcd')
+    search_all(default_config(), "linear system -microwave -qcd")
     assert seen == ["linear system"]  # negations stripped before the connector sees them
 
 

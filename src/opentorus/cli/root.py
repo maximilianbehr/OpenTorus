@@ -584,6 +584,11 @@ def prove(
     on_thinking = llm_hooks.on_thinking
     stream_llm = llm_hooks.stream_llm
     on_text = llm_hooks.on_llm_text if (verbose or debug) else printer
+    if on_llm_response is None and not (verbose or debug):
+        # No trace session closes lines here; break the printer's pending line
+        # at each turn so consecutive replies don't render glued together.
+        def on_llm_response(_response: object) -> None:
+            printer.turn_break()
 
     def _on_status(phase: str, detail: str | None = None) -> None:
         if trace is not None and phase == "phase" and detail:

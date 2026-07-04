@@ -8,6 +8,10 @@ from pathlib import Path
 from opentorus.config import Config, load_config
 from opentorus.paths import resolve_cli_workspace_root
 
+# Hard deadline for the doctor's provider probe: provider SDKs default to
+# multi-minute read timeouts, which is unacceptable for a diagnostics command.
+_PROBE_TIMEOUT_SECONDS = 20.0
+
 
 @dataclass
 class CheckResult:
@@ -47,10 +51,67 @@ def run_doctor(root: Path, ot_dir: Path, config: Config) -> list[CheckResult]:
         try:
             from opentorus.providers.registry import get_provider
 
-            get_provider(config)
-            results.append(
-                CheckResult("model", True, f"provider={provider}, model={config.model.name}")
-            )
+            provider_obj = get_provider(config)
+            # Run the same probe `prove` uses, so a provider that cannot actually
+            # work (missing API key, unreachable server, missing model) fails here
+            # instead of on the user's first real run. The probe runs on a daemon
+            # thread with a hard deadline: SDK defaults allow multi-minute reads,
+            # and doctor is the command users run precisely when the endpoint is
+            # broken — it must never hang on an accept-then-stall server.
+            probe_outcome: list[tuple[bool | None, str]] = []
+
+            def _probe() -> None:
+                from opentorus.providers.tool_support import provider_supports_tool_calling
+
+                try:
+                    probe_outcome.append(provider_supports_tool_calling(provider_obj, config))
+                except Exception as probe_exc:  # noqa: BLE001
+                    probe_outcome.append((None, f"probe request failed: {probe_exc}"))
+
+            import threading
+
+            thread = threading.Thread(target=_probe, daemon=True)
+            thread.start()
+            thread.join(_PROBE_TIMEOUT_SECONDS)
+            if not probe_outcome:
+                results.append(
+                    CheckResult(
+                        "model",
+                        False,
+                        f"provider={provider}, model={config.model.name}: tool-calling "
+                        f"probe timed out after {_PROBE_TIMEOUT_SECONDS}s — the endpoint "
+                        "accepted the request but did not answer. Next action: check "
+                        "model.base_url and network/proxy, or set "
+                        "model.verify_tool_calling false.",
+                    )
+                )
+            else:
+                ok, detail = probe_outcome[0]
+                if ok is False or (ok is None and "probe request failed" in detail):
+                    from opentorus.ux import provider_error_cause
+
+                    cause, action = provider_error_cause(detail)
+                    results.append(
+                        CheckResult(
+                            "model",
+                            False,
+                            f"provider={provider}, model={config.model.name}: {detail} — "
+                            f"{cause} Next action: {action}",
+                        )
+                    )
+                else:
+                    note = (
+                        " (tool calling verified)"
+                        if ok is True
+                        else f" (unverified: {detail})"
+                        if detail
+                        else ""
+                    )
+                    results.append(
+                        CheckResult(
+                            "model", True, f"provider={provider}, model={config.model.name}{note}"
+                        )
+                    )
             if provider == "ollama" and config.model.num_ctx is None:
                 results.append(
                     CheckResult(
@@ -60,7 +121,10 @@ def run_doctor(root: Path, ot_dir: Path, config: Config) -> list[CheckResult]:
                     )
                 )
         except Exception as exc:  # noqa: BLE001
-            results.append(CheckResult("model", False, str(exc)))
+            from opentorus.ux import provider_error_cause
+
+            cause, action = provider_error_cause(str(exc))
+            results.append(CheckResult("model", False, f"{exc} — {cause} Next action: {action}"))
 
     inbox = root / "papers" / "inbox"
     if inbox.is_dir():

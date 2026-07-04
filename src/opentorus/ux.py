@@ -222,6 +222,17 @@ class StreamPrinter:
             for line in answer.split("\n"):
                 self._emit(line)
 
+    def turn_break(self) -> None:
+        """Close an unterminated streamed line at a provider-turn boundary.
+
+        The printer only flushes on newlines, so when a turn's content does not
+        end with one, the next turn's first chunk would render glued to it
+        ("…Validation not run.Here is what I found:…").
+        """
+        if self._buffer:
+            self._emit(self._buffer)
+            self._buffer = ""
+
 
 _BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _TABLE_ROW_RE = re.compile(r"^\|.+\|$")
@@ -558,7 +569,14 @@ def make_llm_trace(
     Returns ``(on_request, on_response, on_text, stream_llm, on_thinking, trace)``.
     """
     if not verbose and not debug:
-        return None, None, user_on_text, False, None, None
+        on_response: Callable[[Any], None] | None = None
+        if isinstance(user_on_text, StreamPrinter):
+            # No trace session closes lines in this mode; break the printer's
+            # pending line at each turn so consecutive replies don't glue.
+            def on_response(_response: Any) -> None:
+                user_on_text.turn_break()
+
+        return None, on_response, user_on_text, False, None, None
 
     trace = LlmTraceSession(
         console,

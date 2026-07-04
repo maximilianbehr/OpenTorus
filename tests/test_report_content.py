@@ -106,6 +106,30 @@ def test_enriched_report_is_still_honest(tmp_path: Path) -> None:
     assert not lint_dossier_report(base, pid)
 
 
+def test_gap_marker_key_ignores_prose_digits() -> None:
+    # A gaps-list entry can be descriptive prose; an incidental "gap 2" in it
+    # must not key as GAP-2, or distinct descriptive gaps silently merge.
+    from opentorus.research.dossier.nl_proof import gap_marker_key
+
+    assert gap_marker_key("GAP-2") == "GAP-2"
+    assert gap_marker_key("[GAP-2: quantitative bound]") == "GAP-2"
+    assert gap_marker_key("GAP2 remains") == "GAP-2"
+    assert gap_marker_key("the spectral gap 2 is small") is None
+    assert gap_marker_key("handle the gap 2 case of the lemma") is None
+    assert gap_marker_key("Gap 3: tighten the constant") is None
+
+
+def test_lint_flags_unbuilt_report_stub(tmp_path: Path) -> None:
+    # "No honesty warnings" on the "report not built yet" placeholder would
+    # vacuously bless a report that was never generated from the artifacts.
+    base, pid = _problem(tmp_path)
+    issues = lint_dossier_report(base, pid)
+    assert len(issues) == 1
+    assert issues[0].kind.value == "not_built"
+    build_report(base, pid, harvest_session=False)
+    assert not lint_dossier_report(base, pid)
+
+
 def test_explicit_gaps_counts_unicode_hyphen_markers() -> None:
     # Models sometimes emit "[GAP‑1]" with a Unicode hyphen (U+2011); the gap
     # scanner must still count it, not silently report zero gaps.

@@ -1058,6 +1058,7 @@ def _run_agent_turn(
             confirm=_confirm_paused if confirm else None,
             on_text=printer,
             on_status=_on_status,
+            on_llm_response=lambda _response: printer.turn_break(),
         )
     finally:
         indicator.stop()
@@ -1072,6 +1073,7 @@ def _run_agent(
     confirm=None,
     on_text=None,
     on_status=None,
+    on_llm_response=None,
 ) -> str:
     if root is None or base is None:
         return "No workspace found. Run `opentorus init` first."
@@ -1097,6 +1099,7 @@ def _run_agent(
             confirm=confirm,
             on_text=on_text,
             on_status=on_status,
+            on_llm_response=on_llm_response,
         )
         return loop.run(task)
     except ProviderError as exc:
