@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use OpenTorus in your research, please cite it as below."
+title: "OpenTorus: a local-first AI research agent for open mathematical problems"
+type: software
+authors:
+  - family-names: Behr
+    given-names: Maximilian
+repository-code: "https://github.com/maximilianbehr/OpenTorus"
+url: "https://github.com/maximilianbehr/OpenTorus"
+license: Apache-2.0
+version: 0.0.6
+date-released: "2026-06-27"
+keywords:
+  - mathematics
+  - open problems
+  - AI agent
+  - theorem proving
+  - reproducible research

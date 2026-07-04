@@ -10,8 +10,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "OpenTorus Contributors" }]
-keywords = ["ai", "agent", "cli", "research", "engineering", "local-first"]
+authors = [{ name = "Maximilian Behr" }]
+keywords = [
+    "ai",
+    "agent",
+    "cli",
+    "research",
+    "mathematics",
+    "theorem-proving",
+    "conjecture",
+    "local-first",
+]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: Console",
@@ -21,6 +30,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Topic :: Software Development",
 ]

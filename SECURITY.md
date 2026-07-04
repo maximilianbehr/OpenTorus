@@ -10,7 +10,7 @@ Only the latest `main` is supported during pre-alpha development.
 
 If you discover a security issue, please **do not** open a public issue.
 Instead, report it privately to the maintainers via GitHub's
-["Report a vulnerability"](https://github.com/opentorus/opentorus/security/advisories/new)
+["Report a vulnerability"](https://github.com/maximilianbehr/OpenTorus/security/advisories/new)
 workflow (Security → Advisories).
 
 Please include:
