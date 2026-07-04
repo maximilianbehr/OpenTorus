@@ -209,9 +209,11 @@ def test_eval005_experiment_manifest_is_reproducible(tmp_path: Path) -> None:
     assert (edir / "run.sh").is_file()
 
     ran = run_experiment(base, pid, exp.experiment_id)
-    stderr_log = edir / "stderr.log"
-    diagnostics = stderr_log.read_text("utf-8") if stderr_log.is_file() else "(no stderr.log)"
-    assert ran.status == "succeeded", f"run failed; stderr: {diagnostics}"
+    logs = {
+        name: (edir / name).read_text("utf-8") if (edir / name).is_file() else "(missing)"
+        for name in ("stderr.log", "stdout.log")
+    }
+    assert ran.status == "succeeded", f"{ran.result_summary}; {logs}"
     assert (edir / "stdout.log").is_file()
     assert "42" in (edir / "stdout.log").read_text()
 

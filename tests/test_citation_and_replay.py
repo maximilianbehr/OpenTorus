@@ -59,9 +59,11 @@ def test_dossier_replay_reports_reproducibility(tmp_path: Path) -> None:
 
     first = run_experiment(ot, pid, exp.experiment_id)
     edir = store.dossier_dir(ot, pid) / "experiments" / exp.experiment_id
-    stderr_log = edir / "stderr.log"
-    diagnostics = stderr_log.read_text("utf-8") if stderr_log.is_file() else "(no stderr.log)"
-    assert first.status == "succeeded", f"run failed; stderr: {diagnostics}"
+    logs = {
+        name: (edir / name).read_text("utf-8") if (edir / name).is_file() else "(missing)"
+        for name in ("stderr.log", "stdout.log")
+    }
+    assert first.status == "succeeded", f"{first.result_summary}; {logs}"
     assert first.stdout_sha256  # baseline recorded
 
     second = run_experiment(ot, pid, exp.experiment_id)

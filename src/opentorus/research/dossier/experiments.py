@@ -9,6 +9,7 @@ may *support* or *contradict* a claim; it may never *verify* one.
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import subprocess
 from importlib import metadata
@@ -139,6 +140,23 @@ def create_experiment(
     return exp
 
 
+def _bash_executable() -> str:
+    """Locate the bash that runs ``run.sh``.
+
+    On Windows a bare ``bash`` often resolves to the System32 WSL shim, which
+    exits nonzero (with its message on stdout, in UTF-16) when no distribution
+    is installed — so prefer Git Bash explicitly.
+    """
+    if os.name == "nt":
+        for env_var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+            base = os.environ.get(env_var)
+            if base:
+                candidate = Path(base) / "Git" / "bin" / "bash.exe"
+                if candidate.is_file():
+                    return str(candidate)
+    return "bash"
+
+
 def run_experiment(
     ot_dir: Path, problem_id: str, exp_id: str, *, timeout: int = 300
 ) -> ExperimentRecord:
@@ -157,7 +175,7 @@ def run_experiment(
     _save_manifest(ot_dir, exp)
     try:
         proc = subprocess.run(
-            ["bash", str(edir / "run.sh")],
+            [_bash_executable(), str(edir / "run.sh")],
             cwd=cwd,
             capture_output=True,
             text=True,

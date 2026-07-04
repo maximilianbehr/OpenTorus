@@ -60,6 +60,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deleting gap markers is not closing gaps — failed attempts are first-class.
 
 ### Fixed
+- Experiments recorded by the agent's `exp_new`/`exp_run` tools (workspace-level
+  `.opentorus/experiments/EXP-*`) were invisible to `proof_evidence_count`, which
+  only read the dossier-level store — so real experiment work never counted as new
+  evidence: the gap-closure challenge fired even after the model ran experiments
+  (observed live: a prove run with 7 real EXP-* was challenged twice and had to fall
+  back to one-gap-per-write), and experiment activity never reset the prove loop's
+  no-progress window. Both stores are counted now; `exp_new`'s dedupe-by-command
+  keeps re-runs of the same experiment from inflating the count.
 - Windows support, caught by the new CI matrix on its first run: guarded shell
   execution tokenized every command with POSIX `shlex` rules, which eat the
   backslashes in `C:\...\python.exe` — so on Windows every local command,
