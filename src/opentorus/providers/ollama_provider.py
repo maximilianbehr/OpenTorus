@@ -8,6 +8,7 @@ clearly if the server is unreachable.
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import urllib.error
@@ -138,6 +139,18 @@ class OllamaProvider(BaseProvider):
                 f"model '{self.config.model.name}'. The context may be too large, or the "
                 f"model is slow — try a smaller model, reduce tools.web.max_chars, or raise "
                 f"model.timeout_seconds in config."
+            ) from exc
+        except (http.client.HTTPException, ConnectionError, json.JSONDecodeError) as exc:
+            # RemoteDisconnected/BadStatusLine/IncompleteRead are HTTPExceptions and
+            # escape both URLError and TimeoutError; a reset mid-stream surfaces as
+            # ConnectionError or as a JSONDecodeError on a truncated chunk. Observed:
+            # a transient server drop killed an hours-long prove run with a raw
+            # traceback (exit 1) instead of a clean, resumable provider error.
+            raise ProviderError(
+                f"Connection to Ollama at {self.host} dropped mid-request "
+                f"({type(exc).__name__}) — a transient server/network hiccup, not a model "
+                f"failure. The run state is preserved; re-run to resume. If this recurs, "
+                f"check the Ollama server's load and logs."
             ) from exc
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]

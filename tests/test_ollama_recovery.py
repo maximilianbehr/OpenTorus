@@ -298,3 +298,23 @@ def test_ollama_stream_valid_call_survives_later_garbage_delta(
     assert response.kind == "tool_call"
     assert response.tool_name == "read_file"
     assert response.tool_args == {"path": "x.md"}
+
+
+def test_connection_drop_becomes_clean_provider_error(monkeypatch) -> None:
+    # A transient RemoteDisconnected escaped TimeoutError/HTTPError/URLError and
+    # killed an hours-long prove run with a raw traceback. It must surface as a
+    # clean, resumable ProviderError instead.
+    import http.client
+    import urllib.request
+
+    from opentorus.providers.ollama_provider import OllamaProvider
+
+    def _boom(*args, **kwargs):
+        raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    provider = OllamaProvider(default_config())
+    with pytest.raises(ProviderError) as err:
+        provider.respond([SessionMessage(role="user", content="hi")])
+    assert "dropped mid-request" in str(err.value)
+    assert "re-run to resume" in str(err.value).lower()
