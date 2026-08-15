@@ -6,6 +6,264 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `proof_submit` agent tool: the model can now submit formal source (Lean 4, Coq,
+  SMT-LIB, interval/sympy certificates) to the enabled verifier backends directly
+  from the prove loop, closing the write → compile → error-feedback → resubmit
+  loop that previously required a human running `opentorus proof submit`. The
+  tool records the same `PROOF-*` artifact as the CLI (verbatim accept/reject
+  output, `validates` edge on accept), preserves rejected attempts, refuses
+  dangling claim ids, and reports unavailable backends as "check NOT run" —
+  never as a rejection. Registered only when a verifier backend is enabled
+  (interval + sympy are on by default); blocked during the literature phase.
+  An accepted attempt still never promotes a claim by itself — status changes
+  keep going through the gated update (EVAL invariants unchanged).
+- `ProofAttempt` records now carry `inconclusive` and `outcome`, so a verifier
+  timeout/crash is distinguishable from a mathematical rejection in the
+  artifact, not just in the transient tool output.
+- The prove prompt advertises the formal-check step (workflow step 7b) when — and
+  only when — verifier backends are enabled, so default mock/golden transcripts
+  are unchanged.
+- Twelve new example workflows under `examples/`. Seven verified-open problems
+  spanning numerical linear algebra, discrepancy theory, polyhedral
+  combinatorics, spectral graph theory, and number theory: the
+  complete-pivoting growth factor, Matrix Spencer, Marcus–de Oliveira, Komlós,
+  Kalai's 3^d, Bollobás–Nikiforov, and Lehmer's problem — all with genuinely
+  *general* (quantified) target statements, several chosen because candidate
+  discoveries (counterexamples, certificates) are finite and machine-checkable
+  via `proof_submit`. Two fixed-instance drafts (NIEP at n=5, the rank of the
+  3×3 matrix multiplication tensor) were dropped before release under the
+  general-conjecture scope policy: fixed instances are tools inside a dossier,
+  not primary targets. Plus a new **calibration**
+  category with known ground truth to regression-test the honesty pipeline:
+  Crouzeix and Brouwer (2026 claimed proofs must be reported "under review"),
+  Sendov (resolved August 2026 with a Lean-verified proof — originally slated
+  as an open example, moved to calibration when the creation-time status check
+  caught the resolution), Casas-Alvero (claimed proof + real small-degree
+  verification), and Perfect–Mirsky (`prove --disprove` must reproduce and
+  verify the known n=5 counterexample). Problem statuses were verified against
+  the literature on 2026-08-14 at example-creation time.
+- A fifteenth example, `calibration-strassen-formal`: the first to use the
+  Lean 4 / Coq proof-assistant backends. Correctness of Strassen's 7-product
+  scheme (and Laderman's 23-product 3×3 scheme as a stretch goal) is a finite
+  system of ring identities, each mechanically closed by `ring` — so the
+  calibration target is the `proof_submit` write → compile → error-feedback →
+  resubmit loop itself, not the mathematics. The driver picks host `coqc`, a
+  Mathlib-enabled Lean project via `LEAN_PROJECT`, or a containerized-Coq
+  fallback (`docker run -v /tmp:/tmp coqorg/coq:8.20 coqc`, smoke-tested) so
+  no host prover installation is required.
+- The `polynomial-hirsch` example gained a containerized **polymake**
+  environment (Debian package in `debian:trixie-slim`, smoke-tested:
+  `cube(4)->GRAPH->DIAMETER` → 4) and an explicit experiment program: certified
+  graph-diameter computations, reproduction of the Santos /
+  Matschke–Santos–Weibel records, and a spindle search — a `d`-spindle of
+  length `> d` is a finite, exactly checkable Hirsch-violating certificate,
+  while the *polynomial* conjecture (an infinite-family statement) stays
+  honestly out of reach of any single computation. Santos's arXiv:1006.2814 is
+  pre-registered as the source paper.
+- New example `difference-triangle-set`: construct a (7,5)-difference triangle
+  set with scope ≤ 111 (scope 112 known) or certify nonexistence. The most
+  certificate-friendly target in the collection — dual independent validators,
+  exact `proof_submit` re-checks for constructions, DRAT/LRAT/SMT certificates
+  for nonexistence, a five-phase workflow and a six-category claim policy baked
+  into the statement; container ships CP-SAT (ortools), z3, and python-sat.
+
+- **General-conjecture scope policy layer** (`dossier.scope` + `opentorus
+  problem verdict`). Dossier target statements are classified as `general` /
+  `fixed_instance` / `unclear` (unbounded quantifiers vs. single-parameter
+  record asks; instances mentioned inside a general statement stay general —
+  they are tools). A campaign-level terminal classification is *derived* from
+  the recorded artifacts: `GENERAL_CONJECTURE_PROVED` requires the dossier's
+  newly designatable primary claim (`primary_claim_id`, additive field;
+  `problem verdict --set-primary`) to be `formally_verified`, and
+  `GENERAL_CONJECTURE_REFUTED` requires a `COUNTEREXAMPLE_VERIFIED` claim
+  targeting it — both additionally require a general target. Everything else
+  maps conservatively downward (`VERIFIED_PARTIAL_THEOREM`,
+  `VERIFIED_COUNTEREXAMPLE_TO_AUXILIARY_CLAIM`, `COMPUTATIONAL_EVIDENCE`,
+  `NUMERICAL_EVIDENCE`, `FAILED_ATTEMPT`, `INCONCLUSIVE`,
+  `STATUS_UNCERTAIN`); `VERIFIED_REDUCTION` is never auto-derived. The layer
+  is read-only over claim statuses — the EVAL invariants are untouched, and
+  tests pin that sketches, experiments, and supported claims can never produce
+  the two resolving labels.
+
+- **Campaign template and the first three campaign dossiers.**
+  `examples/CAMPAIGN_TEMPLATE.md` codifies the general-conjecture workflow:
+  fresh *dated* status audit at creation (never from memory — Brouwer and
+  Sendov both changed status in 2026), partial results classified with sources
+  instead of blanket-stamped "open", a **driver-designated primary claim**
+  (`problem claim` + `problem verdict --set-primary`, so the resolving labels
+  are wired deterministically, not left to model behavior), a dual research
+  process (refutation and proof tracks that exchange information), and a
+  closing `problem verdict`. First three dossiers built from it, audited
+  2026-08-14: Graceful Tree (open; ≤ 35 vertices verified; the 2007 claimed
+  proof recorded as unaccepted), Barnette (open; n ≤ 90 verified; Kardoš 2020
+  recorded as a settled *neighboring* conjecture), and Caccetta–Häggkvist
+  (widely open, even k = 3; triangle frontier [n/3, 0.3465n]). The remaining
+  three complete the initial six, audited the same day: Frankl union-closed
+  (open; Gilmer-line constant (3−√5)/2 with proven optimality for the
+  approximate version — the gap to 1/2 is the campaign), Lonely Runner (open in
+  general; ≤ 13 runners settled (k ≤ 12), 8–13 all 2025/26 computer-assisted
+  preprints — the
+  frontier method is itself computational, so the instance program engages the
+  state of the art directly), and Sidorenko (open; broad settled classes, the
+  approximate version holds, K₅,₅∖C₁₀ the simplest unknown case; refutation
+  candidates complete to exact rational witnesses certifiable via
+  `proof_submit`).
+
+### Fixed
+- A transient connection drop from the Ollama server
+  (`http.client.RemoteDisconnected`, resets mid-stream, truncated stream
+  chunks) escaped the provider's TimeoutError/HTTPError/URLError handlers and
+  killed a literature-phase prove run (40 tool calls in) with a raw traceback.
+  These now surface as a clean `ProviderError` that names the cause as a
+  transient server/network hiccup and points at resuming the run — the run
+  state was always preserved; the message now says so.
+
+### Changed
+- **Search-spam nudge in the agent loop.** Three real runs died in loops of
+  consecutive `lit_search`/`web_search` calls that never fetched or read
+  anything (11 searches in one run). Search tools stay exempt from the repeat
+  guards (their results legitimately change), but from the fourth consecutive
+  search on, each result now carries an explicit stop-searching instruction
+  (fetch the best hit now, or proceed to the deliverable). Any substantive
+  tool resets the streak; inventory polls (`paper_list`/`status`) are neutral.
+  Pinned by tests in both directions.
+- **Stage 2 of the formalization anchoring: a `formalization_required` referee
+  finding.** When the dossier statement itself demands machine-checking
+  (deterministic signal: it names `proof_submit`) and no verifier submission
+  has been ACCEPTED, the hostile referee now blocks with a dedicated finding
+  that reopens as a `[REFEREE]` gap — so the demand lives in the proof artifact,
+  survives context compaction, and reappears in every gap listing. Escalation
+  is evidence-driven: five real runs across two dossier families showed prompt
+  text, workflow steps, and soft recovery nudges never produced a submission.
+  The finding forces the *attempt*, never the outcome — an accepted submission
+  clears it, a run that cannot comply is ended honestly by the no-progress
+  windows, ordinary dossiers (statement never names `proof_submit`) are
+  untouched, and the verdict stays with the artifacts. Pinned by tests in both
+  directions plus a no-demand-no-finding guard.
+- **Opt-in campaign gate** (`agent.prove_require_instance_work`, default off;
+  set by the campaign drivers): the clean completion of a prove run is held
+  until at least one experiment or one `proof_submit` is recorded. Decided on
+  smoke-run evidence: both campaign smoke runs (lonely-runner fresh,
+  Caccetta–Häggkvist fresh + resume with a patched START-HERE statement) ended
+  with zero instance work — models follow what a gate enforces, not what
+  statement prose requests (the literature phase works precisely because it is
+  tool-gated). The gate delivers an explicit instruction at the recovery
+  surface and forces the *attempt*, never the outcome: a model that still
+  starts nothing is stopped honestly by a bounded no-progress window, failed
+  runs stay preserved, and the derived campaign verdict remains whatever the
+  artifacts support. Skipped in disprove mode; pinned by two integration tests
+  (gate holds + honest stop; gate cleared by a recorded verifier attempt).
+- The gap-fill recovery hint now re-anchors the formal-verification step: when
+  verifier backends are enabled and no `proof_submit` has been accepted yet, it
+  tells the model to machine-check any gap that reduces to a finite check via
+  `proof_submit` instead of `exp_run` — and the nudge disappears once an
+  accepted submission exists. Motivated by the first calibration runs, where
+  `muse-glimmer:30b` ran per-degree verifications as evidence-grade experiments
+  and never called `proof_submit` despite workflow step 7b; whether a stronger
+  anchor (a referee gap) is needed awaits the strassen-formal litmus run.
+- The formalization nudge now also reaches **smooth runs** (Stufe 1b). The
+  strassen-formal litmus showed the gap-time nudge above never fires when every
+  gap closes cleanly — the run never enters recovery. Completion is now held
+  open for one bounded window (< 2 model steps) when all gaps are closed,
+  formal backends are enabled, and no verifier submission was accepted: the
+  completion-surface hint tells the model to machine-check the argument's
+  finite core via `proof_submit` NOW, or record in `memory_add(kind=decisions)`
+  why nothing is formalizable. Soft by design — after the window the run
+  completes regardless (a hard formalization gate is the scope-policy layer's
+  decision, not the loop's); skipped in disprove mode; an accepted submission
+  clears it. Pinned by tests: the nudge reaches the model exactly once and an
+  ignoring model still finishes without extra tool work.
+- The eight original example workflows now default to `muse-glimmer:30b`
+  (driver-script `OPENTORUS_MODEL` fallback, workspace `config.yaml`, READMEs),
+  matching the model the new calibration examples were written against.
+  Historical `usage/ledger.jsonl` records keep the model actually used at run
+  time (`gpt-oss:120b`).
+
+### Fixed
+- **`opentorus config set` no longer reports success without persisting.** The
+  surgical config writer only synced values into lines already present in the
+  file, so any field added to the Config model after a workspace's
+  `config.yaml` was written (five had accumulated, including the campaign gate
+  and the interval/sympy verifier toggles) was silently dropped on write while
+  the CLI printed a green "Set" — a field-test run executed without the gate
+  its driver believed it had enabled. Fixed in three layers: the default
+  template now carries every scalar Config field (pinned by a completeness
+  test that fails on any future field without a template line), `write_config`
+  appends fields missing from older workspace files into their existing
+  section instead of dropping them, and the CLI re-reads the file after
+  writing and fails loudly on any mismatch.
+- Campaign status audits corrected after an independent peer cross-check
+  (audit-amended 2026-08-15 in the dossiers): Lonely Runner is settled up to
+  **13** runners, not 12 (arXiv:2604.23906 added; chronology and
+  computer-assisted qualifiers fixed); Frankl's Gilmer-line citations
+  re-attributed (arXiv:2211.11731 = Alweiss–Huang–Sellke, Sawin =
+  arXiv:2211.11504, refinement = Cambie); Sidorenko's blow-up result stated
+  precisely (some blow-up per graph, not all blow-ups), a tangential source
+  dropped from the preregistered papers, and K₅,₅∖C₁₀ identified as the
+  10-vertex Möbius ladder (not the Möbius–Kantor graph).
+- The dossier honesty linter (shared by the hostile referee) no longer flags
+  four classes of *honest* phrasing, all surfaced by the first real calibration
+  runs: (1) negated experiment claims ("experiments support X **but do not
+  prove** it" — the exact wording the linter itself asks for) and negated
+  proof-verb phrases ("fails to prove the conjecture"); (2) "trivial" as a
+  classifier noun phrase ("the trivial family $(X-\alpha)^d$") as opposed to
+  dismissive uses ("the proof is trivial"), which stay flagged; (3) passive
+  result-assertions attributed to a local source on the same line ("is proved
+  for $d=p^k$; PAPER-0004 Theorem 3") — first-person and "provably" claims are
+  still flagged, citation or not; (4) the linter re-flagging the quoted phrase
+  inside a referee finding's own text ("[REFEREE] … 'is proved' …") — on such
+  lines only text outside the quotes is linted, so smuggled overclaims still
+  trip; (5) fenced code blocks (``` / ~~~), so a Coq template's `Qed.` in the
+  statement echo is verbatim material, not a proof claim — inline `code` spans
+  stay linted so prose cannot hide behind backticks (found by the
+  strassen-formal calibration run); (6) attributed proof-verb phrases
+  ("Rosenfeld proves the conjecture for k=7 … PAPER-0002") — the same
+  same-line-citation licensing as (3), extended to the proof-claim pattern and
+  to `lint_proof_sketch`'s resolves-an-open-conjecture warning ("The conjecture
+  holds for k=8 … PAPER-0004" is a cited partial result); self-claims
+  ("we prove", "QED", "hence proven") stay flagged, citation or not (found by
+  the lonely-runner campaign smoke run). Each class is pinned by tests in both
+  directions (the false positive gone, the true positive kept).
+
+- **`apply_patch` no longer returns an empty success for a no-op patch.**
+  Forensics of a real run showed `old == new` producing `ok("")` — a blank tool
+  message with zero signal, which the model answered by re-issuing the same
+  call verbatim, invisible to every loop guard *because the result was a
+  success*. A no-op patch is now a failure with an actionable message, and a
+  successful patch never returns empty content.
+- **Every `_run_tool` rejection path now reaches the audit trail and the
+  identical-failure tracker.** Unknown-tool, tool-gate, repeat-block,
+  missing-file-repeat, permission/not-confirmed, and the literature-gate
+  `proof_write` block all feed `_note_tool_failure` (six identical rejections
+  end the run), and the previously unlogged repeat-block / read-cache paths now
+  write `actions.jsonl` entries — an agent action with no audit record was a
+  standing exception to the provenance promise.
+
+Three fixes from a diagnosed prove-loop cycle (60 byte-identical `proof_write`
+rejections over 41 minutes under `max_steps=inf`, ended only by Ctrl-C):
+
+- **Citation attribution no longer bleeds across papers.** The `PAPER-*` id in a
+  citation match was dropped (regex without a capture group), so every cited
+  theorem number was checked against *every* cited paper — rejecting the whole
+  `proof_write` for a citation the model never wrote, an unfixable error.
+  Attribution is now nearest-mention within the sentence: "PAPER-0004 provides
+  … Theorem 2.4" attributes 2.4 to PAPER-0004 only, and a number the *named*
+  paper genuinely lacks still blocks.
+- **A failing tool call no longer counts as progress.** The agent loop tracks
+  identical `(tool, args, error)` failures: from the third one the error is
+  annotated with an explicit do-not-repeat instruction, and after six the run
+  stops honestly instead of cycling — regardless of which check produces the
+  rejection. Varying calls, different errors, and eventual successes reset the
+  streak; network tools with changeable results are exempt.
+- **The prove draft phase now has its own no-progress window.** The gap-fill
+  no-progress backstop was armed only after the first primary proof existed, so
+  a draft whose deliverable failed every time was invisible to every guard once
+  the step caps were inf. The draft phase now ends after
+  `prove_gap_fill_no_progress_steps` steps without a new proof attempt or new
+  evidence (via the new `AgentLoop(stall_check=…)` seam), with failed attempts
+  preserved.
+
 ## [0.0.7] — 2026-07-04
 
 This release makes the recorded artifacts match what actually happened, end to end.
