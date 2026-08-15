@@ -437,6 +437,7 @@ _RESOLVED_OPEN = re.compile(
     r"establish(?:es|ed)\s+the\s+(?:polynomial\s+)?(?:hirsch|conjecture))\b",
     re.IGNORECASE,
 )
+_PAPER_REF_RE = re.compile(r"\bPAPER-\d{4}\b", re.IGNORECASE)
 
 
 def lint_proof_sketch(
@@ -459,11 +460,17 @@ def lint_proof_sketch(
         if scope == "primary":
             warnings.extend(rel_errors)
         warnings.extend(rel_warnings)
-    if open_problem and _RESOLVED_OPEN.search(body):
-        warnings.append(
-            "Proof sketch appears to resolve an open conjecture — expected a status "
-            "survey with explicit [GAP-n], not a claimed proof."
-        )
+    if open_problem:
+        # Per line, and attribution-aware: "The conjecture holds for k=8 … PAPER-0004"
+        # reports a cited partial result, not a resolution claim. A resolving phrase
+        # on a line without a local PAPER-* citation still warns.
+        for body_line in body.splitlines():
+            if _RESOLVED_OPEN.search(body_line) and not _PAPER_REF_RE.search(body_line):
+                warnings.append(
+                    "Proof sketch appears to resolve an open conjecture — expected a "
+                    "status survey with explicit [GAP-n], not a claimed proof."
+                )
+                break
     if (
         _HIRSCH_DIAMETER_CONTEXT.search(body)
         and _LOG_BOUND.search(body)
