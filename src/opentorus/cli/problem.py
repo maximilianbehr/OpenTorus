@@ -914,3 +914,53 @@ def problem_replay(
         if run:
             result = run_experiment(base, problem_id, exp.experiment_id)
             console.print(f"  → {result.status}: {result.result_summary}")
+
+
+@problem_app.command("verdict")
+def problem_verdict(
+    problem_id: str = typer.Argument(..., help="Dossier id, e.g. PROBLEM-0001."),
+    set_primary: str | None = typer.Option(
+        None,
+        "--set-primary",
+        help="Designate the claim that states the FULL quantified target "
+        "(required before GENERAL_CONJECTURE_PROVED/_REFUTED are derivable).",
+    ),
+) -> None:
+    """Campaign-level scope check and terminal classification (derived, additive).
+
+    Shows the target-scope classification of the dossier statement (general /
+    fixed_instance / unclear) and the terminal classification derived from the
+    recorded artifacts. Never changes claim statuses.
+    """
+    from opentorus.research.dossier import scope, store
+
+    base = _require_workspace_dir()
+    pid = _resolve_problem_id(base, problem_id)
+    try:
+        dossier = store.require_dossier(base, pid)
+        if set_primary is not None:
+            claim = store.get_claim(base, pid, set_primary.strip().upper())
+            if claim is None:
+                console.print(f"[red]No claim '{set_primary}' in dossier '{pid}'.[/red]")
+                raise typer.Exit(code=1)
+            dossier.primary_claim_id = claim.id
+            store.save_dossier(base, dossier)
+            console.print(f"Primary claim for {pid} set to [bold]{claim.id}[/bold].")
+        statement = store.read_statement(base, pid) or dossier.title
+        target = scope.classify_target(statement)
+        label, rationale = scope.classify_outcome(base, pid)
+    except OpenTorusError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    style = {"general": "green", "fixed_instance": "red", "unclear": "yellow"}[target]
+    console.print(f"Target scope: [{style}]{target}[/{style}]")
+    if target == "fixed_instance":
+        console.print(
+            "[yellow]Scope policy: fixed instances are tools inside a dossier, not "
+            "primary targets — generalize the statement or fold this into a general "
+            "campaign.[/yellow]"
+        )
+    primary = dossier.primary_claim_id or "—"
+    console.print(f"Primary claim: {primary}")
+    console.print(f"Classification: [bold]{label}[/bold]")
+    console.print(f"  {rationale}")

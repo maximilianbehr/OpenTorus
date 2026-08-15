@@ -894,3 +894,380 @@ def test_run_prove_referee_runs_even_at_nonzero_gap_count(tmp_path: Path) -> Non
     latest = store.list_proof_attempts(ot, "PROBLEM-0001")[-1]
     assert any(g.startswith("[REFEREE]") for g in latest.gaps)
     assert any("GAP-1" in g for g in latest.gaps)
+
+
+def test_draft_phase_no_progress_backstop_stops_unwinnable_draft(tmp_path: Path) -> None:
+    # Regression for the tensor-concentration cycle: with inf caps, a proof_write
+    # that FAILS every time leaves has_primary_proof false forever, so the gap-fill
+    # no-progress window was never armed and no guard ended the run (60 identical
+    # rejections, 41 minutes, killed by Ctrl-C). The draft-phase window must end it.
+    # The failing args VARY each turn so the identical-failure backstop cannot be the
+    # thing that stops the run — only the draft window can.
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Is P=NP?", title="P vs NP")
+
+    class FailingDraftProvider:
+        def __init__(self) -> None:
+            self._n = 0
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            self._n += 1
+            return ProviderResponse(
+                kind="tool_call",
+                content="",
+                tool_name="proof_write",
+                # No title → the tool rejects the call; a fresh note each turn keeps
+                # the failing calls non-identical.
+                tool_args={"problem_id": "PROBLEM-0001", "evidence_notes": f"attempt {self._n}"},
+            )
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+    from opentorus.config import default_config
+
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = float("inf")
+    config.agent.prove_gap_fill_max_steps = float("inf")
+    config.agent.prove_gap_fill_no_progress_steps = 4
+    config.agent.prove_until_gaps_closed = True
+    # If the draft window is broken this run never returns (inf caps).
+    outcome = run_prove(
+        tmp_path, ot, FailingDraftProvider(), config, "PROBLEM-0001", literature_first=False
+    )
+    assert outcome.proof_ids == []
+    assert "made no progress" in outcome.answer
+    assert outcome.tool_calls <= 6
+
+
+def test_gap_recovery_hint_anchors_proof_submit(tmp_path: Path) -> None:
+    # Calibration finding: models route finite symbolic checks through exp_run and
+    # never call proof_submit when the nudge lives only in the workflow text. The
+    # gap-fill recovery hint must re-anchor the formal step — exactly while backends
+    # are enabled AND no verifier submission has been accepted yet.
+    from opentorus.agent.prove_loop import build_proof_gap_recovery_hint
+    from opentorus.research.dossier import claims
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    dossier = store.create_dossier(ot, "Is the scheme correct?", title="Scheme")
+    pid = dossier.id
+    claims.add_proof_attempt(
+        ot,
+        pid,
+        title="gapped sketch",
+        body="Sketch. [GAP-1] identity unchecked.",
+        kind="sketch",
+        gaps=["identity unchecked"],
+    )
+
+    # No backends configured -> no nudge.
+    assert "proof_submit" not in build_proof_gap_recovery_hint(ot, pid)
+    # Backends enabled and nothing accepted yet -> nudge present, backend named.
+    hint = build_proof_gap_recovery_hint(ot, pid, formal_backends=["coq"])
+    assert "proof_submit" in hint and "coq" in hint
+
+    # Once a verifier submission is ACCEPTED, the nudge disappears.
+    from opentorus.config import default_config
+    from opentorus.research.verifiers import submit_proof
+    from opentorus.research.verifiers.base import VerificationResult
+
+    class _Accepting:
+        name = "stub"
+
+        def is_available(self):
+            return True
+
+        def version(self):
+            return "stub-1.0"
+
+        def verify(self, source):
+            return VerificationResult(backend=self.name, accepted=True, output="QED")
+
+    submit_proof(
+        ot, default_config(), "coq", "Lemma t : True. Proof. exact I. Qed.", verifier=_Accepting()
+    )
+    hint = build_proof_gap_recovery_hint(ot, pid, formal_backends=["coq"])
+    assert "proof_submit" not in hint
+
+
+def test_gap_free_hint_nudges_proof_submit_when_unverified(tmp_path: Path) -> None:
+    # Stufe 1b: all gaps closed + formal backends enabled + zero accepted verifier
+    # submissions => the completion-surface hint demands a proof_submit attempt.
+    from opentorus.agent.prove_loop import build_proof_gap_recovery_hint
+    from opentorus.config import default_config
+    from opentorus.research.dossier import claims as claim_ops
+    from opentorus.research.verifiers import submit_proof
+    from opentorus.research.verifiers.base import VerificationResult
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Is X true?", title="X")
+    claim_ops.add_proof_attempt(
+        ot, "PROBLEM-0001", title="Sketch", body="A closed argument.", gaps=[]
+    )
+
+    hint = build_proof_gap_recovery_hint(ot, "PROBLEM-0001", formal_backends=["sympy"])
+    assert "proof_submit" in hint and "machine-checked" in hint
+
+    # Without enabled backends the classic completion text is unchanged.
+    plain = build_proof_gap_recovery_hint(ot, "PROBLEM-0001")
+    assert plain == "All recorded gaps are closed. Summarize briefly and stop."
+
+    class _Accepting:
+        name = "stub"
+
+        def is_available(self) -> bool:
+            return True
+
+        def version(self) -> str | None:
+            return "stub-1.0"
+
+        def verify(self, source: str) -> VerificationResult:
+            return VerificationResult(backend=self.name, accepted=True, output="QED")
+
+    submit_proof(ot, default_config(), "sympy", "certificate", verifier=_Accepting())
+    cleared = build_proof_gap_recovery_hint(ot, "PROBLEM-0001", formal_backends=["sympy"])
+    assert cleared == "All recorded gaps are closed. Summarize briefly and stop."
+
+
+def test_completion_nudge_gives_model_one_bounded_shot(tmp_path: Path) -> None:
+    # A smooth run (gap-free proof, never enters gap-fill recovery) must still see the
+    # proof_submit nudge exactly at the completion surface — and the run must complete
+    # after the bounded window even if the model ignores it (soft nudge, no hard gate).
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Is P=NP?", title="P vs NP")
+
+    clean_proof = {
+        "problem_id": "PROBLEM-0001",
+        "title": "Sketch",
+        "theorem": "Statement restated.",
+        "main_proof": "An elementary argument; the sketch argues each step.",
+        "gaps": [],
+    }
+
+    class SmoothProvider:
+        def __init__(self) -> None:
+            self._n = 0
+            self.saw_nudge = False
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            for m in messages:
+                if "proof_submit(backend=" in str(getattr(m, "content", "")):
+                    self.saw_nudge = True
+            self._n += 1
+            if self._n == 1:
+                return ProviderResponse(
+                    kind="tool_call", content="", tool_name="proof_write", tool_args=clean_proof
+                )
+            return ProviderResponse(kind="message", content="Done - the sketch is complete.")
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+    from opentorus.config import default_config
+
+    provider = SmoothProvider()
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = 12  # finite backstop; the nudge window must end well below
+    config.agent.prove_until_gaps_closed = True
+    outcome = run_prove(tmp_path, ot, provider, config, "PROBLEM-0001", literature_first=False)
+    assert outcome.proof_ids == ["PROOF-0001"]
+    assert outcome.gaps_remaining == 0
+    assert provider.saw_nudge  # the completion-surface hint reached the model
+    assert outcome.tool_calls == 1  # ignoring the nudge did not spiral into extra work
+
+
+def test_instance_work_gate_holds_and_stops_honestly(tmp_path: Path) -> None:
+    # Opt-in campaign gate (agent.prove_require_instance_work): a gap-free sketch
+    # alone must not settle the run. A model that never starts the instance program
+    # sees the gate hint, and the gate window then ends the run honestly — the gate
+    # forces the attempt, never the outcome.
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Does the property hold for every n?", title="Campaign")
+
+    clean_proof = {
+        "problem_id": "PROBLEM-0001",
+        "title": "Sketch",
+        "theorem": "For every n the property holds.",
+        "main_proof": "A survey-style argument, honestly presented.",
+        "gaps_markdown": "",
+        "gaps": [],
+    }
+
+    class IgnoringProvider:
+        def __init__(self) -> None:
+            self._n = 0
+            self.saw_gate_hint = False
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            for m in messages:
+                if "Campaign gate" in str(getattr(m, "content", "")):
+                    self.saw_gate_hint = True
+            self._n += 1
+            if self._n == 1:
+                return ProviderResponse(
+                    kind="tool_call", content="", tool_name="proof_write", tool_args=clean_proof
+                )
+            if self._n % 2 == 0:
+                # Harmless polling keeps the chat-only guards quiet so the test
+                # isolates the gate window as the stopping mechanism.
+                return ProviderResponse(
+                    kind="tool_call", content="", tool_name="status", tool_args={}
+                )
+            return ProviderResponse(
+                kind="message", content=f"Considering formalization options ({self._n})."
+            )
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+    from opentorus.config import default_config
+
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = 30  # finite backstop; the gate window must end well below
+    config.agent.prove_until_gaps_closed = True
+    config.agent.prove_require_instance_work = True
+    config.agent.prove_gap_fill_no_progress_steps = 3
+    provider = IgnoringProvider()
+    outcome = run_prove(tmp_path, ot, provider, config, "PROBLEM-0001", literature_first=False)
+    assert outcome.proof_ids == ["PROOF-0001"]
+    assert "instance-work gate" in outcome.answer  # honest stop, not silent completion
+    assert provider.saw_gate_hint  # the gate instruction reached the model
+
+
+def test_instance_work_gate_cleared_by_verifier_attempt(tmp_path: Path) -> None:
+    # One recorded verifier submission satisfies the gate; the run settles normally.
+    from opentorus.config import default_config
+    from opentorus.research.verifiers import submit_proof
+    from opentorus.research.verifiers.base import VerificationResult
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Does the property hold for every n?", title="Campaign")
+
+    class _Accepting:
+        name = "stub"
+
+        def is_available(self):
+            return True
+
+        def version(self):
+            return "stub-1.0"
+
+        def verify(self, source):
+            return VerificationResult(backend=self.name, accepted=True, output="QED")
+
+    submit_proof(
+        ot,
+        default_config(),
+        "coq",
+        "Lemma t : True. Proof. exact I. Qed.",
+        verifier=_Accepting(),
+    )
+
+    clean_proof = {
+        "problem_id": "PROBLEM-0001",
+        "title": "Sketch",
+        "theorem": "For every n the property holds.",
+        "main_proof": "A survey-style argument, honestly presented.",
+        "gaps_markdown": "",
+        "gaps": [],
+    }
+
+    class SmoothProvider:
+        def __init__(self) -> None:
+            self._n = 0
+
+        @property
+        def name(self) -> str:
+            return "mock"
+
+        @property
+        def supports_streaming(self) -> bool:
+            return False
+
+        def generate(self, messages, tools=None):
+            self._n += 1
+            if self._n == 1:
+                return ProviderResponse(
+                    kind="tool_call", content="", tool_name="proof_write", tool_args=clean_proof
+                )
+            return ProviderResponse(kind="message", content="Done - the sketch is complete.")
+
+        def respond(self, messages, tools=None, **kwargs):
+            return self.generate(messages, tools)
+
+    from opentorus.agent.prove_loop import run_prove
+
+    config = default_config()
+    config.permissions.mode = "trusted"
+    config.agent.max_steps = 12
+    config.agent.prove_until_gaps_closed = True
+    config.agent.prove_require_instance_work = True
+    config.agent.prove_gap_fill_no_progress_steps = 3
+    outcome = run_prove(
+        tmp_path, ot, SmoothProvider(), config, "PROBLEM-0001", literature_first=False
+    )
+    assert outcome.proof_ids == ["PROOF-0001"]
+    assert "instance-work gate" not in outcome.answer
+    assert outcome.gaps_remaining == 0
+
+
+def test_referee_gap_text_carries_proof_submit_route(tmp_path: Path) -> None:
+    # Stage 1b of the formalization anchoring: with formal backends enabled, the
+    # [REFEREE] gap text itself names the proof_submit route, so the nudge lives in
+    # the proof artifact (surviving compaction) — prompt-level anchors alone
+    # measurably did not move the model (strassen litmus rounds 1 and 2).
+    from opentorus.agent.prove_loop import reopen_referee_gaps
+    from opentorus.research.dossier import claims
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    dossier = store.create_dossier(ot, "Does property Q hold?", title="Q")
+    pid = dossier.id
+    claims.add_proof_attempt(
+        ot,
+        pid,
+        title="overclaiming sketch",
+        body="We prove that property Q holds. QED.",
+        kind="sketch",
+        gaps=[],
+    )
+    plain = reopen_referee_gaps(ot, pid)
+    assert plain and not any("proof_submit" in g for g in plain)
+    with_backends = reopen_referee_gaps(ot, pid, formal_backends=["coq", "sympy"])
+    assert with_backends and any("proof_submit(backend=coq/sympy)" in g for g in with_backends)

@@ -24,6 +24,7 @@ summary under ``<dossier>/referee/``.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Literal, cast
 
@@ -80,6 +81,50 @@ class RefereeReport(BaseModel):
 
 def referee_dir(ot_dir: Path, problem_id: str) -> Path:
     return store.dossier_dir(ot_dir, problem_id) / "referee"
+
+
+# Stage 2 of the proof_submit anchoring. Deterministic demand signal: the dossier
+# statement itself names proof_submit (all formalization-mandating statements do).
+_FORMALIZATION_DEMAND = re.compile(r"\bproof_submit\b", re.IGNORECASE)
+
+
+def _formalization_required(ot_dir: Path, problem_id: str) -> list[Overclaim]:
+    """Blocking finding when the statement demands machine-checking and none happened.
+
+    Empirically motivated: five real runs across two dossier families showed that
+    statement prose, workflow text, and soft recovery nudges never produced a
+    verifier submission — only enforced gates change model behavior. The finding
+    reopens as a ``[REFEREE]`` gap (via ``referee_block_gaps``), so it lives in the
+    proof artifact itself and survives context compaction. It forces the *attempt*,
+    never the outcome: a run that cannot comply is still ended honestly by the
+    loop's no-progress windows, and the verdict stays with the artifacts.
+    """
+    statement_path = store.dossier_dir(ot_dir, problem_id) / "statement.md"
+    try:
+        statement = statement_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    if not _FORMALIZATION_DEMAND.search(statement):
+        return []
+    from opentorus.research.verifiers.proofs import list_proofs as verifier_proofs
+
+    if any(p.accepted for p in verifier_proofs(ot_dir)):
+        return []
+    return [
+        Overclaim(
+            location=f"{problem_id} statement",
+            phrase="proof_submit",
+            kind="formalization_required",
+            suggestion=(
+                "The dossier statement explicitly requires machine-checking via "
+                "proof_submit, but no verifier submission has been ACCEPTED yet. "
+                "Submit the statement's finite checks through proof_submit(backend=…) "
+                "— a rejected attempt followed by fix-and-resubmit is progress; prose "
+                "is not. If a check genuinely cannot be formalized, record why in "
+                "memory_add(kind=decisions)."
+            ),
+        )
+    ]
 
 
 def referee_prompt() -> str:
@@ -272,6 +317,7 @@ def referee_review(
         has_reference=has_ref,
         has_supported_theorem=has_thm,
     )
+    overclaims.extend(_formalization_required(ot_dir, problem_id))
 
     # Optionally apply the recommended downgrades through the dossier's CRUD so the
     # change is logged in the status changelog (never a silent rewrite).
@@ -289,7 +335,8 @@ def referee_review(
                 )
 
     hard_overclaim = any(
-        o.kind in ("experiment_proof", "proof_claim", "result_claim") for o in overclaims
+        o.kind in ("experiment_proof", "proof_claim", "result_claim", "formalization_required")
+        for o in overclaims
     )
     if contradictions or hard_overclaim:
         verdict: RefereeVerdict = "block"

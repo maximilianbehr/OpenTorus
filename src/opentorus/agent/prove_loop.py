@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,7 +65,9 @@ def has_primary_proof(ot_dir: Path, problem_id: str) -> bool:
     return any(getattr(p, "scope", "primary") != "exploration" for p in proofs)
 
 
-def build_proof_gap_recovery_hint(ot_dir: Path, problem_id: str) -> str:
+def build_proof_gap_recovery_hint(
+    ot_dir: Path, problem_id: str, formal_backends: Sequence[str] = ()
+) -> str:
     """Recovery text when a primary proof exists but gaps remain."""
     from opentorus.research.dossier import store
 
@@ -76,6 +78,25 @@ def build_proof_gap_recovery_hint(ot_dir: Path, problem_id: str) -> str:
     latest = proofs[-1]
     gap_n = len(latest.gaps)
     if gap_n == 0:
+        # Stufe 1b of the proof_submit anchoring: a run whose gaps all closed without
+        # a single verifier submission gets this instruction at the completion surface
+        # (smooth runs never enter gap-fill recovery, so the gap-time nudge above never
+        # showed — observed in the strassen-formal calibration, 0 submissions despite a
+        # formalization-only dossier).
+        if formal_backends:
+            from opentorus.research.verifiers.proofs import list_proofs as _verifier_proofs
+
+            if not any(p.accepted for p in _verifier_proofs(ot_dir)):
+                names = ", ".join(formal_backends)
+                return (
+                    "All recorded gaps are closed, but nothing is machine-checked yet. "
+                    f"Formal backends are enabled ({names}): pick the part of the "
+                    "argument that reduces to a finite check — a ring identity, a "
+                    "per-case elimination, an exact certificate — and submit it NOW via "
+                    "proof_submit(backend=…, source=…). Only an ACCEPTED proof_submit "
+                    "is machine-checked. If genuinely nothing is formalizable, record "
+                    "why in memory_add(kind=decisions) and stop."
+                )
         return "All recorded gaps are closed. Summarize briefly and stop."
     preview = "; ".join(latest.gaps[:3])
     if gap_n > 3:
@@ -86,6 +107,22 @@ def build_proof_gap_recovery_hint(ot_dir: Path, problem_id: str) -> str:
         "paper_fetch, or exp_run as needed; then proof_write(scope=primary) to fill "
         "[GAP-n] or shrink the gap list. Do not stop with a chat-only summary."
     )
+    # Observed in the first calibration runs: models route even finite symbolic
+    # checks through exp_run (evidence-grade) and never touch proof_submit, so the
+    # workflow-text step 7b alone does not surface at gap-fill time. Re-anchor it
+    # here — but only while no verifier submission was accepted, so the nudge
+    # disappears once the formal route is actually in use.
+    if formal_backends:
+        from opentorus.research.verifiers.proofs import list_proofs as _verifier_proofs
+
+        if not any(p.accepted for p in _verifier_proofs(ot_dir)):
+            names = ", ".join(formal_backends)
+            hint += (
+                f" Formal backends are enabled ({names}): if a gap reduces to a finite "
+                "check — a ring identity, a per-case elimination, an exact certificate — "
+                "machine-check it NOW via proof_submit(backend=…) instead of exp_run; "
+                "only an ACCEPTED proof_submit is machine-checked evidence."
+            )
     if any(g.startswith(_REFEREE_GAP_PREFIX) for g in latest.gaps):
         hint += (
             f" The {_REFEREE_GAP_PREFIX} gap(s) were reopened by the hostile referee and "
@@ -106,14 +143,31 @@ from opentorus.research.dossier.referee import (  # noqa: E402
 )
 
 
-def referee_block_gaps(report) -> list[str]:  # noqa: ANN001 - RefereeReport (lazy import)
+def referee_block_gaps(
+    report,  # noqa: ANN001 - RefereeReport (lazy import)
+    formal_backends: Sequence[str] = (),
+) -> list[str]:
     """Turn a *blocking* referee verdict into actionable, deduped proof gaps.
 
     Only the hard, blocking findings become gaps: contradictions and overclaims that
     assert an unsupported result (``experiment_proof`` / ``proof_claim`` / ``result_claim``).
     Soft ``revise`` findings (e.g. a claim merely classified heuristic) are not reopened —
     presenting those honestly as conjecture is legitimate.
+
+    When formal backends are enabled, overclaim gaps carry the proof_submit route in the
+    gap text itself (stage 1b of the formalization anchoring): the gap persists in the
+    proof artifact, so the nudge survives compaction and reappears in every gap listing —
+    the two prompt-level anchors (workflow step 7b, gap-fill hint) measurably did not
+    move the model on their own.
     """
+    nudge = ""
+    if formal_backends:
+        names = "/".join(formal_backends)
+        nudge = (
+            f" If the disputed step reduces to a finite check, machine-check it via "
+            f"proof_submit(backend={names}) — an ACCEPTED submission is the missing "
+            "verification artifact."
+        )
     gaps: list[str] = []
     for c in report.contradictions:
         gaps.append(
@@ -121,11 +175,17 @@ def referee_block_gaps(report) -> list[str]:  # noqa: ANN001 - RefereeReport (la
             "Reconcile this before the result can stand."
         )
     for o in report.overclaims:
-        if o.kind not in ("experiment_proof", "proof_claim", "result_claim"):
+        if o.kind not in (
+            "experiment_proof",
+            "proof_claim",
+            "result_claim",
+            "formalization_required",
+        ):
             continue
+        extra = "" if "proof_submit" in (o.suggestion or "") else nudge
         gaps.append(
             f"{_REFEREE_GAP_PREFIX} Unsupported {o.kind} at {o.location}: '{o.phrase}'. "
-            f"{o.suggestion}"
+            f"{o.suggestion}{extra}"
         )
     seen: set[str] = set()
     out: list[str] = []
@@ -136,7 +196,9 @@ def referee_block_gaps(report) -> list[str]:  # noqa: ANN001 - RefereeReport (la
     return out
 
 
-def reopen_referee_gaps(ot_dir: Path, problem_id: str) -> list[str]:
+def reopen_referee_gaps(
+    ot_dir: Path, problem_id: str, formal_backends: Sequence[str] = ()
+) -> list[str]:
     """Run the hostile referee on a gap-free proof; if it blocks, write its findings as gaps.
 
     Returns the referee-derived gaps now on the latest attempt — empty when the referee
@@ -153,7 +215,7 @@ def reopen_referee_gaps(ot_dir: Path, problem_id: str) -> list[str]:
         report = referee_review(ot_dir, pid, persist=False)
     except Exception:  # noqa: BLE001 - the referee must never break the prove run
         return []
-    gaps = referee_block_gaps(report) if report.verdict == "block" else []
+    gaps = referee_block_gaps(report, formal_backends) if report.verdict == "block" else []
     proofs = store.list_proof_attempts(ot_dir, pid)
     if not proofs:
         return gaps
@@ -370,6 +432,7 @@ def build_prove_prompt(
     open_problem: bool = False,
     statement_focus: str = "",
     extra: str = "",
+    formal_backends: Sequence[str] = (),
 ) -> str:
     """Build the user goal for a single proof-focused agent run."""
     pid = problem_id.strip().upper()
@@ -466,6 +529,18 @@ def build_prove_prompt(
             "5. Optional numerics/special cases only under proof_write evidence_notes "
             "(corroboration, not proof).\n"
         )
+        formal_block = (
+            (
+                f"7b. Formal check (enabled: {', '.join(formal_backends)}): once a lemma "
+                "or the statement is fully closed (no [GAP-n]), formalize it and call "
+                "proof_submit(backend=…, source=…, claim_id=…). On REJECTED, read the "
+                "verifier output, fix the source, and resubmit — do not stop after one "
+                "rejection. Only an ACCEPTED proof_submit is machine-checked; "
+                "proof_write never is.\n"
+            )
+            if formal_backends
+            else ""
+        )
         workflow = (
             f"{step1}"
             "2. status + paper_list — note existing PAPER-*, EXP-*, CLAIM-*\n"
@@ -486,6 +561,7 @@ def build_prove_prompt(
             "   • A bound with log(n), log(d), or n^log d is quasi-polynomial — NOT polynomial\n"
             "7. After the first PROOF-*, keep working while gaps remain: read the sketch, "
             "fetch evidence, run numerics, and call proof_write again to close [GAP-n].\n"
+            f"{formal_block}"
             "8. memory_add(kind=decisions): proved / refuted / open + gap count + papers read\n"
         )
 
@@ -579,6 +655,7 @@ def run_prove(
         pre_deliverable_gate_detail: Callable[[], str] | None = None,
         deliverable_complete: Callable[[], bool] | None = None,
         tool_gate: Callable[[str, dict], str | None] | None = None,
+        stall_check: Callable[[], str | None] | None = None,
     ) -> AgentLoop:
         return AgentLoop(
             root,
@@ -602,6 +679,7 @@ def run_prove(
             pre_deliverable_gate_detail=pre_deliverable_gate_detail,
             deliverable_complete=deliverable_complete,
             tool_gate=tool_gate,
+            stall_check=stall_check,
         )
 
     statement_focus = dossier_statement_focus(ot_dir, pid)
@@ -746,6 +824,32 @@ def run_prove(
     # _proof_deliverable_complete several times) runs the deterministic referee at most once.
     _referee_gate: dict[str, int] = {"step": -1}
 
+    # One-shot formalization nudge (Stufe 1b): when every gap closes without a single
+    # verifier submission, hold completion open for one bounded extra window (< 2 model
+    # steps) so the recovery hint can deliver the proof_submit instruction — smooth runs
+    # otherwise never see any nudge surface. Soft by design: after the window the run
+    # completes regardless; a hard formalization gate is the policy layer's decision,
+    # not the loop's. Skipped in disprove mode (counterexample verification has its own
+    # pathway).
+    _formal_nudge: dict[str, int | None] = {"step": None}
+
+    def _formal_nudge_pending() -> bool:
+        if disprove or not proof_loop_holder:
+            return False
+        from opentorus.tools.research import enabled_verifier_backends
+
+        if not enabled_verifier_backends(config):
+            return False
+        from opentorus.research.verifiers.proofs import list_proofs as _verifier_proofs
+
+        if any(p.accepted for p in _verifier_proofs(ot_dir)):
+            return False
+        loop = proof_loop_holder[0]
+        if _formal_nudge["step"] is None:
+            _formal_nudge["step"] = loop.steps_run
+            return True
+        return loop.steps_run - int(_formal_nudge["step"]) < 2
+
     def _evidence_count() -> int:
         # Genuine progress signals beyond the gap count: a parsed paper or a recorded
         # experiment is new evidence the model can fold into the proof. Counting these
@@ -756,6 +860,26 @@ def run_prove(
         from opentorus.research.dossier.claims import proof_evidence_count
 
         return proof_evidence_count(ot_dir, pid)
+
+    # Opt-in campaign gate (agent.prove_require_instance_work, set by campaign drivers):
+    # hold the CLEAN completion until the run records at least one experiment or one
+    # verifier submission. Both smoke runs showed statement prose alone never starts the
+    # instance program — models follow what a gate enforces, not what prose requests.
+    # The gate forces the attempt, never the outcome: the exhaustion windows still end a
+    # run that cannot comply (honest stop, artifacts preserved), and the campaign verdict
+    # stays whatever the artifacts support. Skipped in disprove mode.
+    require_instance_work = bool(
+        getattr(config.agent, "prove_require_instance_work", False) and not disprove
+    )
+
+    def _instance_work_count() -> int:
+        from opentorus.research.dossier.experiments import list_problem_experiments
+        from opentorus.research.verifiers.proofs import list_proofs as _verifier_proofs
+
+        return len(list_problem_experiments(ot_dir, pid)) + len(_verifier_proofs(ot_dir))
+
+    def _instance_gate_holding() -> bool:
+        return require_instance_work and _instance_work_count() == 0
 
     def _proof_deliverable_complete() -> bool:
         # A proof must actually exist for THIS dossier; otherwise the model may have
@@ -776,10 +900,14 @@ def run_prove(
             step = proof_loop_holder[0].steps_run if proof_loop_holder else -1
             if _referee_gate["step"] != step:
                 _referee_gate["step"] = step
-                reopen_referee_gaps(ot_dir, pid)
+                from opentorus.tools.research import enabled_verifier_backends as _fb
+
+                reopen_referee_gaps(ot_dir, pid, formal_backends=_fb(config))
         gaps = latest_proof_gap_count(ot_dir, pid)
         if gaps == 0:
-            return True
+            if _instance_gate_holding():
+                return False
+            return not _formal_nudge_pending()
         if not proof_loop_holder:
             return False
         loop = proof_loop_holder[0]
@@ -814,7 +942,83 @@ def run_prove(
         return no_progress >= config.agent.prove_gap_fill_no_progress_steps
 
     def _proof_gap_recovery() -> str:
-        return build_proof_gap_recovery_hint(ot_dir, pid)
+        from opentorus.tools.research import enabled_verifier_backends as _backends
+
+        hint = build_proof_gap_recovery_hint(ot_dir, pid, formal_backends=_backends(config))
+        if _instance_gate_holding():
+            hint = (
+                "Campaign gate: this dossier does NOT settle until at least ONE recorded "
+                "experiment (exp_new → exp_run) or ONE proof_submit exists. Start the "
+                "statement's START-HERE instance program now — write the named script via "
+                "write_file, then exp_new(..., environment='python-sci', "
+                "run_from='workspace') and exp_run. "
+            ) + hint
+        return hint
+
+    # Draft-phase no-progress window. The gap-fill window above is armed only after
+    # the first primary proof exists (its anchor is set behind has_primary_proof),
+    # so a draft phase whose deliverable never succeeds — e.g. proof_write failing
+    # the same check forever — was invisible to every no-progress guard once the
+    # step caps were inf. Progress here = a new proof attempt (any scope) or new
+    # evidence (parsed paper / experiment); the window length is shared with
+    # gap-fill so one config knob governs both.
+    _draft: dict[str, int | None] = {"progress": None, "step": None}
+
+    def _draft_progress() -> int:
+        return _evidence_count() + len(store.list_proof_attempts(ot_dir, pid))
+
+    def _draft_stall_check() -> str | None:
+        window = config.agent.prove_gap_fill_no_progress_steps
+        if math.isinf(window) or not proof_loop_holder:
+            return None
+        if has_primary_proof(ot_dir, pid):
+            return None  # gap-fill's own window takes over from here
+        loop = proof_loop_holder[0]
+        progress = _draft_progress()
+        if _draft["step"] is None or progress > int(_draft["progress"] or 0):
+            _draft["progress"] = progress
+            _draft["step"] = loop.steps_run
+            return None
+        stalled = loop.steps_run - int(_draft["step"])
+        if stalled < window:
+            return None
+        return (
+            f"[stopped] proof draft made no progress for {stalled} steps: no proof_write "
+            f"succeeded for {pid} and no new evidence (paper/experiment) was recorded. "
+            "Failed attempts are preserved in the session log."
+        )
+
+    # Instance-gate stall window: when the campaign gate is holding a gap-free proof
+    # open and the model still starts no instance work for a whole window, end the run
+    # honestly instead of holding forever — the gate forces the attempt, not the outcome.
+    _gate_stall: dict[str, int | None] = {"count": None, "step": None}
+
+    def _gate_stall_check() -> str | None:
+        window = config.agent.prove_gap_fill_no_progress_steps
+        if math.isinf(window) or not proof_loop_holder:
+            return None
+        if not _instance_gate_holding():
+            return None
+        if not has_primary_proof(ot_dir, pid) or latest_proof_gap_count(ot_dir, pid) != 0:
+            return None  # the gate only bites at the clean-completion surface
+        loop = proof_loop_holder[0]
+        count = _instance_work_count()
+        if _gate_stall["step"] is None or count > int(_gate_stall["count"] or 0):
+            _gate_stall["count"] = count
+            _gate_stall["step"] = loop.steps_run
+            return None
+        stalled = loop.steps_run - int(_gate_stall["step"])
+        if stalled < window:
+            return None
+        return (
+            "[stopped] instance-work gate: this campaign dossier requires at least one "
+            "recorded experiment or proof_submit, and none was started within "
+            f"{stalled} steps of the gaps closing. The sketch and all attempts are "
+            "preserved; the campaign verdict stays with the artifacts."
+        )
+
+    def _stall_check() -> str | None:
+        return _draft_stall_check() or _gate_stall_check()
 
     from opentorus.agent.prove_gate import prove_tool_gate
 
@@ -829,6 +1033,7 @@ def run_prove(
                 proof_loop_holder and proof_loop_holder[0]._deliverable_satisfied
             ),
         ),
+        stall_check=_stall_check,
         **proof_kw,
     )
     proof_loop_holder.append(proof_loop)
@@ -838,6 +1043,8 @@ def run_prove(
         proof_extra = (
             f"{extra}\n\nUnread papers (re-fetch before citing): {', '.join(unread)}"
         ).strip()
+    from opentorus.tools.research import enabled_verifier_backends
+
     proof_prompt = build_prove_prompt(
         pid,
         disprove=disprove,
@@ -846,6 +1053,7 @@ def run_prove(
         open_problem=open_problem,
         statement_focus=statement_focus,
         extra=proof_extra,
+        formal_backends=enabled_verifier_backends(config),
     )
     # On a resumed run, re-feed citations a prior run already proved nonexistent.
     proof_prompt = _append_known_bad_citations(ot_dir, pid, proof_prompt)

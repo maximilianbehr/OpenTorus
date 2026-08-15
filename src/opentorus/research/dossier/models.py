@@ -197,6 +197,11 @@ class ProblemDossier(BaseModel):
     known_obstructions: list[str] = Field(default_factory=list)
     minimal_examples: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    # The claim (if any) that states the FULL quantified target of this dossier.
+    # The campaign-level labels GENERAL_CONJECTURE_PROVED / _REFUTED are derivable
+    # only through this designation — see ``dossier.scope``. Optional and additive:
+    # existing dossiers load unchanged.
+    primary_claim_id: str | None = None
 
 
 class Definition(BaseModel):

@@ -106,3 +106,60 @@ def test_referee_passes_clean_cited_dossier(tmp_path: Path) -> None:
     assert not rep.contradictions
     assert not rep.overclaims
     assert rep.verdict == "pass"
+
+
+def _write_statement(base: Path, pid: str, text: str) -> None:
+    (store.dossier_dir(base, pid) / "statement.md").write_text(text, encoding="utf-8")
+
+
+def test_formalization_demand_without_submission_blocks(tmp_path: Path) -> None:
+    # Stage 2 of the proof_submit anchoring: a statement that explicitly demands
+    # machine-checking via proof_submit blocks until a submission is ACCEPTED.
+    base, pid = _problem(tmp_path)
+    _write_statement(
+        base, pid, "# Task\nSubmit every finite check via proof_submit (sympy backend).\n"
+    )
+    rep = referee_review(base, pid)
+    finding = [o for o in rep.overclaims if o.kind == "formalization_required"]
+    assert finding and rep.verdict == "block"
+    assert "proof_submit" in finding[0].suggestion
+
+    # The finding reopens as a [REFEREE] gap so it lives in the proof artifact.
+    from opentorus.agent.prove_loop import referee_block_gaps
+
+    gaps = referee_block_gaps(rep)
+    assert any("formalization_required" in g for g in gaps)
+
+
+def test_formalization_demand_cleared_by_accepted_submission(tmp_path: Path) -> None:
+    from opentorus.config import default_config
+    from opentorus.research.verifiers import submit_proof
+    from opentorus.research.verifiers.base import VerificationResult
+
+    base, pid = _problem(tmp_path)
+    _write_statement(base, pid, "Machine-check the core via proof_submit.\n")
+
+    class _Accepting:
+        name = "stub"
+
+        def is_available(self) -> bool:
+            return True
+
+        def version(self) -> str | None:
+            return "stub-1.0"
+
+        def verify(self, source: str) -> VerificationResult:
+            return VerificationResult(backend=self.name, accepted=True, output="QED")
+
+    submit_proof(base, default_config(), "sympy", "certificate", verifier=_Accepting())
+    rep = referee_review(base, pid)
+    assert not [o for o in rep.overclaims if o.kind == "formalization_required"]
+
+
+def test_no_formalization_demand_no_finding(tmp_path: Path) -> None:
+    # Ordinary dossiers (statement never names proof_submit) are unaffected.
+    base, pid = _problem(tmp_path)
+    _write_statement(base, pid, "# Task\nSurvey the status of the conjecture.\n")
+    rep = referee_review(base, pid)
+    assert not [o for o in rep.overclaims if o.kind == "formalization_required"]
+    assert rep.verdict == "pass"
