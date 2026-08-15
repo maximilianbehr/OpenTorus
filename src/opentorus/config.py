@@ -96,6 +96,13 @@ class AgentConfig(BaseModel):
     # a model cannot close gaps; a model that IS shrinking the gap list resets the window
     # and keeps going. Positive integer, or inf / unlimited / -1 to disable.
     prove_gap_fill_no_progress_steps: float = 16
+    # Campaign gate (opt-in, set by campaign example drivers): hold the clean completion
+    # of a prove run until at least one experiment or one proof_submit is recorded. The
+    # gate forces the ATTEMPT, never the outcome — the no-progress windows still end a
+    # run that cannot comply, with an honest stop message, and the campaign verdict stays
+    # with the artifacts. Ignored in --disprove mode. Both smoke runs of the initial
+    # campaign showed that statement prose alone never starts the instance program.
+    prove_require_instance_work: bool = False
     # When the model declares the sketch gap-free, give the hostile referee the final say:
     # if it blocks (unsupported result-claims, contradictions) the loop reopens the proof's
     # gap list with the referee's findings and keeps working instead of accepting an
@@ -459,6 +466,16 @@ def _lookup(data: dict, path: list[str]) -> tuple[bool, object]:
     return True, node
 
 
+def _scalar_leaves(data: dict, prefix: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
+    paths: list[tuple[str, ...]] = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            paths.extend(_scalar_leaves(value, prefix + (key,)))
+        elif not isinstance(value, list):
+            paths.append(prefix + (key,))
+    return paths
+
+
 def render_commented_config(base_text: str, data: dict) -> str:
     """Sync scalar leaf values from ``data`` into ``base_text``, preserving every
     comment, blank line, container (list/dict), and unknown key.
@@ -466,9 +483,19 @@ def render_commented_config(base_text: str, data: dict) -> str:
     ``opentorus config set`` only ever changes scalar leaves, so re-emitting just
     those keeps the inline field documentation (and any user-added comments or MCP
     blocks) intact across edits, instead of dumping bare comment-less YAML.
+
+    Scalar leaves present in ``data`` but absent from ``base_text`` are **appended
+    at the end of their (existing) parent section** instead of being dropped: a
+    config file written before a field existed must not silently lose that field
+    on the next ``config set`` — a real run spent its whole budget with a gate the
+    driver believed it had enabled.
     """
     out: list[str] = []
     stack: list[tuple[int, str]] = []  # (indent, key) of open mapping parents
+    seen: set[tuple[str, ...]] = set()  # scalar leaf paths present in base_text
+    # Per mapping path: index (into out) of its last key line, and its child indent.
+    section_last: dict[tuple[str, ...], int] = {(): -1}
+    section_indent: dict[tuple[str, ...], int] = {(): 0}
     for line in base_text.splitlines():
         stripped = line.strip()
         match = _CONFIG_KEY_RE.match(line)
@@ -479,17 +506,33 @@ def render_commented_config(base_text: str, data: dict) -> str:
         while stack and stack[-1][0] >= indent:
             stack.pop()
         path = [k for _, k in stack] + [key]
+        for depth in range(len(path)):
+            section_last[tuple(path[:depth])] = len(out)
+        section_indent.setdefault(tuple(path[:-1]), indent)
         # A key with no value (or only a comment) opens a nested mapping.
         if value_part is None or value_part.startswith("#") or value_part.rstrip() in ("[]", "{}"):
             if value_part is None or value_part.startswith("#"):
                 stack.append((indent, key))
             out.append(line)
             continue
+        seen.add(tuple(path))
         found, val = _lookup(data, path)
         if not found or isinstance(val, (dict, list)):
             out.append(line)  # unknown key or a container value → leave untouched
             continue
         out.append(f"{match.group(1)}{key}: {_format_scalar(val)}")
+    # Append missing scalar leaves inside their existing parent section (deepest
+    # insertion points first, so earlier indices stay valid). A leaf whose parent
+    # section does not exist in the text is left to the caller's post-write check.
+    missing = [
+        leaf
+        for leaf in _scalar_leaves(data)
+        if leaf not in seen and leaf[:-1] in section_last and section_last[leaf[:-1]] >= 0
+    ]
+    for leaf in sorted(missing, key=lambda p: section_last[p[:-1]], reverse=True):
+        _, val = _lookup(data, list(leaf))
+        indent_str = " " * section_indent[leaf[:-1]]
+        out.insert(section_last[leaf[:-1]] + 1, f"{indent_str}{leaf[-1]}: {_format_scalar(val)}")
     trailing = "\n" if base_text.endswith("\n") else ""
     return "\n".join(out) + trailing
 

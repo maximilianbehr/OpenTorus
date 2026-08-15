@@ -27,6 +27,8 @@ model:
   # Ollama-only: max tokens to generate (-1 = unlimited). null = unlimited when tools are on.
   # Set with: opentorus config set model.num_predict=-1  (or --value=-1)
   num_predict: null
+  # Provider-neutral cap on generated tokens per response. null = provider default.
+  max_tokens: null
   # Verify the model can call tools before an agent run (one-shot probe; reads Ollama
   # /api/show). OpenTorus is useless without tool calling, so a model that cannot is
   # refused with a clear message. Set false to skip the check.
@@ -59,6 +61,14 @@ agent:
   # gaps; a model that keeps shrinking the gap list resets the window and continues.
   # Positive integer, or inf / unlimited / -1 to disable.
   prove_gap_fill_no_progress_steps: 16
+  # On every clean completion check, let the hostile referee reopen [REFEREE] gaps
+  # for blocking findings (contradictions, unsupported result claims). Only active
+  # while prove_until_gaps_closed.
+  prove_referee_reopens_gaps: true
+  # Campaign gate (opt-in): hold the clean completion of a prove run until at least
+  # one experiment or one proof_submit is recorded. Forces the attempt, never the
+  # outcome — a run that starts nothing is ended honestly by the no-progress window.
+  prove_require_instance_work: false
 
 # --- Permissions (see also permissions.yaml) ------------------------------------
 permissions:
@@ -181,6 +191,11 @@ tools:
     lean_command: lake env lean
     coq_command: coqc
     smt_command: z3
+    # Pure-Python backends (no external binary): validated interval arithmetic
+    # and sympy symbolic checks. Enabled by default — they also register the
+    # proof_submit agent tool.
+    interval: true
+    sympy: true
 
   datasets:
     enabled: true

@@ -104,3 +104,86 @@ def test_config_set_preserves_inline_documentation(tmp_path: Path) -> None:
     import math
 
     assert math.isinf(cfg.agent.max_steps)
+
+
+def _scalar_leaf_paths(data: dict, prefix: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
+    out: list[tuple[str, ...]] = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            out.extend(_scalar_leaf_paths(value, prefix + (key,)))
+        elif not isinstance(value, list):
+            out.append(prefix + (key,))
+    return out
+
+
+def test_default_template_covers_every_scalar_config_field() -> None:
+    # Class-closing guard for the silent config-set no-op: a model field without a
+    # template line could not be persisted by `opentorus config set` (a real run
+    # executed with a campaign gate its driver believed it had enabled). Every new
+    # Config field MUST ship a default_config.yaml line — this test fails otherwise.
+    import re
+
+    template = default_config_yaml()
+    data = default_config().model_dump(mode="json")
+    missing = [
+        ".".join(path)
+        for path in _scalar_leaf_paths(data)
+        if not re.search(rf"^\s*{re.escape(path[-1])}:", template, re.M)
+    ]
+    assert missing == []
+
+
+def test_write_config_appends_fields_missing_from_old_files(tmp_path: Path) -> None:
+    # Old workspace configs predate newer fields. write_config must append such
+    # fields into their existing section instead of silently dropping the values.
+    from opentorus.config import CONFIG_FILENAME, set_dotted, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    # Simulate an old file: strip the newer field lines from the on-disk config.
+    newer = [
+        "prove_require_instance_work",
+        "prove_referee_reopens_gaps",
+        "max_tokens",
+        "interval",
+        "sympy",
+    ]
+    old_text = "\n".join(
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not any(line.strip().startswith(f"{k}:") for k in newer)
+    )
+    path.write_text(old_text + "\n", encoding="utf-8")
+
+    config = load_config(path)
+    config = set_dotted(config, "agent.prove_require_instance_work", "true")
+    config = set_dotted(config, "agent.prove_referee_reopens_gaps", "false")
+    config = set_dotted(config, "model.max_tokens", "123")
+    config = set_dotted(config, "tools.verifiers.interval", "false")
+    config = set_dotted(config, "tools.verifiers.sympy", "false")
+    write_config(path, config)
+
+    reloaded = load_config(path)
+    assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
+    # Comments and untouched values survive the surgical rewrite.
+    text = path.read_text(encoding="utf-8")
+    assert "# Operating style:" in text
+    assert "prove_require_instance_work: true" in text
+
+
+def test_config_set_cli_fails_loudly_when_not_persisted(tmp_path: Path, monkeypatch) -> None:
+    # The CLI must never print green "Set" on the strength of the in-memory update:
+    # it re-reads the file and errors if the value did not round-trip.
+    from typer.testing import CliRunner
+
+    from opentorus.cli import app
+    from opentorus.config import CONFIG_FILENAME
+
+    init_workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "agent.prove_require_instance_work", "true"])
+    assert result.exit_code == 0
+    assert "prove_require_instance_work: true" in (
+        (workspace_dir(tmp_path) / CONFIG_FILENAME).read_text(encoding="utf-8")
+    )

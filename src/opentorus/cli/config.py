@@ -71,4 +71,24 @@ def config_set(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
     write_config(ot_dir / CONFIG_FILENAME, updated)
+    # Verify the write round-trips: a "Set" message with nothing persisted once let a
+    # whole run execute with a gate its driver believed it had enabled. Never report
+    # success on the strength of the in-memory update alone.
+    from opentorus.config import load_config
+
+    persisted = load_config(ot_dir / CONFIG_FILENAME).model_dump(mode="json")
+    expected = updated.model_dump(mode="json")
+    path_parts = key.split(".")
+    node_p: object = persisted
+    node_e: object = expected
+    for part in path_parts:
+        node_p = node_p.get(part) if isinstance(node_p, dict) else None
+        node_e = node_e.get(part) if isinstance(node_e, dict) else None
+    if node_p != node_e:
+        console.print(
+            f"[red]Failed to persist {key}: the written config re-reads as "
+            f"{node_p!r} instead of {node_e!r}. The config file may predate this "
+            "field and lack its section — please report this.[/red]"
+        )
+        raise typer.Exit(code=1)
     console.print(f"[green]Set[/green] {key} = {actual}")
