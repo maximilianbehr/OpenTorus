@@ -1110,6 +1110,153 @@ class ExpRunTool(Tool):
         return self.fail(call, body, exit_code=code, exp_id=exp_id)
 
 
+def enabled_verifier_backends(config) -> list[str]:
+    """Names of formal backends enabled in config (config-only, no availability probe)."""
+    cfg = getattr(config.tools, "verifiers", None)
+    if cfg is None:
+        return []
+    names: list[str] = []
+    if cfg.lean:
+        names.append("lean4")
+    if cfg.coq:
+        names.append("coq")
+    if cfg.smt:
+        names.append("smt")
+    if getattr(cfg, "interval", False):
+        names.append("interval")
+    if getattr(cfg, "sympy", False):
+        names.append("sympy")
+    return names
+
+
+class ProofSubmitTool(Tool):
+    name = "proof_submit"
+    input_schema: dict = {
+        "type": "object",
+        "properties": {
+            "backend": {
+                "type": "string",
+                "description": "Verifier backend: lean4 | coq | smt | interval | sympy.",
+            },
+            "source": {
+                "type": "string",
+                "description": (
+                    "Complete formal source for the backend: a Lean 4 file, Coq .v file, "
+                    "SMT-LIB 2 script, or backend-specific JSON certificate."
+                ),
+            },
+            "claim_id": {
+                "type": "string",
+                "description": "Optional CLAIM-* id this proof targets (must already exist).",
+            },
+        },
+        "required": ["backend", "source"],
+    }
+    risk_level = "medium"
+
+    def __init__(self, ot_dir: Path, config, *, resolver=None) -> None:
+        self._ot_dir = ot_dir
+        self._config = config
+        # Test seam: maps backend name → Verifier, bypassing config resolution.
+        self._resolver = resolver
+        backends = ", ".join(enabled_verifier_backends(config)) or "none"
+        self.description = (
+            "Machine-check formal source with an enabled verifier backend. Records a "
+            "PROOF-* artifact with the verbatim accept/reject output; an ACCEPTED attempt "
+            "targeting a claim adds a 'validates' graph edge. On REJECTED, fix the source "
+            "using the returned verifier output and call proof_submit again — rejected "
+            "attempts are preserved, never overwritten. Only an accepted proof_submit is "
+            f"machine-checked; proof_write never is. Enabled backends: {backends}."
+            + ex(backend="smt", source="(assert (> 1 2))\n(check-sat)", claim_id="CLAIM-0001")
+        )
+
+    def run(self, call: ToolCall) -> ToolResult:
+        from opentorus.errors import OpenTorusError
+        from opentorus.research.verifiers.proofs import submit_proof
+
+        backend = str(call.args.get("backend", "")).strip().lower()
+        source = str(call.args.get("source", ""))
+        if not backend or not source.strip():
+            return self.fail(call, "proof_submit requires 'backend' and a non-empty 'source'.")
+        claim_id = str(call.args.get("claim_id", "")).strip() or None
+        if claim_id:
+            from opentorus.research.claims import get_claim
+
+            if get_claim(self._ot_dir, claim_id) is None:
+                return self.fail(
+                    call,
+                    f"No claim with id '{claim_id}'. Create it with claim_new first, "
+                    "or omit claim_id.",
+                )
+        verifier = self._resolver(backend) if self._resolver is not None else None
+        try:
+            attempt = submit_proof(
+                self._ot_dir,
+                self._config,
+                backend,
+                source,
+                claim_id=claim_id,
+                verifier=verifier,
+            )
+        except OpenTorusError as exc:
+            return self.fail(call, str(exc))
+
+        output = (attempt.output or "").strip()
+        if len(output) > 4000:
+            output = output[:4000] + "\n… (output truncated)"
+        meta = {
+            "proof_id": attempt.id,
+            "backend": attempt.backend,
+            "accepted": attempt.accepted,
+            "available": attempt.available,
+            "inconclusive": attempt.inconclusive,
+        }
+        if not attempt.available:
+            return self.fail(
+                call,
+                f"{attempt.id} recorded, but backend '{attempt.backend}' is not installed — "
+                "the formal check did NOT run. Do not cite this attempt as verification.",
+                **meta,
+            )
+        if attempt.accepted:
+            version = f" {attempt.backend_version}" if attempt.backend_version else ""
+            linked = (
+                f" Added a 'validates' edge to {claim_id}."
+                if claim_id
+                else " No claim linked (pass claim_id to target one)."
+            )
+            return self.ok(
+                call,
+                f"{attempt.id} ACCEPTED by {attempt.backend}{version}.{linked} "
+                "This is a formal verification artifact; claim status changes still go "
+                "through the gated status update.",
+                **meta,
+            )
+        if attempt.inconclusive:
+            return self.fail(
+                call,
+                f"{attempt.id} INCONCLUSIVE on {attempt.backend} (timeout, crash, or "
+                "unparseable source — NOT a mathematical rejection). Simplify or split "
+                "the goal, then resubmit.\n\n" + output,
+                **meta,
+            )
+        if attempt.outcome == "sat":
+            return self.fail(
+                call,
+                f"{attempt.id}: {attempt.backend} returned sat — the asserted (negated) goal "
+                "is satisfiable. The solver model was recorded as WEAK, unvalidated "
+                "contradicting evidence; it may be spurious if the goal was mis-encoded. "
+                "Re-check the encoding before drawing conclusions.\n\n" + output,
+                **meta,
+            )
+        return self.fail(
+            call,
+            f"{attempt.id} REJECTED by {attempt.backend}. Fix the source using this "
+            "verifier output and call proof_submit again:\n\n" + output,
+            **meta,
+        )
+
+
 class KbQueryTool(Tool):
     name = "kb_query"
     description = (
@@ -1167,3 +1314,5 @@ def register_research_tools(registry, root: Path, ot_dir: Path, config) -> None:
     registry.register(ProofWriteTool(ot_dir))
     registry.register(ExpNewTool(ot_dir))
     registry.register(ExpRunTool(ot_dir))
+    if enabled_verifier_backends(config):
+        registry.register(ProofSubmitTool(ot_dir, config))

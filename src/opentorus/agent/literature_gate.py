@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-LITERATURE_PHASE_FORBIDDEN = frozenset({"proof_write", "claim_new", "evidence_add"})
+LITERATURE_PHASE_FORBIDDEN = frozenset({"proof_write", "proof_submit", "claim_new", "evidence_add"})
 
 _PAPER_ID = re.compile(r"PAPER-\d{4}", re.I)
 

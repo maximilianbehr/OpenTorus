@@ -43,6 +43,10 @@ class ProofAttempt(BaseModel):
     backend_version: str | None = None
     accepted: bool
     available: bool = True
+    # Timeout/crash/parse failure: the checker gave up — distinct from a genuine
+    # rejection, so "the tool gave up" is never read as "the proof is wrong".
+    inconclusive: bool = False
+    outcome: str | None = None  # SMT: "unsat" | "sat" | "unknown"
     claim_id: str | None = None
     source_path: str
     output: str = ""
@@ -117,6 +121,8 @@ def submit_proof(
         backend_version=result.backend_version,
         accepted=result.accepted,
         available=result.available,
+        inconclusive=result.inconclusive,
+        outcome=result.outcome,
         claim_id=claim_id,
         source_path=rel_source,
         output=result.output,
