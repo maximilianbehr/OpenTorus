@@ -16,8 +16,7 @@ def _normalize_hyphens(text: str) -> str:
     return text.translate(_HYPHEN_MAP)
 
 
-_PAPER_ID = re.compile(r"PAPER-\d{4}", re.I)
-_THM_NUM = re.compile(r"(\d+(?:\.\d+)*)")
+_PAPER_ID = re.compile(r"(PAPER-\d{4})", re.I)
 # Numbered environments recognised both in proof text (citations) and in parsed paper
 # corpora. Definition / Remark / Corollary / Lemma / Theorem / Equation / Example are all
 # included because a proof legitimately cites any of them by number (e.g. relying on
@@ -25,18 +24,11 @@ _THM_NUM = re.compile(r"(\d+(?:\.\d+)*)")
 # whose number exists in the source only as, say, a Definition or Remark.
 _RESULT_KW = r"(?:theorem|lemma|proposition|corollary|definition|remark|equation|example)"
 _THM_LABEL = re.compile(rf"\b({_RESULT_KW})\s+(\d+(?:\.\d+)*)", re.I)
-# "Theorem 3.1 in PAPER-0005", "PAPER-0005 ... Theorem 3.1", "PAPER-0005-THM-3.1"
-_CITE_PATTERNS = (
-    re.compile(
-        rf"{_RESULT_KW}\s+(\d+(?:\.\d+)*)[^.\n]{{0,120}}{_PAPER_ID.pattern}",
-        re.I,
-    ),
-    re.compile(
-        rf"{_PAPER_ID.pattern}[^.\n]{{0,120}}{_RESULT_KW}\s+(\d+(?:\.\d+)*)",
-        re.I,
-    ),
-    re.compile(rf"{_PAPER_ID.pattern}-THM-(\d+(?:\.\d+)*)", re.I),
-)
+# Unambiguous explicit reference form: "PAPER-0005-THM-3.1".
+_CITE_EXPLICIT = re.compile(rf"{_PAPER_ID.pattern}-THM-(\d+(?:\.\d+)*)", re.I)
+# Result numbers that appear only as decimals must not read as sentence ends when
+# deciding whether a citation stays within one sentence.
+_DECIMAL = re.compile(r"\d\.\d")
 
 
 def _paper_corpus(ot_dir: Path, paper_id: str, *, lower: bool = True) -> str | None:
@@ -215,25 +207,47 @@ def corpus_has_numbered_theorems(corpus: str) -> bool:
 
 
 def cited_theorems_for_paper(body: str, paper_id: str) -> set[str]:
-    """Heuristically extract theorem numbers attributed to one PAPER-* id."""
+    """Heuristically extract theorem numbers attributed to one PAPER-* id.
+
+    Attribution is nearest-mention: each "Theorem N" label belongs to the closest
+    PAPER-* id within the same sentence (≤120 chars away), preferring a preceding
+    mention on a tie. A number named next to a *different* paper id is therefore
+    never attributed to this one — cross-attributing every number to every cited
+    paper produced citation errors the model could not fix (it was told to correct
+    a citation it never wrote), which cycled the prove loop.
+    """
     pid = paper_id.upper()
     found: set[str] = set()
-    for pattern in _CITE_PATTERNS:
-        for match in pattern.finditer(body):
-            groups = match.groups()
-            if not groups:
+
+    def _same_sentence(lo: int, hi: int) -> bool:
+        gap = body[lo:hi]
+        if len(gap) > 120:
+            return False
+        return "." not in _DECIMAL.sub("", gap) and "\n" not in gap
+
+    mentions = [(m.start(), m.end(), m.group(1).upper()) for m in _PAPER_ID.finditer(body)]
+    for label in _THM_LABEL.finditer(body):
+        nearest: tuple[int, str] | None = None
+        for m_start, m_end, m_pid in mentions:
+            if m_end <= label.start():
+                if not _same_sentence(m_end, label.start()):
+                    continue
+                distance = label.start() - m_end
+            elif m_start >= label.end():
+                if not _same_sentence(label.end(), m_start):
+                    continue
+                distance = m_start - label.end()
+            else:
                 continue
-            paper_ref = next((g for g in groups if g and g.upper().startswith("PAPER-")), None)
-            thm_ref = next((g for g in groups if g and _THM_NUM.fullmatch(g)), None)
-            if paper_ref and paper_ref.upper() != pid:
-                continue
-            if thm_ref:
-                found.add(thm_ref)
-    # Also scan windows around each mention of the paper id.
-    for match in re.finditer(re.escape(pid), body, re.I):
-        window = body[max(0, match.start() - 80) : match.end() + 120]
-        for thm in _THM_LABEL.finditer(window):
-            found.add(thm.group(2))
+            # Strict < keeps the earlier (preceding) mention on a distance tie,
+            # matching the "PAPER-X ... Theorem N" citation idiom.
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, m_pid)
+        if nearest is not None and nearest[1] == pid:
+            found.add(label.group(2))
+    for match in _CITE_EXPLICIT.finditer(body):
+        if match.group(1).upper() == pid:
+            found.add(match.group(2))
     return found
 
 

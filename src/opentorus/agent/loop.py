@@ -51,6 +51,17 @@ _MAX_DELIVERABLE_RETRIES = 5
 # gap-fill, where the deliverable bootstrap does not re-fire and caps may be inf.
 _MAX_CHAT_ONLY_STALL = 8
 
+# Backstop against a model that re-issues the SAME failing tool call and gets the
+# SAME error back, forever. A tool call that ran but failed still counted as
+# "progress" (it reset the chat-only streak), so with max_steps=inf an unwinnable
+# tool rejection cycled indefinitely (observed: 60 identical proof_write rejections,
+# 41 minutes, ~5M prompt tokens). From the WARN threshold on, the error is annotated
+# with an explicit do-not-repeat instruction; at the stop threshold the run ends
+# honestly. Streak = consecutive identical (tool, args, error) triples; any change
+# to the call, a different error, or a success of that call resets it.
+_IDENTICAL_FAILURE_WARN = 3
+_MAX_IDENTICAL_FAILURES = 6
+
 _PROVE_RECOVERY_HINT = (
     "This prove session requires a deliverable tool call — not a chat reply. "
     "Call proof_write(problem_id=…, scope=primary) with theorem restating the dossier, "
@@ -95,6 +106,16 @@ _LIT_RECOVERY_HINT_AFTER_TOOLS = (
 _REPEAT_GUARD_EXEMPT = frozenset({"lit_search", "paper_fetch", "paper_list", "status"})
 
 _REPEAT_GUARD_TOOLS = frozenset({"glob_files", "read_file", "list_files", "status", "paper_read"})
+
+# Search-spam nudge: three real runs died in a loop of consecutive lit_search /
+# web_search calls that never fetched or read anything (11 searches in one run).
+# Search tools are rightly exempt from the repeat guards (results change), so from
+# the WARN threshold on, each further consecutive search carries an explicit
+# stop-searching instruction. Any substantive tool resets the streak; inventory
+# polls (paper_list/status/memory_list) are neutral.
+_SEARCH_STREAK_TOOLS = frozenset({"lit_search", "web_search"})
+_SEARCH_STREAK_NEUTRAL = frozenset({"paper_list", "status", "memory_list"})
+_SEARCH_STREAK_WARN = 4
 
 
 def _tool_sig(name: str, args: dict) -> str:
@@ -152,6 +173,7 @@ class AgentLoop:
         pre_deliverable_gate_detail: Callable[[], str] | None = None,
         deliverable_complete: Callable[[], bool] | None = None,
         tool_gate: Callable[[str, dict], str | None] | None = None,
+        stall_check: Callable[[], str | None] | None = None,
     ) -> None:
         self.root = root
         self.ot_dir = ot_dir
@@ -174,6 +196,11 @@ class AgentLoop:
         self._pre_deliverable_gate_detail = pre_deliverable_gate_detail
         self._deliverable_complete = deliverable_complete
         self._tool_gate = tool_gate
+        # Optional caller-supplied stall detector, probed once per step like the
+        # budget gate. Returning a message ends the run honestly with that text —
+        # the seam that lets a phase without a deliverable yet (e.g. the prove
+        # draft phase) enforce its own no-progress window even when caps are inf.
+        self._stall_check = stall_check
         self._required_deliverable_tool = (
             deliverable_bootstrap[0] if deliverable_bootstrap is not None else None
         )
@@ -221,6 +248,12 @@ class AgentLoop:
         self.tools_used_this_run = []
         self._tool_sigs_ok: set[str] = set()
         self._read_fail_paths: set[str] = set()
+        # Identical-failure backstop state — see _MAX_IDENTICAL_FAILURES.
+        self._fail_streak = 0
+        self._fail_streak_key: str | None = None
+        self._fail_streak_tool: str | None = None
+        # Consecutive lit_search/web_search calls without substantive work between.
+        self._search_streak = 0
         # Content of successful read_file calls, so a repeated read can be re-served
         # (its content may have been compacted out of context) instead of blocked.
         self._read_cache: dict[str, str] = {}
@@ -259,6 +292,12 @@ class AgentLoop:
             if budget_stop is not None:
                 self._append(SessionMessage(role="assistant", content=budget_stop))
                 result_text = budget_stop
+                break
+            stall_stop = self._stall_check() if self._stall_check is not None else None
+            if stall_stop is not None:
+                self._append(SessionMessage(role="assistant", content=stall_stop))
+                result_text = stall_stop
+                _logger.info("%s", stall_stop)
                 break
             messages = build_messages(
                 self.root,
@@ -420,6 +459,12 @@ class AgentLoop:
                                     metadata={"tool_call_id": call_id, "name": name},
                                 )
                             )
+                            failure_stop = self._identical_failure_stop()
+                            if failure_stop is not None:
+                                self._append(SessionMessage(role="assistant", content=failure_stop))
+                                result_text = failure_stop
+                                _logger.info("%s", failure_stop)
+                                break
                             chat_only_streak = 0  # a tool ran → progress
                             last_chat_only = None
                             continue
@@ -471,6 +516,12 @@ class AgentLoop:
                         metadata={"tool_call_id": cid, "name": nm},
                     )
                 )
+            failure_stop = self._identical_failure_stop()
+            if failure_stop is not None:
+                self._append(SessionMessage(role="assistant", content=failure_stop))
+                result_text = failure_stop
+                _logger.info("%s", failure_stop)
+                break
             chat_only_streak = 0  # a tool ran → progress
             last_chat_only = None
         else:
@@ -487,6 +538,52 @@ class AgentLoop:
             elapsed_seconds=time.monotonic() - run_started,
         )
         return result_text
+
+    def _note_tool_success(self, sig: str) -> None:
+        """Reset the identical-failure streak when the streaking call finally succeeds.
+
+        A success of a *different* tool does not reset it: a model that interleaves
+        harmless status polls with the same doomed call is still stuck.
+        """
+        if self._fail_streak_key is not None and self._fail_streak_key.startswith(f"{sig}\n"):
+            self._fail_streak = 0
+            self._fail_streak_key = None
+            self._fail_streak_tool = None
+
+    def _note_tool_failure(self, name: str, sig: str, content: str) -> str:
+        """Track an identical failing (tool, args, error) triple; annotate from WARN on."""
+        if name in _REPEAT_GUARD_EXEMPT:
+            return content
+        key = f"{sig}\n{content[:2000]}"
+        if key == self._fail_streak_key:
+            self._fail_streak += 1
+        else:
+            self._fail_streak_key = key
+            self._fail_streak = 1
+            self._fail_streak_tool = name
+        if self._fail_streak < _IDENTICAL_FAILURE_WARN:
+            return content
+        guard = (
+            f"\n\n[loop guard] This exact {name} call has now failed {self._fail_streak} "
+            "times with the identical error. Do NOT repeat it unchanged — change the "
+            "arguments to address the error above, take a different approach, or record "
+            "the blocker with memory_add(kind=decisions)."
+        )
+        remaining = _MAX_IDENTICAL_FAILURES - self._fail_streak
+        if remaining > 0:
+            guard += f" The run stops after {remaining} more identical failure(s)."
+        return content + guard
+
+    def _identical_failure_stop(self) -> str | None:
+        """Return an honest stop message once the identical-failure cap is reached."""
+        if self._fail_streak < _MAX_IDENTICAL_FAILURES:
+            return None
+        return (
+            f"Stopped: {self._fail_streak_tool} failed {self._fail_streak} times with "
+            "identical arguments and an identical error — no progress is possible without "
+            "changing the call. The failing call and its error are preserved in the "
+            "session log; the dossier holds the current state."
+        )
 
     def _budget_stop(self) -> str | None:
         """Return a stop message if a configured budget cap is reached, else None."""
@@ -656,14 +753,21 @@ class AgentLoop:
         return None
 
     def _run_tool(self, name: str, args: dict, call_id: str) -> str:
+        # The signature is computed up front so EVERY rejection path below can feed
+        # the identical-failure tracker: a model hammering the same blocked call is
+        # exactly as stuck as one hammering a failing tool (forensics of the
+        # perfect-mirsky run found blocked/empty paths invisible to all guards).
+        sig = _tool_sig(name, args)
         tool = self.registry.get(name)
         if tool is None:
             log_action(self.ot_dir, name, ok=False, args=args, stderr_summary="unknown tool")
             available = ", ".join(sorted(self.registry.names()))
-            return (
+            return self._note_tool_failure(
+                name,
+                sig,
                 f"Unknown tool: '{name}'. It does not exist — do not call it again. "
                 f"Available tools: {available}. "
-                "To search files use glob_files/list_files; to read use read_file."
+                "To search files use glob_files/list_files; to read use read_file.",
             )
 
         if self._tool_gate is not None:
@@ -676,16 +780,17 @@ class AgentLoop:
                     args=args,
                     stderr_summary=blocked[:500],
                 )
-                return blocked
+                return self._note_tool_failure(name, sig, blocked)
 
-        sig = _tool_sig(name, args)
         if name == "read_file":
             path = str(args.get("path", "")).strip()
             if path and path in self._read_fail_paths:
-                return (
+                message = (
                     f"Blocked repeat read_file on missing file {path}. "
                     "Use write_file with artifact IDs from status."
                 )
+                log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
+                return self._note_tool_failure(name, sig, message)
         if (
             name in _REPEAT_GUARD_TOOLS
             and name not in _REPEAT_GUARD_EXEMPT
@@ -711,27 +816,36 @@ class AgentLoop:
             # cached content (with a nudge) rather than hard-blocking — which would
             # otherwise strand the agent, unable to recover a file it already read.
             if name in ("read_file", "paper_read") and sig in self._read_cache:
+                log_action(
+                    self.ot_dir,
+                    name,
+                    ok=True,
+                    args=args,
+                    stdout_summary="(re-served from read cache)",
+                )
                 return (
                     f"(Already read this earlier in the run; re-showing the "
                     f"cached content — then produce the deliverable: {deliverable}.)\n\n"
                     f"{self._read_cache[sig]}"
                 )
-            return (
+            message = (
                 f"Blocked repeat {name} with the same arguments. "
                 f"Produce the deliverable now ({deliverable})."
             )
+            log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
+            return self._note_tool_failure(name, sig, message)
 
         schema_error = validate_tool_args(getattr(tool, "input_schema", {}) or {}, args)
         if schema_error is not None:
             message = f"Invalid arguments for {name}: {schema_error}"
             log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
-            return message
+            return self._note_tool_failure(name, sig, message)
 
         decision = self._evaluate(tool, args)
         if decision is not None:
             blocked = self._enforce(name, args, decision)
             if blocked is not None:
-                return blocked
+                return self._note_tool_failure(name, sig, blocked)
 
         is_file_edit = tool.permission == "write" and bool(args.get("path"))
         old_content = self._read_path(args["path"]) if is_file_edit else None
@@ -749,9 +863,13 @@ class AgentLoop:
                 permission_decision=decision.model_dump() if decision else None,
                 stderr_summary=message[:500],
             )
-            return message
+            return self._note_tool_failure(name, sig, message)
         self.tool_calls_this_run += 1
         self.tools_used_this_run.append(name)
+        if name in _SEARCH_STREAK_TOOLS:
+            self._search_streak += 1
+        elif name not in _SEARCH_STREAK_NEUTRAL:
+            self._search_streak = 0
         if result.ok and name in _REPEAT_GUARD_TOOLS and name not in _REPEAT_GUARD_EXEMPT:
             self._tool_sigs_ok.add(sig)
         if name == "read_file":
@@ -794,7 +912,10 @@ class AgentLoop:
                         permission_decision=decision.model_dump() if decision else None,
                         stderr_summary=blocked[:500],
                     )
-                    return blocked
+                    # The gate detail names the current parsed-paper count, so the
+                    # failure key only stays identical while literature makes zero
+                    # progress — exactly when repeating proof_write is truly stuck.
+                    return self._note_tool_failure(name, sig, blocked)
                 if result.metadata.get("scope", "primary") == "primary":
                     self._deliverable_satisfied = True
         elif result.ok and tool.permission == "command":
@@ -813,7 +934,17 @@ class AgentLoop:
             stdout_summary=result.content[:500] if result.ok else None,
             stderr_summary=None if result.ok else result.content[:500],
         )
-        return result.content
+        if result.ok:
+            self._note_tool_success(sig)
+            if name in _SEARCH_STREAK_TOOLS and self._search_streak >= _SEARCH_STREAK_WARN:
+                return result.content + (
+                    f"\n\n[loop guard] This is consecutive search #{self._search_streak} "
+                    "with nothing fetched or read in between. STOP searching: "
+                    "paper_fetch the most relevant hit NOW and paper_read it, or proceed "
+                    "to the deliverable — more searching adds no papers."
+                )
+            return result.content
+        return self._note_tool_failure(name, sig, result.content)
 
     def _enforce(self, name: str, args: dict, decision: PermissionDecision) -> str | None:
         """Apply a permission decision. Returns a message if the call must not run."""

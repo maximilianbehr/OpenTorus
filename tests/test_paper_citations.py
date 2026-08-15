@@ -230,3 +230,55 @@ def test_literature_tool_gate_requires_paper_id_in_observation() -> None:
         {"text": "PAPER-0001 Theorem 2.1: error bound on [-1,1].", "kind": "observations"},
     )
     assert ok is None
+
+
+def test_cited_numbers_attributed_to_the_right_paper() -> None:
+    # Regression for the tensor-concentration prove-loop cycle: the PAPER-* id in a
+    # citation match was dropped (no capture group), so every cited number was
+    # attributed to every cited paper — producing a citation error the model could
+    # never fix because the citation it named was never written.
+    from opentorus.research.paper_citations import cited_theorems_for_paper
+
+    body = (
+        "PAPER-0001 surveys the area. PAPER-0002 provides decoupling Theorem 2.1 "
+        "and iterated NCK Theorem 2.4 for matrix chaoses."
+    )
+    assert cited_theorems_for_paper(body, "PAPER-0002") == {"2.1", "2.4"}
+    assert cited_theorems_for_paper(body, "PAPER-0001") == set()
+
+
+def test_window_scan_does_not_cross_other_paper_mentions() -> None:
+    from opentorus.research.paper_citations import cited_theorems_for_paper
+
+    body = "As in PAPER-0001. PAPER-0002 proves Theorem 7.7; see also PAPER-0003."
+    assert cited_theorems_for_paper(body, "PAPER-0002") == {"7.7"}
+    assert cited_theorems_for_paper(body, "PAPER-0001") == set()
+    # Backward window from PAPER-0003 must stop at PAPER-0002's mention.
+    assert cited_theorems_for_paper(body, "PAPER-0003") == set()
+
+
+def test_neighbouring_papers_citation_not_cross_rejected(tmp_path: Path) -> None:
+    # End-to-end version of the cycle trap: PAPER-0001 has numbering but no 2.4;
+    # PAPER-0002 genuinely contains Theorem 2.4. Citing 2.4 *for PAPER-0002* must
+    # not be rejected on PAPER-0001's corpus.
+    ot = _ot(tmp_path)
+    r1 = SourceRecord(source="arxiv", title="Survey", arxiv_id="2401.00001")
+    p1 = acquire_paper(ot, r1, downloader=lambda u: b"%PDF")
+    read_paper(ot, p1.id, page_extractor=lambda path: ["Theorem 1.2 holds. Lemma 1.6.\n"])
+    r2 = SourceRecord(source="arxiv", title="Decoupling", arxiv_id="2401.00002")
+    p2 = acquire_paper(ot, r2, downloader=lambda u: b"%PDF")
+    read_paper(
+        ot, p2.id, page_extractor=lambda path: ["Theorem 2.1 (decoupling). Theorem 2.4 (NCK).\n"]
+    )
+
+    body = (
+        f"{p1.id} surveys tensor concentration. {p2.id} provides decoupling "
+        "Theorem 2.1 and iterated NCK Theorem 2.4 for matrix chaoses."
+    )
+    errors, _ = validate_proof_citations(ot, body)
+    assert not errors
+
+    # A number the *named* paper really lacks must still block.
+    bad_body = f"By Theorem 9.9 of {p2.id} the bound follows."
+    errors, _ = validate_proof_citations(ot, bad_body)
+    assert any("9.9" in e and p2.id in e for e in errors)

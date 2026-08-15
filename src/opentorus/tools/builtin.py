@@ -274,7 +274,9 @@ class ApplyPatchTool(Tool):
             preview = apply_patch(self._root, path, old, new)
         except OpenTorusError as exc:
             return self.fail(call, str(exc))
-        return self.ok(call, preview)
+        # Never hand the model an empty success — a blank tool message carries no
+        # signal and provokes verbatim re-issues of the same call.
+        return self.ok(call, preview or f"(patch applied to {path}; no textual diff)")
 
 
 class RunShellTool(Tool):

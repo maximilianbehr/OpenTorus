@@ -460,6 +460,16 @@ def apply_patch(root: Path, user_path: str, old: str, new: str) -> str:
         raise OpenTorusError(
             f"Patch target text appears {count} times in '{user_path}'; refine it to be unique."
         )
+    # A no-op patch must be an error, not an empty success: an ok-result with ""
+    # reaches the model as a blank tool message with zero signal that nothing
+    # changed — observed to cause verbatim re-issues of the same call, invisible
+    # to every loop guard because the result was "successful".
+    if old == new:
+        raise OpenTorusError(
+            f"apply_patch made no change to '{user_path}': 'old' and 'new' are identical. "
+            "Supply a different 'new' (the intended fix), or read the file again if you "
+            "believe the change was already applied."
+        )
     updated = original.replace(old, new, 1)
     preview = patch_preview(original, updated, user_path)
     target.write_text(updated, encoding="utf-8")
