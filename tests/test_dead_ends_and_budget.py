@@ -164,6 +164,53 @@ def test_changing_arguments_does_not_hide_an_unchanged_error(tmp_path: Path) -> 
     assert "record the obstruction" in notes[-1]
 
 
+def test_a_verifier_stamping_each_rejection_does_not_blind_the_guard(tmp_path: Path) -> None:
+    """One error, reported with fresh per-call noise, must still count as one error.
+
+    Observed on a Coq calibration run: 31 ``proof_submit`` rejections, 12 of them the
+    identical ``Syntax error: '.' expected after [command]`` — and no guard, because the
+    message carries a fresh PROOF id, a fresh temp path, and a source position that
+    shifts by a line whenever the model edits anything above it. 29 distinct keys for 31
+    rejections, so a threshold of 4 was unreachable by construction.
+    """
+    loop = _loop(tmp_path)
+
+    def rejection(n: int) -> str:
+        return (
+            f"PROOF-{n:04d} REJECTED by coq. Fix the source using this verifier "
+            f'output and call proof_submit again:\n\nFile "/tmp/opentorus-proof-a{n}z/'
+            f'proof.v", line {9 + n % 3}, characters {15 + n}-{20 + n}:\n'
+            "Error: Syntax error: '.' expected after [command] (in [vernac_aux])."
+        )
+
+    notes = [
+        loop._note_tool_failure("proof_submit", f"proof_submit:{{'source':'v{i}'}}", rejection(i))
+        for i in range(4)
+    ]
+
+    assert "arguments are not the problem" not in notes[0]
+    assert "arguments are not the problem" in notes[-1]
+    assert "4 times with different arguments" in notes[-1]
+    # The model still reads the real rejection, ids, paths and positions intact.
+    assert "PROOF-0003" in notes[-1]
+    assert "/tmp/opentorus-proof-a3z/proof.v" in notes[-1]
+
+
+def test_normalization_keeps_genuinely_different_errors_apart(tmp_path: Path) -> None:
+    """Stripping the noise must not merge two different mathematical complaints."""
+    loop = _loop(tmp_path)
+    notes = [
+        loop._note_tool_failure(
+            "proof_submit",
+            f"proof_submit:{{'source':'v{i}'}}",
+            f'PROOF-{i:04d} REJECTED by coq.\nFile "/tmp/opentorus-proof-b{i}/proof.v", '
+            f"line {i}, characters 1-2:\nError: The reference lemma{i} was not found.",
+        )
+        for i in range(6)
+    ]
+    assert all("arguments are not the problem" not in n for n in notes)
+
+
 def test_different_errors_do_not_accumulate(tmp_path: Path) -> None:
     """A model making genuine progress hits a *new* wall each time; leave it alone."""
     loop = _loop(tmp_path)

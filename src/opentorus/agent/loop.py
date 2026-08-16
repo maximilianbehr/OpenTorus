@@ -66,6 +66,32 @@ _MAX_IDENTICAL_FAILURES = 6
 # pathological ones reach 11 and 9, every healthy one reaches 1.
 _MAX_UNCHANGED_ERROR_ATTEMPTS = 4
 
+# Tokens the *system* mints per call, which make two reports of one and the same error
+# look like two different errors. A verifier rejection carries a fresh artifact id, a
+# fresh temp path, and a source position that shifts by a line whenever the model edits
+# anything — so keying the unchanged-error guard on the raw text made it structurally
+# unable to fire for proof_submit. Observed: 20 Coq rejections in one run, 11 of them
+# the identical `Syntax error: '.' expected after [command]`, and not one guard.
+# Only the guard's *key* is normalized; the model still sees the verbatim message.
+_VOLATILE_IN_ERRORS = (
+    (re.compile(r"(?:/private)?/(?:tmp|var/folders)/[^\s\"',;)]+"), "<tmp>"),
+    (
+        re.compile(r"\b(?:PROOF|EXP|CLAIM|EVID|PAPER|SRC|FIG|DATASET|REPO|TASK|ACTION)-\d+\b"),
+        "<id>",
+    ),
+    (re.compile(r"\bline \d+, characters \d+-\d+"), "line <n>, characters <n>"),
+    (re.compile(r"\b(?:line|Line)s? \d+(?:-\d+)?"), "line <n>"),
+    (re.compile(r":\d+:\d+(?=:|\b)"), ":<n>:<n>"),
+)
+
+
+def _stable_error_key(text: str) -> str:
+    """Strip per-call noise so the same error keys the same way twice."""
+    for pattern, placeholder in _VOLATILE_IN_ERRORS:
+        text = pattern.sub(placeholder, text)
+    return text
+
+
 _PROVE_RECOVERY_HINT = (
     "This prove session requires a deliverable tool call — not a chat reply. "
     "Call proof_write(problem_id=…, scope=primary) with theorem restating the dossier, "
@@ -619,8 +645,13 @@ class AgentLoop:
 
         Threshold calibrated against the recorded runs: the two pathological ones reach
         11 and 9 distinct argument sets per error, every healthy run reaches 1.
+
+        The key is normalized first (see ``_stable_error_key``): a verifier stamps every
+        rejection with a fresh proof id, a fresh temp path and a shifting source
+        position, which otherwise made two reports of one error look like two errors and
+        left this guard dead on exactly the tool where circling costs the most.
         """
-        error_key = f"{name}\n{content[:2000]}"
+        error_key = f"{name}\n{_stable_error_key(content[:2000])}"
         seen_sigs = self._error_signatures.setdefault(error_key, set())
         seen_sigs.add(sig)
         if len(seen_sigs) < _MAX_UNCHANGED_ERROR_ATTEMPTS:
