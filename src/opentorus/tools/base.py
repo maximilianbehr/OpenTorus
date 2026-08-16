@@ -162,6 +162,35 @@ def coerce_tool_args(input_schema: dict, args: dict) -> dict:
         return args
 
 
+def _missing_argument_message(key: str, properties: dict, args: dict) -> str:
+    """Name the arguments that *were* sent when a required one is missing.
+
+    Across the recorded runs this failure is almost always a renaming, not an omission:
+    ``memory_add`` wanted ``text`` and got ``note`` or ``content``; ``claim_new`` wanted
+    ``statement`` and got ``claim``; ``dossier_known_result_add`` wanted
+    ``source_artifacts`` and got ``paper_id``. "Missing required argument 'text'." is
+    true and says nothing about the ``note`` sitting right there being ignored, so the
+    model has no way to see the mismatch — one run repeated the same call five times.
+
+    Deliberately not renamed automatically: only the model knows whether its ``note``
+    was meant as the entry text or as a side remark, and guessing would put words into
+    an artifact.
+    """
+    message = f"Missing required argument '{key}'."
+    unknown = [name for name in args if name not in properties]
+    if unknown:
+        listed = ", ".join(f"'{name}'" for name in sorted(unknown))
+        pronoun = "it" if len(unknown) == 1 else "them"
+        message += (
+            f" This tool has no argument {listed} — you sent {pronoun} but not "
+            f"'{key}'. If that value is what '{key}' should hold, send it under '{key}'."
+        )
+    else:
+        known = ", ".join(f"'{name}'" for name in sorted(properties)) or "none"
+        message += f" Accepted arguments: {known}."
+    return message
+
+
 def _wrong_type_message(key: str, declared: str, value: object) -> str:
     """Say what arrived and what the right shape looks like.
 
@@ -202,7 +231,7 @@ def validate_tool_args(input_schema: dict, args: dict) -> str | None:
 
         for key in input_schema.get("required", []) or []:
             if key not in args:
-                return f"Missing required argument '{key}'."
+                return _missing_argument_message(key, properties, args)
 
         for key, value in args.items():
             spec = properties.get(key)

@@ -493,3 +493,43 @@ def test_coercion_never_papers_over_a_real_mistake() -> None:
     for bad in ({"limit": "zehn"}, {"limit": True}, {"meta": "{broken"}):
         assert coerce_tool_args(_COERCE_SCHEMA, bad) == bad
         assert validate_tool_args(_COERCE_SCHEMA, bad) is not None
+
+
+def test_a_renamed_argument_is_named_in_the_rejection() -> None:
+    """Across the recorded runs this failure is a renaming, not an omission.
+
+    memory_add wanted 'text' and got 'note' or 'content'; claim_new wanted 'statement'
+    and got 'claim'; dossier_known_result_add wanted 'source_artifacts' and got
+    'paper_id'. "Missing required argument 'text'." says nothing about the value sitting
+    right there under another name, so the model cannot see the mismatch — one run
+    repeated the same call five times.
+    """
+    from opentorus.tools.base import validate_tool_args
+
+    schema = {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "kind": {"type": "string"}},
+        "required": ["text"],
+    }
+    err = validate_tool_args(schema, {"kind": "observations", "note": "PAPER-0003 states X"})
+
+    assert err is not None
+    assert "Missing required argument 'text'" in err
+    assert "no argument 'note'" in err
+    assert "send it under 'text'" in err
+
+
+def test_a_genuinely_empty_call_lists_what_the_tool_takes() -> None:
+    """With nothing to point at, the useful thing is the accepted argument names."""
+    from opentorus.tools.base import validate_tool_args
+
+    schema = {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "kind": {"type": "string"}},
+        "required": ["text"],
+    }
+    err = validate_tool_args(schema, {"kind": "facts"})
+
+    assert err is not None
+    assert "Accepted arguments: 'kind', 'text'" in err
+    assert "no argument" not in err
