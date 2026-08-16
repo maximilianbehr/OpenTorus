@@ -177,10 +177,17 @@ def _read_blocked_message(user_path: str, parts: tuple[str, ...]) -> str | None:
         if parts[0] == WORKSPACE_DIRNAME and _read_allowed_under_opentorus(parts):
             return None
         hint = "Use status, paper_list, or a concrete project file path."
-        if len(parts) >= 2 and parts[1] == "papers":
-            # A cached paper PDF — read its parsed note, not the binary under .opentorus/.
-            pid = parts[2] if len(parts) >= 3 and parts[2].startswith("PAPER-") else "PAPER-XXXX"
-            hint = f'Use paper_read("{pid}") for the parsed reading note (not the PDF).'
+        # A paper's cached bytes live under papers/PAPER-XXXX/ and its reading note under
+        # summaries/PAPER-XXXX.md. Both are asking for the same thing, and only the first
+        # used to be recognised — the second got the generic hint, which names no way to
+        # read a paper at all.
+        paper_id = next(
+            (part.split(".")[0] for part in parts[1:3] if part.startswith("PAPER-")), None
+        )
+        if paper_id and len(parts) >= 2 and parts[1] in ("papers", "summaries"):
+            hint = f'Use paper_read("{paper_id}") for the parsed reading note (not the file).'
+        elif len(parts) >= 2 and parts[1] == "papers":
+            hint = 'Use paper_read("PAPER-XXXX") for the parsed reading note (not the PDF).'
         elif "proof_attempts" in parts:
             # A recorded proof. Sending the model to paper_fetch here — as the generic
             # hint did — points it at literature when it asked for its own draft, which

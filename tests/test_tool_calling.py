@@ -533,3 +533,30 @@ def test_a_genuinely_empty_call_lists_what_the_tool_takes() -> None:
     assert err is not None
     assert "Accepted arguments: 'kind', 'text'" in err
     assert "no argument" not in err
+
+
+def test_a_paper_summary_is_pointed_at_paper_read_too() -> None:
+    """A paper's bytes and its reading note are the same request.
+
+    papers/PAPER-XXXX/ was recognised; summaries/PAPER-XXXX.md got the generic hint,
+    which names no way to read a paper at all. Observed on a difference-triangle-set run.
+    """
+    from opentorus.tools.filesystem import _read_blocked_message
+
+    for path in (
+        ".opentorus/summaries/PAPER-0001.md",
+        ".opentorus/papers/PAPER-0001/extracted.txt",
+    ):
+        message = _read_blocked_message(path, tuple(path.split("/")))
+        assert message is not None
+        assert 'paper_read("PAPER-0001")' in message
+
+
+def test_a_recorded_proof_is_not_pointed_at_the_literature() -> None:
+    from opentorus.tools.filesystem import _read_blocked_message
+
+    path = ".opentorus/proof_attempts/PROOF-0001.md"
+    message = _read_blocked_message(path, tuple(path.split("/")))
+    assert message is not None
+    assert "paper_fetch" not in message
+    assert "proof_write" in message
