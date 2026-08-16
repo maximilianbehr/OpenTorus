@@ -282,3 +282,22 @@ def test_neighbouring_papers_citation_not_cross_rejected(tmp_path: Path) -> None
     bad_body = f"By Theorem 9.9 of {p2.id} the bound follows."
     errors, _ = validate_proof_citations(ot, bad_body)
     assert any("9.9" in e and p2.id in e for e in errors)
+
+
+def test_own_lemma_numbering_is_not_a_citation() -> None:
+    # Benchmark finding: a model states its own lemmas as list items —
+    # "- Lemma 6 (...): PAPER-0003 shows ..." — and nearest-mention attribution read
+    # the "6" as a citation to PAPER-0003, rejecting every proof_write unfixably
+    # (one cell lost all 13 attempts and its whole deliverable this way).
+    from opentorus.research.paper_citations import cited_theorems_for_paper
+
+    body = (
+        "- Lemma 6 (special classes): PAPER-0003 proves the bound for that family.\n"
+        "### Theorem 2\n"
+        "PAPER-0003 covers the diagonal case.\n"
+    )
+    assert cited_theorems_for_paper(body, "PAPER-0003") == set()
+
+    # A real citation mid-sentence is still attributed, in both idioms.
+    real = "The claim follows by Lemma 1 of PAPER-0003, and PAPER-0003 Theorem 2 gives the rest."
+    assert cited_theorems_for_paper(real, "PAPER-0003") == {"1", "2"}

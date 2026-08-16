@@ -206,6 +206,22 @@ def corpus_has_numbered_theorems(corpus: str) -> bool:
     return bool(re.search(rf"\b{_RESULT_KW}\s*\d", _normalize_corpus(corpus), re.I))
 
 
+def _is_own_numbering(body: str, pos: int) -> bool:
+    """Is the result label at ``pos`` the author's OWN item numbering, not a citation?
+
+    A proof body states its own lemmas as list items or headings — "- Lemma 6 (…):
+    PAPER-0003 shows …", "### Theorem 2". Nearest-mention attribution would read that
+    "6" as a citation to whichever PAPER-* sits closest and reject the whole write,
+    unfixably: the model never claimed that paper has a result 6. Observed cost: a
+    benchmark cell lost ALL 13 of its proof_write attempts and its entire deliverable
+    to this. A citation, by contrast, appears mid-sentence ("by Lemma 1 of PAPER-0003",
+    "PAPER-0003 Theorem 2"), never as the opening token of a line or bullet.
+    """
+    line_start = body.rfind("\n", 0, pos) + 1
+    prefix = body[line_start:pos]
+    return prefix.strip(" \t>*-–—#0123456789.)") == ""
+
+
 def cited_theorems_for_paper(body: str, paper_id: str) -> set[str]:
     """Heuristically extract theorem numbers attributed to one PAPER-* id.
 
@@ -227,6 +243,8 @@ def cited_theorems_for_paper(body: str, paper_id: str) -> set[str]:
 
     mentions = [(m.start(), m.end(), m.group(1).upper()) for m in _PAPER_ID.finditer(body)]
     for label in _THM_LABEL.finditer(body):
+        if _is_own_numbering(body, label.start()):
+            continue
         nearest: tuple[int, str] | None = None
         for m_start, m_end, m_pid in mentions:
             if m_end <= label.start():
