@@ -386,3 +386,36 @@ def test_attack_creates_approach_card(tmp_path: Path) -> None:
     card = store.dossier_dir(base, pid) / "approaches" / f"{approach.id}.md"
     assert card.is_file()
     assert "Failure modes" in card.read_text()
+
+
+def test_an_unknown_dossier_id_names_the_ones_that_exist(tmp_path: Path) -> None:
+    """A typo is the usual cause, and a workspace almost always holds one dossier.
+
+    Recorded runs asked for 'PROPROBLEM-0001' and for a 'PROBLEM-0003' that was never
+    created. "No problem dossier with id 'X'." is true and leaves the model guessing.
+    """
+    from opentorus.errors import OpenTorusError
+    from opentorus.research.dossier.store import create_dossier, require_dossier
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    create_dossier(ot, "Sendov's conjecture")
+
+    with pytest.raises(OpenTorusError) as excinfo:
+        require_dossier(ot, "PROPROBLEM-0001")
+
+    message = str(excinfo.value)
+    assert "PROPROBLEM-0001" in message
+    assert "This workspace has: PROBLEM-0001" in message
+
+
+def test_an_empty_workspace_says_how_to_create_a_dossier(tmp_path: Path) -> None:
+    from opentorus.errors import OpenTorusError
+    from opentorus.research.dossier.store import require_dossier
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    with pytest.raises(OpenTorusError) as excinfo:
+        require_dossier(workspace_dir(tmp_path), "PROBLEM-0001")
+    assert "create one with problem new" in str(excinfo.value)

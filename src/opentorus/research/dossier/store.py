@@ -152,7 +152,15 @@ def get_dossier(ot_dir: Path, problem_id: str) -> ProblemDossier | None:
 def require_dossier(ot_dir: Path, problem_id: str) -> ProblemDossier:
     dossier = get_dossier(ot_dir, problem_id)
     if dossier is None:
-        raise OpenTorusError(f"No problem dossier with id '{problem_id}'.")
+        # Name what exists. A typo is the usual cause — one run asked for
+        # 'PROPROBLEM-0001' and another for a 'PROBLEM-0003' that was never created —
+        # and a workspace almost always holds exactly one dossier, so listing them turns
+        # a true statement into the answer.
+        available = [d.id for d in list_dossiers(ot_dir)]
+        known = ", ".join(available) if available else "none (create one with problem new)"
+        raise OpenTorusError(
+            f"No problem dossier with id '{problem_id}'. This workspace has: {known}."
+        )
     return dossier
 
 
