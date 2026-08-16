@@ -301,6 +301,31 @@ def test_validate_tool_args_flags_wrong_type() -> None:
     assert err is not None and "start" in err
 
 
+def test_a_list_sent_as_prose_is_told_the_shape_to_send() -> None:
+    """ "must be a array" is ungrammatical, silent about what arrived, and shows nothing.
+
+    A Sendov run passed its whole gap list as one newline-separated bullet string. The
+    rejection named the type and stopped there, so there was nothing to correct against.
+    """
+    from opentorus.tools.base import validate_tool_args
+
+    schema = {"type": "object", "properties": {"gaps": {"type": "array"}}}
+    err = validate_tool_args(schema, {"gaps": "- no explicit n_0 in Tao\n- degrees 9..n_0"})
+
+    assert err is not None
+    assert "must be an array" in err  # not "a array"
+    assert "got str" in err
+    assert '["no explicit n_0 in Tao", "…"]' in err
+    assert "not one string with newlines or bullets" in err
+
+
+def test_a_well_formed_list_still_passes() -> None:
+    from opentorus.tools.base import validate_tool_args
+
+    schema = {"type": "object", "properties": {"gaps": {"type": "array"}}}
+    assert validate_tool_args(schema, {"gaps": ["a", "b"]}) is None
+
+
 def test_validate_tool_args_flags_bad_enum() -> None:
     from opentorus.tools.base import validate_tool_args
 

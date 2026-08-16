@@ -90,6 +90,31 @@ _JSON_TYPES: dict[str, tuple[type, ...]] = {
 }
 
 
+def _article(declared: str) -> str:
+    return f"an {declared}" if declared[:1] in "aeiou" else f"a {declared}"
+
+
+def _wrong_type_message(key: str, declared: str, value: object) -> str:
+    """Say what arrived and what the right shape looks like.
+
+    "Argument 'gaps' must be a array." is ungrammatical, does not say what was sent,
+    and does not show the shape to send instead — so a model that wrote its gaps as a
+    markdown bullet list has nothing to correct against. Observed on a Sendov run,
+    where the whole gap list was passed as one newline-separated string.
+    """
+    got = type(value).__name__
+    message = f"Argument '{key}' must be {_article(declared)}, got {got}."
+    if declared == "array" and isinstance(value, str):
+        first = value.strip().splitlines()[0].lstrip("-*• ").strip() if value.strip() else "first"
+        message += (
+            f' Send a JSON array of strings, one entry per item: ["{first[:60]}", "…"] '
+            "— not one string with newlines or bullets."
+        )
+    elif declared == "object" and isinstance(value, str):
+        message += ' Send a JSON object, e.g. {"key": "value"} — not a string.'
+    return message
+
+
 def validate_tool_args(input_schema: dict, args: dict) -> str | None:
     """Validate ``args`` against a tool's ``input_schema``, returning an error
     message on the first violation or ``None`` when the call is well-formed.
@@ -120,9 +145,9 @@ def validate_tool_args(input_schema: dict, args: dict) -> str | None:
             if accepted is not None and value is not None:
                 # bool is a subclass of int; reject it where a number is expected.
                 if declared in ("integer", "number") and isinstance(value, bool):
-                    return f"Argument '{key}' must be a {declared}, got boolean."
+                    return f"Argument '{key}' must be {_article(declared)}, got boolean."
                 if not isinstance(value, accepted):
-                    return f"Argument '{key}' must be a {declared}."
+                    return _wrong_type_message(key, str(declared), value)
             enum = spec.get("enum")
             if isinstance(enum, list) and enum and value not in enum:
                 allowed = ", ".join(repr(v) for v in enum)
