@@ -259,3 +259,49 @@ def test_a_healthy_run_never_reaches_the_ceiling(tmp_path: Path) -> None:
     for i in range(12):
         loop._note_tool_failure("proof_write", f"proof_write:{{'b':'{i}'}}", f"distinct error {i}")
     assert loop._identical_failure_stop() is None
+
+
+# --- a note written twice is still one note ------------------------------------
+
+
+def test_an_identical_observation_is_recorded_once(tmp_path: Path) -> None:
+    """Writing the same note again records nothing, and must not look like it did.
+
+    One run wrote a single observation 364 times — 365 of its 390 actions — and every
+    call succeeded, so no guard could see it: the chat-only streak reset, and neither
+    failure tracker looks at successes. The ledger is read back as "what this run
+    established", so duplicates inflate that count without adding knowledge.
+    """
+    from opentorus.research.memory import add_memory, list_memory
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+
+    first = add_memory(ot, "observations", "PAPER-0003 Theorem 4: the bound is tight.")
+    again = add_memory(ot, "observations", "PAPER-0003  Theorem 4:  the bound is tight. ")
+
+    assert again.id == first.id, "a repeat must return the original entry"
+    assert len(list_memory(ot, "observations")) == 1
+
+    other = add_memory(ot, "observations", "PAPER-0003 Theorem 5: the constant is 2.")
+    assert other.id != first.id
+    assert len(list_memory(ot, "observations")) == 2
+
+
+def test_the_literature_gate_example_cannot_be_pasted_back(tmp_path: Path) -> None:
+    """An illustration a model can copy verbatim is an invitation to invent authority.
+
+    The gate used to answer with "e.g. 'PAPER-0001 Theorem 2.1, p.5: asymptotic error
+    bound …'". A run recorded that exact string 364 times as a real observation — and
+    PAPER-0001 contains no Theorem 2.1.
+    """
+    from opentorus.agent.literature_gate import literature_tool_gate
+
+    gate = literature_tool_gate()
+    blocked = gate("memory_add", {"kind": "observations", "text": "no citation here"})
+
+    assert blocked is not None
+    # No sentence that would satisfy the gate if sent straight back.
+    assert "PAPER-0001 Theorem" not in blocked
+    assert "never copied from this example" in blocked

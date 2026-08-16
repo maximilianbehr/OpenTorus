@@ -53,10 +53,23 @@ def _kind_path(workspace_dir: Path, kind: MemoryKind) -> Path:
 
 
 def add_memory(workspace_dir: Path, kind: MemoryKind, text: str) -> MemoryEntry:
+    """Record a memory entry, or return the existing one when the text is identical.
+
+    Writing the same note twice records nothing new, and the ledger is read back as
+    "what this run has established" — so a duplicate inflates that count without adding
+    knowledge. It is also invisible to every loop guard, because the call *succeeds*:
+    one run wrote one and the same observation 364 times, 365 of its 390 actions, and
+    nothing anywhere counted it. Returning the original entry makes the repeat a no-op
+    the caller can report honestly.
+    """
     if kind not in VALID_KINDS:
         raise ValueError(f"Unknown memory kind '{kind}'. Valid: {', '.join(VALID_KINDS)}")
     path = _kind_path(workspace_dir, kind)
     existing = read_jsonl(path, MemoryEntry)
+    normalized = " ".join(text.split())
+    for entry in existing:
+        if " ".join(entry.text.split()) == normalized:
+            return entry
     entry_id = next_sequential_id(_ID_PREFIX[kind], len(existing))
     entry = MemoryEntry(id=entry_id, kind=kind, text=text)
     append_jsonl(path, entry)

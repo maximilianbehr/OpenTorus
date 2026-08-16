@@ -36,9 +36,17 @@ def literature_tool_gate(
                 )
             text = str(args.get("text", "")).strip()
             if not _PAPER_ID.search(text):
+                # The example is written as a *shape*, not as a sentence that could be
+                # sent back verbatim. It used to read "PAPER-0001 Theorem 2.1, p.5:
+                # asymptotic error bound …", and one run recorded exactly that string
+                # 364 times as a real observation — citing a theorem number that does
+                # not exist in PAPER-0001. An illustration the model can paste is an
+                # invitation to invent authority.
                 return (
-                    "Blocked: each observation must cite a PAPER-* id "
-                    "(e.g. 'PAPER-0001 Theorem 2.1, p.5: asymptotic error bound …')."
+                    "Blocked: each observation must cite a PAPER-* id and state what "
+                    "*that paper* says, in the form "
+                    "'<PAPER-id> <result>, p.<page>: <what it states>' — filled in from "
+                    "the paper you just read, never copied from this example."
                 )
         return None
 

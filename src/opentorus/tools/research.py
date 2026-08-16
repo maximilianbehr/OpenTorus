@@ -528,7 +528,7 @@ class MemoryAddTool(Tool):
         self._ot_dir = ot_dir
 
     def run(self, call: ToolCall) -> ToolResult:
-        from opentorus.research.memory import VALID_KINDS, add_memory
+        from opentorus.research.memory import VALID_KINDS, add_memory, list_memory
 
         text = str(call.args.get("text", "")).strip()
         if not text:
@@ -536,7 +536,20 @@ class MemoryAddTool(Tool):
         kind = call.args.get("kind", "facts")
         if kind not in VALID_KINDS:
             return self.fail(call, f"Unknown memory kind '{kind}'.")
+        before = len(list_memory(self._ot_dir, kind))
         entry = add_memory(self._ot_dir, kind, text)
+        if len(list_memory(self._ot_dir, kind)) == before:
+            # Identical text already recorded. Say so rather than reporting a write that
+            # did not happen — a run once repeated one observation 364 times, each call
+            # answered with a cheerful new id, and no guard could see it because every
+            # one of them succeeded.
+            return self.fail(
+                call,
+                f"{entry.id} ({kind}) already records exactly this text; nothing was "
+                "added. Repeating a note does not make it count twice. Record a "
+                "different observation, or move on to the next step.",
+                entry_id=entry.id,
+            )
         return self.ok(call, f"{entry.id} ({kind}): {entry.text}", entry_id=entry.id)
 
 
