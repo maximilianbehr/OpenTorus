@@ -43,6 +43,43 @@ def eval_run(
         raise typer.Exit(code=1)
 
 
+@eval_app.command("digest")
+def eval_digest(
+    workspace: list[str] | None = typer.Argument(
+        None,
+        help=(
+            "Workspace directories to summarize (each may be a project root or its "
+            ".opentorus/). Defaults to the current workspace."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Summarize what a finished run actually did (counts and patterns, not a verdict)."""
+    import json as _json
+
+    from opentorus.evals.rundigest import digest_workspace, format_digest
+
+    targets: list[Path] = []
+    for raw in workspace or []:
+        path = Path(raw)
+        targets.append(path if path.name == ".opentorus" else path / ".opentorus")
+    if not targets:
+        targets = [_require_workspace_dir()]
+
+    digests = [digest_workspace(path) for path in targets]
+    if as_json:
+        console.print_json(_json.dumps([d.model_dump(mode="json") for d in digests]))
+        return
+    for index, digest in enumerate(digests):
+        if index:
+            console.print()
+        console.print(format_digest(digest))
+    console.print(
+        "\n[dim]A digest describes a run; it does not judge the mathematics. "
+        "Flags are patterns that have marked stuck runs before, not verdicts.[/dim]"
+    )
+
+
 @eval_app.command("record")
 def eval_record(
     golden_dir: str = typer.Option(

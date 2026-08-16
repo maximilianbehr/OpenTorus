@@ -76,6 +76,7 @@ where = ["src"]
 opentorus = [
     "default_config.yaml",
     "research/dossier/templates/preprint.cls",
+    "research/dossier/templates/opentorus.sty",
     "research/dossier/templates/PREPRINT-LICENSE.txt",
 ]
 

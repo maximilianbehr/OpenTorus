@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import difflib
 import platform
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,9 +22,11 @@ from opentorus.errors import OpenTorusError
 from opentorus.research.experiments import (
     ResultManifest,
     _extract_seed,
+    _git_commit_dirty,
+    _load_config,
+    _run_via_backend,
     get_experiment,
 )
-from opentorus.tools.shell import run_shell
 
 
 class ReplayReport(BaseModel):
@@ -40,6 +41,10 @@ class ReplayReport(BaseModel):
     environment_changes: dict = Field(default_factory=dict)
     divergences: list[str] = Field(default_factory=list)
     replayed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # What actually re-executed. A replay that silently ran somewhere other than the
+    # recorded run is not a reproduction, so this is part of the report.
+    replay_command: str = ""
+    replay_backend: str | None = None
 
 
 def _load_manifest(exp_dir: Path) -> ResultManifest:
@@ -50,6 +55,11 @@ def _load_manifest(exp_dir: Path) -> ResultManifest:
         )
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return ResultManifest.model_validate(data)
+
+
+def _current_git_commit(ot_dir: Path) -> str | None:
+    commit, _dirty = _git_commit_dirty(ot_dir.parent)
+    return commit
 
 
 def _current_environment() -> dict:
@@ -71,8 +81,13 @@ def replay_experiment(ot_dir: Path, exp_id: str, timeout: int = 120) -> ReplayRe
         encoding="utf-8", errors="replace"
     )
 
-    # Re-run without touching the recorded results directory.
-    result = run_shell(f"{sys.executable} run.py", cwd=exp_dir, timeout=timeout)
+    # Re-run through the *same* path the original run took, without touching the
+    # recorded results directory. Replaying with a hardcoded `python run.py` on the
+    # host ignored experiment.command, run_from, and the pinned container — so every
+    # containerized experiment (all the example workflows) was "replayed" with the
+    # wrong toolchain and the divergence it reported was an artefact of the replay.
+    config = _load_config(ot_dir)
+    result, provenance = _run_via_backend(ot_dir, config, experiment, exp_dir, timeout)
     replay_seed = _extract_seed(result.stdout)
 
     divergences: list[str] = []
@@ -103,9 +118,24 @@ def replay_experiment(ot_dir: Path, exp_id: str, timeout: int = 120) -> ReplayRe
         recorded = manifest.environment.get(key)
         if recorded is not None and recorded != current:
             environment_changes[key] = {"recorded": recorded, "current": current}
+
+    # The manifest already pins the git commit and the exact image that ran. Those
+    # were captured and then never compared, so a replay under a different commit or
+    # a rebuilt image reported "reproducible" — the strongest available reproducibility
+    # signals, silently unused.
+    for label, recorded, current in (
+        ("git_commit", manifest.git_commit, _current_git_commit(ot_dir)),
+        ("image_digest", manifest.image_digest, provenance.image_digest),
+        ("image_id", manifest.image_id, provenance.image_id),
+        ("backend", manifest.backend, provenance.backend),
+    ):
+        if recorded is not None and current is not None and recorded != current:
+            environment_changes[label] = {"recorded": recorded, "current": current}
+
     if environment_changes:
         divergences.append(
-            "environment differs from the recorded run (results may not be comparable)"
+            "environment differs from the recorded run (results may not be comparable): "
+            + ", ".join(sorted(environment_changes))
         )
 
     report = ReplayReport(
@@ -119,6 +149,8 @@ def replay_experiment(ot_dir: Path, exp_id: str, timeout: int = 120) -> ReplayRe
         stdout_diff=stdout_diff,
         environment_changes=environment_changes,
         divergences=divergences,
+        replay_command=result.command,
+        replay_backend=provenance.backend,
     )
     _write_report(exp_dir, report)
     return report
