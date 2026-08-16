@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from opentorus.jsonl import canonical_artifact_id
 from opentorus.tools._examples import ex
 from opentorus.tools.base import Tool, ToolCall, ToolResult
 
@@ -398,7 +399,7 @@ class PaperReadTool(Tool):
         from opentorus.errors import OpenTorusError
         from opentorus.research.papers import describe_fetched_paper, get_paper
 
-        paper_id = str(call.args.get("paper_id", "")).strip().upper()
+        paper_id = canonical_artifact_id(str(call.args.get("paper_id", "")))
         if not paper_id:
             return self.fail(call, "paper_read requires 'paper_id'.")
         paper = get_paper(self._ot_dir, paper_id)
@@ -472,7 +473,7 @@ class PaperExtractProblemsTool(Tool):
             problems_to_json,
         )
 
-        paper_id = str(call.args.get("paper_id", "")).strip()
+        paper_id = canonical_artifact_id(str(call.args.get("paper_id", "")))
         if not paper_id:
             return self.fail(call, "paper_extract_problems requires 'paper_id'.")
         provider = None
@@ -611,7 +612,7 @@ class EvidenceAddTool(Tool):
         from opentorus.errors import OpenTorusError
         from opentorus.research.evidence import add_evidence
 
-        claim_id = str(call.args.get("claim_id", "")).strip()
+        claim_id = canonical_artifact_id(str(call.args.get("claim_id", "")))
         source_type = str(call.args.get("source_type", "")).strip()
         if not claim_id or not source_type:
             return self.fail(call, "evidence_add requires 'claim_id' and 'source_type'.")
@@ -765,7 +766,7 @@ class DossierKnownResultAddTool(Tool):
         from opentorus.errors import OpenTorusError
         from opentorus.research.dossier import store
 
-        problem_id = str(call.args.get("problem_id", "")).strip().upper()
+        problem_id = canonical_artifact_id(str(call.args.get("problem_id", "")))
         statement = str(call.args.get("statement", "")).strip()
         sources = _as_str_list(call.args.get("source_artifacts"))
         note = str(call.args.get("note", "")).strip()
@@ -820,8 +821,8 @@ class DossierRelatedPaperAddTool(Tool):
         from opentorus.research.dossier import store
         from opentorus.research.papers import get_paper
 
-        problem_id = str(call.args.get("problem_id", "")).strip().upper()
-        paper_id = str(call.args.get("paper_id", "")).strip().upper()
+        problem_id = canonical_artifact_id(str(call.args.get("problem_id", "")))
+        paper_id = canonical_artifact_id(str(call.args.get("paper_id", "")))
         relevance = str(call.args.get("relevance", "")).strip()
         if not problem_id or not paper_id or not relevance:
             return self.fail(
@@ -943,7 +944,7 @@ class ProofWriteTool(Tool):
         from opentorus.research.dossier import claims as claim_ops
         from opentorus.research.dossier.nl_proof import assemble_nl_proof_body, explicit_gaps
 
-        problem_id = str(call.args.get("problem_id", "")).strip().upper()
+        problem_id = canonical_artifact_id(str(call.args.get("problem_id", "")))
         title = str(call.args.get("title", "")).strip()
         if not problem_id or not title:
             return self.fail(call, "proof_write requires 'problem_id' and 'title'.")
@@ -1114,7 +1115,7 @@ class ExpRunTool(Tool):
         from opentorus.errors import OpenTorusError
         from opentorus.research.experiments import run_experiment, summarize_experiment
 
-        exp_id = str(call.args.get("exp_id", "")).strip()
+        exp_id = canonical_artifact_id(str(call.args.get("exp_id", "")))
         if not exp_id:
             return self.fail(call, "exp_run requires an 'exp_id' argument.")
         timeout = int(call.args.get("timeout", 120))
@@ -1224,7 +1225,7 @@ class ProofSubmitTool(Tool):
         source = str(call.args.get("source", ""))
         if not backend or not source.strip():
             return self.fail(call, "proof_submit requires 'backend' and a non-empty 'source'.")
-        claim_id = str(call.args.get("claim_id", "")).strip() or None
+        claim_id = canonical_artifact_id(str(call.args.get("claim_id", ""))) or None
         if claim_id:
             from opentorus.research.claims import get_claim
 

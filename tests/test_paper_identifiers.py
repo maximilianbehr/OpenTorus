@@ -75,3 +75,37 @@ def test_format_paper_agent_line_includes_fetch() -> None:
     )
     assert 'fetch="2504.01500"' in line
     assert 'read=paper_read("PAPER-0001")' in line
+
+
+# --- artifact ids a model writes by hand ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("written", "canonical"),
+    [
+        ("PAPER-002", "PAPER-0002"),
+        ("paper-2", "PAPER-0002"),
+        (" claim-0007 ", "CLAIM-0007"),
+        ("PROBLEM-1", "PROBLEM-0001"),
+        ("EXP-0001", "EXP-0001"),
+        ("PAPER-12345", "PAPER-12345"),
+    ],
+)
+def test_short_artifact_ids_resolve_to_the_minted_form(written: str, canonical: str) -> None:
+    """Ids are minted as PREFIX-%04d, so a short form is unambiguous.
+
+    A Coq calibration run wrote three-digit ids throughout; paper_read answered "No
+    PAPER-002 ... call paper_fetch first", which is true and useless — the paper was
+    sitting in the workspace as PAPER-0002.
+    """
+    from opentorus.jsonl import canonical_artifact_id
+
+    assert canonical_artifact_id(written) == canonical
+
+
+@pytest.mark.parametrize("raw", ["", "not-an-id", "PAPER", "2504.01500", "PAPER-0001v2"])
+def test_non_ids_are_left_alone(raw: str) -> None:
+    """Anything that is not PREFIX-<digits> must still miss, and still say so."""
+    from opentorus.jsonl import canonical_artifact_id
+
+    assert canonical_artifact_id(raw) == raw.strip().upper()

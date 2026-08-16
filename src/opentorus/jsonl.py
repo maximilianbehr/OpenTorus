@@ -8,6 +8,7 @@ single bad line never makes a whole ledger unreadable.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import TypeVar
@@ -63,6 +64,28 @@ def iter_jsonl(path: Path, model_cls: type[ModelT]) -> Iterator[ModelT]:
 def next_sequential_id(prefix: str, existing_count: int) -> str:
     """Build a deterministic, zero-padded artifact id, e.g. ``CLAIM-0001``."""
     return f"{prefix}-{existing_count + 1:04d}"
+
+
+_ARTIFACT_ID = re.compile(r"^([A-Z][A-Z0-9_]*)-0*(\d+)$")
+
+
+def canonical_artifact_id(raw: str) -> str:
+    """Zero-pad a model-written artifact id to the form the ledgers actually use.
+
+    Every id is minted as ``PREFIX-%04d``, so ``PAPER-002`` can only ever mean
+    ``PAPER-0002`` — but a lookup on the raw string misses, and the resulting "no such
+    paper, call paper_fetch first" is true and useless: it sends the model off to
+    re-download a paper it already has. Observed on a Coq calibration run, where the
+    model wrote three-digit ids throughout. Anything that is not ``PREFIX-<digits>`` is
+    returned upper-cased and otherwise untouched, so a genuinely unknown id still
+    misses and still says so.
+    """
+    text = raw.strip().upper()
+    match = _ARTIFACT_ID.match(text)
+    if match is None:
+        return text
+    prefix, digits = match.groups()
+    return f"{prefix}-{int(digits):04d}"
 
 
 def next_id(prefix: str, existing_ids: Iterable[str]) -> str:
