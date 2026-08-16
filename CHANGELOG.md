@@ -70,6 +70,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every new argument set resets its streak. Calibrated across 19 recorded workspaces
   (median 1 argument set per error, only three exceed six, at 20, 11 and 9), the run
   now ends honestly at eight.
+- **An argument the model JSON-encoded one time too many is re-read.** Teaching the
+  shape in the rejection was not enough: llama3.1:70b sent `gaps` as a string sixteen
+  times across two examples with the required JSON spelled out in every reply — and
+  what it sent was the correct array, encoded once too often, plus `limit='10'` for an
+  integer. Those are encodings of the intended value, not different values. Deliberately
+  *not* coerced: a multi-line string for an array, because splitting it on newlines
+  would guess how many items were meant and a gap count is load-bearing; likewise a
+  non-numeric string, a boolean where a number belongs, and malformed JSON.
+- **The streaming-deadline message counts reasoning as well as reply.** It reported only
+  the content length, so a thinking model streaming everything through the reasoning
+  channel was described as having produced "0 characters so far" — the opposite
+  diagnosis for a run that had emitted six thousand characters of reasoning and simply
+  never finished. Caught by the deadline itself firing on qwen3-vl:32b in a real run.
 - **A rejected argument says what arrived and what shape to send.** "Argument 'gaps'
   must be a array." is ungrammatical, silent about what was sent, and shows nothing to
   correct against; a Sendov run passed its whole gap list as one newline-separated
