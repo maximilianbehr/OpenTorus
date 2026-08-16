@@ -6,6 +6,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.8] — 2026-08-16
+
+The release where the formal-verification path was used in anger for the first time,
+and mostly did not survive it. `proof_submit` gives a model the verifier directly —
+write formal source, read the checker's error, fix it, resubmit — and running the
+calibration examples against a range of local models immediately exposed what no test
+had: containerized Coq could not verify anything, rejections never taught the
+certificate format, a list-shaped variable spec crashed the backend into a Python
+traceback, four leading system messages broke whole model families on turn one, and a
+model's own lemma numbering was read as a citation, making correct work impossible.
+
+Two defects reached the invariant the project exists to defend. Evidence typed
+`FORMAL_PROOF` counted as verification-grade with no artifact behind it at all; and an
+SMT verdict printed next to a parse error was taken at face value, so a typo in a
+constant name produced an accepted formal proof. Both are closed, and verification-grade
+evidence must now cite an accepted `PROOF-*`.
+
+The loop learned to notice when it is going in circles: guards for an acquisition
+streak that never reads anything, for the same error arriving from ever-changing
+arguments, and for a model call that simply never returns — each calibrated against
+recorded runs rather than guessed. `opentorus eval digest` reports the same patterns
+over a finished workspace. Reports and PDFs gained one design system, and the example
+collection grew to twenty-odd open problems, calibration dossiers with known ground
+truth, and campaign dossiers whose verdict is derived from artifacts instead of prose.
+
 ### Changed
 - **One report design, two renderings.** The HTML report — what an export falls
   back to when there is no TeX toolchain or no model — was four CSS rules on
