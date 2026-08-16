@@ -250,3 +250,12 @@ examples/*/*.py
 !examples/matrix-functions/scripts/
 !examples/simons-eigenvalue-problems/scripts/
 !examples/nystrom-submodularity/sample-output/
+
+# Agent output written into an example workspace during a run. Drivers generate
+# their own notes.md via heredoc and never reference these; they are results, not
+# inputs, and they must not enter the history (five of them reached it once).
+examples/*/analysis/
+examples/*/analysis.md
+examples/*/literature_survey_*.md
+examples/*/survey_*.md
+examples/*/*_summary.md
