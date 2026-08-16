@@ -64,22 +64,35 @@ def test_sketches_and_experiments_never_resolve_the_campaign(tmp_path: Path) -> 
     assert label not in ("GENERAL_CONJECTURE_PROVED", "GENERAL_CONJECTURE_REFUTED")
 
 
-def test_validated_numerics_is_computational_evidence(tmp_path: Path) -> None:
+def test_validated_numerics_is_computational_evidence(tmp_path: Path, accepted_proof) -> None:
     ot, pid = _dossier(tmp_path, GENERAL_STATEMENT)
     claim = claims.add_claim(ot, pid, claim_type="CLAIM", statement="Bound holds for n<=10.")
     claims.add_evidence(
-        ot, pid, claim.id, evidence_type="VALIDATED_NUMERICAL", summary="interval-certified"
+        ot,
+        pid,
+        claim.id,
+        evidence_type="VALIDATED_NUMERICAL",
+        summary="interval-certified",
+        source_artifacts=[accepted_proof(ot, claim.id)],
     )
     label, _ = scope.classify_outcome(ot, pid)
     assert label == "COMPUTATIONAL_EVIDENCE"
 
 
-def test_formally_verified_primary_resolves_general_target_only(tmp_path: Path) -> None:
+def test_formally_verified_primary_resolves_general_target_only(
+    tmp_path: Path, accepted_proof
+) -> None:
     ot, pid = _dossier(tmp_path, GENERAL_STATEMENT)
     claim = claims.add_claim(ot, pid, claim_type="CLAIM", statement="The full conjecture.")
-    # The legitimate promotion route: verification-grade evidence, then status.
+    # The legitimate promotion route: an accepted verifier run, cited as verification
+    # evidence, then the gated status change. "accepted proof" now names a real one.
     claims.add_evidence(
-        ot, pid, claim.id, evidence_type="FORMAL_PROOF", summary="accepted Lean proof"
+        ot,
+        pid,
+        claim.id,
+        evidence_type="FORMAL_PROOF",
+        summary="accepted proof",
+        source_artifacts=[accepted_proof(ot, claim.id)],
     )
     claims.set_claim_status(ot, pid, claim.id, "formally_verified")
 
@@ -95,11 +108,18 @@ def test_formally_verified_primary_resolves_general_target_only(tmp_path: Path) 
     assert claim.id in rationale
 
 
-def test_formally_verified_primary_on_fixed_target_stays_partial(tmp_path: Path) -> None:
+def test_formally_verified_primary_on_fixed_target_stays_partial(
+    tmp_path: Path, accepted_proof
+) -> None:
     ot, pid = _dossier(tmp_path, FIXED_STATEMENT)
     claim = claims.add_claim(ot, pid, claim_type="CLAIM", statement="The instance works.")
     claims.add_evidence(
-        ot, pid, claim.id, evidence_type="FORMAL_PROOF", summary="accepted certificate"
+        ot,
+        pid,
+        claim.id,
+        evidence_type="FORMAL_PROOF",
+        summary="accepted certificate",
+        source_artifacts=[accepted_proof(ot, claim.id)],
     )
     claims.set_claim_status(ot, pid, claim.id, "formally_verified")
     dossier = store.require_dossier(ot, pid)

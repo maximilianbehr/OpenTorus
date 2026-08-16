@@ -53,6 +53,25 @@ def record_validated_numerical(
     if not result.accepted:
         return None, result
 
+    # The acceptance above is a real verifier run, so record it as one. Verification
+    # evidence must cite a PROOF-* artifact, and routing this path through the same
+    # ledger as proof_submit means every promotion in the workspace is traceable to an
+    # entry in proofs.jsonl — rather than this module being trusted on its own say-so.
+    from opentorus.config import default_config
+    from opentorus.research.verifiers.proofs import submit_proof
+
+    source = certificate if isinstance(certificate, str) else json.dumps(certificate)
+    attempt = submit_proof(
+        ot_dir,
+        default_config(),
+        "interval",
+        source,
+        claim_id=claim_id,
+        problem_id=problem_id,
+        submitted_under=problem_id,
+        verifier=IntervalVerifier(),
+    )
+
     # Persist the certificate + verifier output for provenance.
     cert_obj = certificate if not isinstance(certificate, str) else json.loads(certificate)
     ev_dir = store.dossier_dir(ot_dir, problem_id) / "evidence"
@@ -80,6 +99,6 @@ def record_validated_numerical(
         summary=summary or result.output,
         direction=direction,
         path=rel_path,
-        source_artifacts=[],
+        source_artifacts=[attempt.id],
     )
     return evidence, result

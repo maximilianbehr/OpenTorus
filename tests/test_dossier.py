@@ -276,11 +276,13 @@ def test_eval007_counterexample_candidate_not_auto_verified(tmp_path: Path) -> N
         claims.verify_counterexample(base, pid, cand.id, verification_artifact="EVID-9999")
 
 
-def test_eval007_counterexample_verified_with_artifact(tmp_path: Path) -> None:
+def test_eval007_counterexample_verified_with_artifact(tmp_path: Path, accepted_proof) -> None:
     base, pid = _problem(tmp_path)
     cand = claims.add_claim(
         base, pid, claim_type="COUNTEREXAMPLE_CANDIDATE", statement="n=5 object refutes X"
     )
+    # "machine-checked" has to mean a machine actually checked something: the promotion
+    # below is only legitimate because this is a real accepted verifier run.
     ev, _ = claims.add_evidence(
         base,
         pid,
@@ -288,6 +290,7 @@ def test_eval007_counterexample_verified_with_artifact(tmp_path: Path) -> None:
         evidence_type="FORMAL_PROOF",
         summary="machine-checked refutation",
         direction="supports",
+        source_artifacts=[accepted_proof(base, cand.id)],
     )
     verified = claims.verify_counterexample(
         base, pid, cand.id, verification_artifact=ev.id, summary="confirmed"
@@ -296,7 +299,9 @@ def test_eval007_counterexample_verified_with_artifact(tmp_path: Path) -> None:
     assert verified.status == "verified"
 
 
-def test_eval007_contradicting_formal_evidence_cannot_verify(tmp_path: Path) -> None:
+def test_eval007_contradicting_formal_evidence_cannot_verify(
+    tmp_path: Path, accepted_proof
+) -> None:
     # A verification-grade artifact that *contradicts* the candidate must not be
     # usable to verify it: only supporting evidence promotes a claim (invariant 2).
     base, pid = _problem(tmp_path)
@@ -310,6 +315,7 @@ def test_eval007_contradicting_formal_evidence_cannot_verify(tmp_path: Path) -> 
         evidence_type="FORMAL_PROOF",
         summary="machine-checked proof that the candidate is NOT a counterexample",
         direction="contradicts",
+        source_artifacts=[accepted_proof(base, cand.id)],
     )
     with pytest.raises(OpenTorusError):
         claims.verify_counterexample(base, pid, cand.id, verification_artifact=ev.id)

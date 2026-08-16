@@ -63,7 +63,7 @@ def test_partially_solved_with_supported_theorem(tmp_path: Path) -> None:
     assert v.has_verified_theorem is False
 
 
-def test_solved_with_verified_proof(tmp_path: Path) -> None:
+def test_solved_with_verified_proof(tmp_path: Path, accepted_proof) -> None:
     base, pid = _problem(tmp_path)
     cand = claims.add_claim(
         base, pid, claim_type="COUNTEREXAMPLE_CANDIDATE", statement="n=5 refutes X"
@@ -75,6 +75,7 @@ def test_solved_with_verified_proof(tmp_path: Path) -> None:
         evidence_type="FORMAL_PROOF",
         summary="machine-checked",
         direction="supports",
+        source_artifacts=[accepted_proof(base, cand.id)],
     )
     claims.verify_counterexample(base, pid, cand.id, verification_artifact=ev.id)
     # A verified counterexample makes the original conjecture INVALID.

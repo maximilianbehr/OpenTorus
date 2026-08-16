@@ -9,6 +9,7 @@ Neutralizing color here makes the suite robust to where it runs.
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -27,3 +28,35 @@ def _deterministic_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("CLICOLOR_FORCE", raising=False)
     monkeypatch.setenv("NO_COLOR", "1")
+
+
+@pytest.fixture
+def accepted_proof():
+    """Record a genuinely accepted ``PROOF-*`` artifact and return its id.
+
+    Verification-grade evidence (``FORMAL_PROOF`` / ``VALIDATED_NUMERICAL``) may only
+    be recorded against a verifier run that actually happened and was accepted. Tests
+    that need a verified claim must therefore produce a real one — this runs the sympy
+    backend (a core dependency) on a true identity, so the artifact behind the
+    promotion is as real in the tests as it must be in production.
+    """
+    from opentorus.config import default_config
+    from opentorus.research.verifiers.proofs import submit_proof
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    def _make(ot_dir, claim_id: str | None = None) -> str:
+        certificate = json.dumps(
+            {"lhs": "sin(x)**2 + cos(x)**2", "rhs": "1", "relation": "eq", "vars": {"x": "real"}}
+        )
+        attempt = submit_proof(
+            ot_dir,
+            default_config(),
+            "sympy",
+            certificate,
+            claim_id=claim_id,
+            verifier=SymPyVerifier(),
+        )
+        assert attempt.accepted, f"fixture must produce a real accepted proof: {attempt.output}"
+        return attempt.id
+
+    return _make

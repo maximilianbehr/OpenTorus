@@ -59,12 +59,18 @@ def _problem(tmp_path: Path) -> tuple[Path, str]:
     return base, store.create_dossier(base, "A conjecture about X.").id
 
 
-def test_per_claim_honesty_context_is_local(tmp_path: Path) -> None:
+def test_per_claim_honesty_context_is_local(tmp_path: Path, accepted_proof) -> None:
     base, pid = _problem(tmp_path)
     # Claim A: backed by a verification-grade FORMAL_PROOF evidence -> proved.
     a = claims.add_claim(base, pid, claim_type="CLAIM", statement="A is true")
     ev, _ = claims.add_evidence(
-        base, pid, a.id, evidence_type="FORMAL_PROOF", summary="checked", direction="supports"
+        base,
+        pid,
+        a.id,
+        evidence_type="FORMAL_PROOF",
+        summary="checked",
+        direction="supports",
+        source_artifacts=[accepted_proof(base, a.id)],
     )
     # Claim B: unproven.
     b = claims.add_claim(base, pid, claim_type="CONJECTURE", statement="B is open")

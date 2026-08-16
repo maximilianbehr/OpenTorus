@@ -513,7 +513,9 @@ class WebSearchTool(Tool):
         return self.ok(call, "\n".join(lines), count=len(results))
 
 
-def build_default_registry(root: Path, ot_dir: Path, config=None) -> ToolRegistry:
+def build_default_registry(
+    root: Path, ot_dir: Path, config=None, problem_id: str | None = None
+) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(StatusTool(root, ot_dir))
     registry.register(GitDiffTool(root))
@@ -539,5 +541,5 @@ def build_default_registry(root: Path, ot_dir: Path, config=None) -> ToolRegistr
     if config is not None:
         from opentorus.tools.research import register_research_tools
 
-        register_research_tools(registry, root, ot_dir, config)
+        register_research_tools(registry, root, ot_dir, config, problem_id=problem_id)
     return registry

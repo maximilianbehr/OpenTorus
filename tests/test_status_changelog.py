@@ -38,13 +38,18 @@ def test_contradiction_logs_transition(tmp_path: Path) -> None:
     assert changes[-1].to_status == "contradicted"
 
 
-def test_counterexample_verification_logs_transition(tmp_path: Path) -> None:
+def test_counterexample_verification_logs_transition(tmp_path: Path, accepted_proof) -> None:
     base, pid = _problem(tmp_path)
     cand = claims.add_claim(
         base, pid, claim_type="COUNTEREXAMPLE_CANDIDATE", statement="n=5 refutes X."
     )
     ev, _ = claims.add_evidence(
-        base, pid, cand.id, evidence_type="FORMAL_PROOF", summary="machine-checked"
+        base,
+        pid,
+        cand.id,
+        evidence_type="FORMAL_PROOF",
+        summary="machine-checked",
+        source_artifacts=[accepted_proof(base, cand.id)],
     )
     claims.verify_counterexample(base, pid, cand.id, verification_artifact=ev.id)
     changes = store.list_status_changes(base, pid)

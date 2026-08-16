@@ -31,6 +31,7 @@ from opentorus.research.dossier.validation import (
 )
 
 _EXP_ID_RE = re.compile(r"^EXP-\d+$")
+_PROOF_ID_RE = re.compile(r"^PROOF-\d+$")
 
 
 def _log_status_change(
@@ -111,6 +112,73 @@ def add_claim(
     return store.append_claim(ot_dir, claim)
 
 
+def _require_verification_artifact(
+    ot_dir: Path,
+    problem_id: str,
+    evidence_type: EvidenceType,
+    source_artifacts: list[str] | None,
+) -> None:
+    """Verification-grade evidence must name a verifier run that actually happened.
+
+    This is the enforcement point for the project's central rule. Until this check
+    existed, ``evidence_can_verify`` was a test on the *string in the type field*:
+    ``--type FORMAL_PROOF`` with no artifact behind it satisfied
+    :func:`_has_verification_artifact` and unlocked ``verified`` /
+    ``formally_verified``. Only ``EXPERIMENT`` — the one type that can *never*
+    verify — had its artifact checked, so the guarantee was exactly inverted.
+
+    A verification claim must therefore point at a ``PROOF-*`` artifact in this
+    workspace's proof ledger that a backend ACCEPTED. A missing id, a rejected
+    attempt, and an inconclusive one (timeout/crash) are each refused with the
+    reason, so "the checker never finished" can never be laundered into "verified".
+    """
+    from opentorus.research.verifiers.proofs import get_proof, proofs_path
+
+    ids = [a.strip() for a in (source_artifacts or []) if _PROOF_ID_RE.match(a.strip())]
+    if not ids:
+        raise OpenTorusError(
+            f"{evidence_type} evidence is verification-grade: it can promote a claim to "
+            "'verified'/'formally_verified', so it must cite the verifier run that "
+            "produced it. Pass the accepted attempt's id as a source artifact "
+            "(e.g. --artifact PROOF-0003). Submit the proof first — `opentorus proof "
+            "submit` or the agent's proof_submit tool — and cite what it returns. "
+            "If nothing was machine-checked, record support-only evidence instead "
+            "(EXPERIMENT, COMPUTATION, PROOF_SKETCH): that is honest, and it keeps "
+            "the claim at 'supported'."
+        )
+    accepted: list[str] = []
+    problems: list[str] = []
+    for art in ids:
+        proof = get_proof(ot_dir, art)
+        if proof is None:
+            problems.append(
+                f"{art}: no such attempt in {proofs_path(ot_dir).name} — nothing was "
+                "verified under that id"
+            )
+        elif proof.inconclusive:
+            problems.append(
+                f"{art}: {proof.backend} was inconclusive (timeout, crash, or unreadable "
+                "source). The check did not conclude, so it verifies nothing"
+            )
+        elif not proof.accepted:
+            problems.append(f"{art}: {proof.backend} REJECTED this attempt")
+        elif proof.problem_id is not None and proof.problem_id != problem_id:
+            # An accepted proof belongs to the dossier it was submitted under. The two
+            # claim stores share the CLAIM-NNNN id space, so an unscoped check let a
+            # proof about one problem verify a same-numbered claim about another.
+            problems.append(
+                f"{art}: recorded under {proof.problem_id}, not {problem_id} — a proof "
+                "of another problem's claim verifies nothing here"
+            )
+        else:
+            accepted.append(art)
+    if not accepted:
+        raise OpenTorusError(
+            f"Cannot record {evidence_type} evidence: no cited attempt was accepted.\n  - "
+            + "\n  - ".join(problems)
+        )
+
+
 def add_evidence(
     ot_dir: Path,
     problem_id: str,
@@ -132,6 +200,11 @@ def add_evidence(
     claim = store.get_claim(ot_dir, problem_id, claim_id)
     if claim is None:
         raise OpenTorusError(f"No claim '{claim_id}' in dossier '{problem_id}'.")
+
+    # Verification-grade evidence is the only kind that can lift a claim out of
+    # 'supported'. Check it before anything is written.
+    if evidence_can_verify(evidence_type):
+        _require_verification_artifact(ot_dir, problem_id, evidence_type, source_artifacts)
 
     # An EXPERIMENT citation must reference a real EXP-* manifest. A hallucinated id
     # is rejected outright; a real but not-yet-run experiment is recorded but flagged

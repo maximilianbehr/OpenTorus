@@ -27,6 +27,11 @@ def proof_submit(
     backend: str = typer.Argument(..., help="Backend name: lean4 | coq | smt | interval | sympy."),
     source_file: str = typer.Argument(..., help="Path to the formal source file."),
     claim: str | None = typer.Option(None, "--claim", help="Claim id this proof targets."),
+    problem: str | None = typer.Option(
+        None,
+        "--problem",
+        help="Dossier this submission is part of (recorded as provenance, e.g. PROBLEM-0001).",
+    ),
 ) -> None:
     """Submit a formal proof to an enabled backend and record the attempt."""
     from opentorus.research.verifiers import submit_proof
@@ -39,7 +44,12 @@ def proof_submit(
         raise typer.Exit(code=1)
     try:
         attempt = submit_proof(
-            base, config, backend, path.read_text(encoding="utf-8"), claim_id=claim
+            base,
+            config,
+            backend,
+            path.read_text(encoding="utf-8"),
+            claim_id=claim,
+            submitted_under=problem,
         )
     except OpenTorusError as exc:
         console.print(f"[red]{exc}[/red]")

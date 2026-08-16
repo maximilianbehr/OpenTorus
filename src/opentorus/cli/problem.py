@@ -436,6 +436,15 @@ def problem_evidence(
     summary: str = typer.Option("", "--summary", help="What the evidence shows."),
     direction: str = typer.Option("supports", "--direction", help="supports|contradicts|neutral."),
     path: str | None = typer.Option(None, "--path", help="Path to an evidence artifact."),
+    artifact: list[str] | None = typer.Option(
+        None,
+        "--artifact",
+        help=(
+            "Artifact this evidence cites; repeatable. Required for the "
+            "verification-grade types (FORMAL_PROOF, VALIDATED_NUMERICAL), which must "
+            "name an ACCEPTED PROOF-* attempt, e.g. --artifact PROOF-0003."
+        ),
+    ),
 ) -> None:
     """Link evidence to a claim (evidence supports, never proves)."""
     from opentorus.research.dossier import claims as claim_ops
@@ -462,6 +471,7 @@ def problem_evidence(
             summary=summary,
             direction=direction,  # type: ignore[arg-type]
             path=path,
+            source_artifacts=list(artifact or []),
         )
     except OpenTorusError as exc:
         console.print(f"[red]{exc}[/red]")
