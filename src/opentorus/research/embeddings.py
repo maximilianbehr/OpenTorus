@@ -13,7 +13,6 @@ import json
 import logging
 import math
 import os
-import urllib.error
 import urllib.request
 from typing import Protocol, runtime_checkable
 
@@ -121,7 +120,13 @@ class OllamaEmbedder:
             try:
                 with urllib.request.urlopen(request, timeout=120) as response:
                     body = json.loads(response.read().decode("utf-8"))
-            except urllib.error.URLError as exc:
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"Timed out after 120s embedding a batch via Ollama at {self._host}. "
+                    "A read timeout is a bare TimeoutError (an OSError, not a URLError), "
+                    "so it must be handled here or it escapes as a traceback."
+                ) from exc
+            except OSError as exc:
                 raise RuntimeError(f"Could not reach Ollama at {self._host}: {exc}") from exc
             embeddings = body.get("embeddings")
             if not isinstance(embeddings, list) or len(embeddings) != len(batch):

@@ -104,6 +104,21 @@ def build_url(base: str, params: dict[str, object]) -> str:
     return f"{base}?{urllib.parse.urlencode(clean)}" if clean else base
 
 
+def _timeout_message(url: str, timeout: int) -> str:
+    """Message for a read timeout.
+
+    ``urlopen`` raises a bare :class:`TimeoutError` on a read timeout. It is an
+    ``OSError`` but *not* a ``urllib.error.URLError``, so a handler that catches only
+    ``URLError`` lets it escape and end a long run with a raw traceback. Every literature
+    fetch goes through here, so that failure mode has to be a clean, resumable error.
+    """
+    return (
+        f"Timed out after {timeout}s waiting for {url}. This is a transient "
+        "server/network hiccup, not a permanent failure — recorded artifacts are "
+        "preserved, so re-running resumes from them."
+    )
+
+
 def http_get_text(
     url: str, headers: dict[str, str] | None = None, timeout: int = DEFAULT_TIMEOUT
 ) -> str:
@@ -116,7 +131,9 @@ def http_get_text(
         raise SourceError(
             f"HTTP {exc.code} from {url}: {detail or exc.reason}", status=exc.code
         ) from exc
-    except urllib.error.URLError as exc:
+    except TimeoutError as exc:
+        raise SourceError(_timeout_message(url, timeout)) from exc
+    except OSError as exc:
         raise SourceError(f"Could not reach {url}: {exc}") from exc
 
 
@@ -129,7 +146,9 @@ def http_get_bytes(
             return response.read()
     except urllib.error.HTTPError as exc:
         raise SourceError(f"HTTP {exc.code} from {url}: {exc.reason}", status=exc.code) from exc
-    except urllib.error.URLError as exc:
+    except TimeoutError as exc:
+        raise SourceError(_timeout_message(url, timeout)) from exc
+    except OSError as exc:
         raise SourceError(f"Could not reach {url}: {exc}") from exc
 
 

@@ -44,8 +44,11 @@ def _ollama_reports_tools(host: str, model_name: str) -> tuple[bool | None, str]
     """Query ``/api/show`` for an Ollama ``tools`` capability.
 
     Returns ``(True, "")`` if advertised, ``(False, reason)`` if the server reports
-    capabilities but not ``tools``, or ``(None, "")`` when it cannot be determined (old
-    Ollama / unreachable) so the caller falls back to a probe.
+    capabilities but not ``tools``, ``(None, "")`` when the server answered but does not
+    report capabilities (old Ollama) so the caller falls back to a probe, or
+    ``(None, reason)`` with a non-empty reason when the server could not be reached at
+    all — a transient failure, where a probe would only burn more model calls against
+    the same unreachable server.
     """
     url = f"{host.rstrip('/')}/api/show"
     body = json.dumps({"name": model_name}).encode("utf-8")
@@ -55,8 +58,16 @@ def _ollama_reports_tools(host: str, model_name: str) -> tuple[bool | None, str]
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             data = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, json.JSONDecodeError, ValueError):
+    except (urllib.error.HTTPError, json.JSONDecodeError, ValueError):
+        # The server answered (404 for an unknown model, 500, unparseable body). It is
+        # reachable, so the probe is still worth a try — this is the old behaviour.
         return None, ""
+    except OSError as exc:
+        # Covers urllib.error.URLError *and* the bare socket TimeoutError that urlopen
+        # raises when the read times out (TimeoutError is an OSError but NOT a URLError,
+        # so catching URLError alone let it escape and kill the run with a traceback).
+        # This is transient: report it and let the caller warn and proceed.
+        return None, f"could not reach the Ollama server at {host} ({exc})"
 
     capabilities = data.get("capabilities")
     if not isinstance(capabilities, list) or not capabilities:
@@ -136,7 +147,11 @@ def provider_supports_tool_calling(
         verdict, detail = _ollama_reports_tools(host, _model_name(provider, config))
         if verdict is not None:
             return verdict, detail
-        # inconclusive (old Ollama) → fall through to the probe
+        if detail:
+            # The server was unreachable, not merely uninformative. Probing it would
+            # send further requests to the same dead endpoint; report inconclusive now.
+            return None, detail
+        # inconclusive (old Ollama answered, but reports no capabilities) → probe
 
     if allow_probe:
         return probe_tool_calling(provider)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING
 
@@ -58,7 +57,9 @@ def _ollama_reports_vision(host: str, model_name: str) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
+    except TimeoutError as exc:
+        return False, f"Timed out querying Ollama at {host} for '{model_name}': {exc}"
+    except OSError as exc:
         return False, f"Could not query Ollama at {host}: {exc}"
     except json.JSONDecodeError:
         return False, f"Ollama returned invalid JSON from /api/show for '{model_name}'."

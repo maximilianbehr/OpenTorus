@@ -138,6 +138,24 @@ def test_ollama_http_error_is_inconclusive(monkeypatch: pytest.MonkeyPatch) -> N
     import urllib.error
 
     _patch_urlopen(monkeypatch, exc=urllib.error.URLError("refused"))
+    verdict, reason = _ollama_reports_tools("http://h", "m")
+    # Never a definitive "cannot call tools" — that guarantee is unchanged.
+    assert verdict is None
+    # A refused connection now carries its reason, which marks it transient so the
+    # caller skips the probe instead of sending model calls to a dead endpoint.
+    assert "could not reach" in reason.lower()
+
+
+def test_ollama_server_error_still_falls_through_to_the_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An HTTP status means the server answered: reachable, so probing is worthwhile."""
+    import urllib.error
+
+    _patch_urlopen(
+        monkeypatch,
+        exc=urllib.error.HTTPError("http://h", 404, "not found", {}, None),  # type: ignore[arg-type]
+    )
     assert _ollama_reports_tools("http://h", "m") == (None, "")
 
 
@@ -212,13 +230,16 @@ def test_require_none_provider_raises_without_attribute_error() -> None:
         require_tool_calling_provider(None)
 
 
-def test_require_skipped_when_verify_disabled() -> None:
+def test_require_skipped_when_verify_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     import opentorus.providers.tool_support as ts
 
     p = _Provider("ollama", "text")
     p.config.model.verify_tool_calling = False
     # Even an authoritative no must be skipped when verification is disabled.
-    ts._ollama_reports_tools = lambda host, model: (False, "x")  # type: ignore[assignment]
+    # Must go through monkeypatch: a raw module assignment here leaked into every
+    # later test in the session, so any test touching tool support afterwards saw a
+    # permanent "model cannot call tools" and failed for an unrelated reason.
+    monkeypatch.setattr(ts, "_ollama_reports_tools", lambda host, model: (False, "x"))
     require_tool_calling_provider(p, p.config)  # must not raise
 
 
