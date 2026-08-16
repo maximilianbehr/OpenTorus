@@ -6,6 +6,58 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **A verifier stamping each rejection no longer blinds the unchanged-error guard.**
+  The guard that catches "same mistake, new arguments" keyed on the raw error text,
+  and a verifier rejection carries a fresh `PROOF-*` id, a fresh temp path, and a
+  source position that shifts whenever the model edits anything above it. One Coq
+  calibration run produced 31 rejections and 29 distinct keys, so the threshold of 4
+  was unreachable by construction — twelve of those rejections were one and the same
+  syntax error, each costing minutes in a container. Only the guard's key is
+  normalized; the model still reads the verbatim message. On the recorded run: 29
+  keys down to 12, firing on the fourth attempt. The consecutive-failure streak key
+  is normalized for the same reason.
+- **An endless re-read is no longer counted as progress.** A repeated
+  `read_file`/`paper_read` of an already-read path is served from the read cache and
+  logged `ok=True`, so a file compacted out of context stays recoverable — which also
+  made it invisible: the chat-only streak resets, neither failure tracker sees it, and
+  nothing counted it. Two runs re-read one and the same `statement.md` 24 and 25 times,
+  a full model round-trip each, producing nothing; half of the recorded workspaces
+  exceed three repeats. The first four re-serves stay, then the call fails and the
+  identical-failure tracker takes over. The refusal deliberately carries no counter —
+  a ticking number would make each failure look new and blind that very guard.
+- **`model.timeout_seconds` now bounds the response, not just the wait for the next
+  chunk.** It reaches `urlopen` as a socket timeout, and a model degenerating into an
+  endless repetition keeps chunks arriving; with tools enabled `num_predict` is `-1`,
+  so there was no token cap either. A 33B model spent half an hour inside a single
+  turn emitting `Also maybe PAPER-1412 for 10.1007/…`. The stream reader now carries
+  the same budget as a deadline and aborts with a clean, resumable `ProviderError`.
+- **A typographic hyphen no longer turns a cited line into an uncited one.** Models
+  type `PAPER‑0001` with U+2011 — nine of eleven citations in a recorded Casas-Alvero
+  run did. Three separate ASCII-only patterns decide whether a line cites a paper, and
+  each gates something real: the honesty linter exempting an attributed literature
+  result from the overclaim rule, the literature gate refusing a `memory_add` without a
+  citation, and the proof-sketch linter warning about a resolution claim naming no
+  source. The identical sentence passed with `-` and was flagged with `‑`.
+  `paper_citations` had normalized hyphens for exactly this reason; the other three
+  sites were never brought along. One shared tolerant pattern now backs all of them.
+- **A model is no longer sent back to fetch a paper that cannot be fetched.** A
+  metadata-only paper is kept on purpose — withdrawn, source-only or 404'd — with the
+  reason in `access_note`, but the citation check answered "call paper_fetch and ensure
+  [parsed]" anyway. A Sendov run lost four `proof_write` attempts to a 404'd arXiv PDF
+  while the workspace already held the explanation. The rejection now quotes the
+  recorded reason, says re-fetching will not help, and names the routes that work.
+- **A short artifact id resolves to the id that was minted.** Ids are minted as
+  `PREFIX-%04d`, so `PAPER-002` can only mean `PAPER-0002` — but the lookup missed and
+  answered "No PAPER-002 … call paper_list or paper_fetch first" while the paper sat in
+  the workspace. Applied to every artifact-id lookup in the tool layer; anything that is
+  not `PREFIX-<digits>` still misses, and still says so.
+- **A rejected argument says what arrived and what shape to send.** "Argument 'gaps'
+  must be a array." is ungrammatical, silent about what was sent, and shows nothing to
+  correct against; a Sendov run passed its whole gap list as one newline-separated
+  bullet string. The message now names the received type and, for the two shapes models
+  get wrong most often, shows the JSON to send — built from the model's own first item.
+
 ## [0.0.8] — 2026-08-16
 
 The release where the formal-verification path was used in anger for the first time,
