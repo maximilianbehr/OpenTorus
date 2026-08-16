@@ -9,6 +9,17 @@ from opentorus.errors import OpenTorusError
 
 IdentifierKind = Literal["doi", "arxiv"]
 
+# Models type typographic hyphens inside artifact ids — one recorded Casas-Alvero run
+# wrote nine of its eleven citations as "PAPER‑0001" with U+2011. Every regex looking
+# for a PAPER-* reference has to accept them, because "does this line cite a paper"
+# gates real decisions: the honesty linter exempts an attributed literature result from
+# the overclaim rule, the literature gate refuses a memory_add without a citation, and
+# the proof-sketch linter warns about a resolution claim that names no source. With an
+# ASCII-only pattern all three read a correctly cited line as uncited — the very same
+# sentence passes with "-" and is flagged with "‑".
+ID_HYPHENS = "-‐‑‒–—―−"
+PAPER_REF_RE = re.compile(rf"\bPAPER[{ID_HYPHENS}]\d{{4}}\b", re.IGNORECASE)
+
 _ARXIV_URL = re.compile(
     r"(?:https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/)"
     r"(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+/\d{7}(?:v\d+)?)",

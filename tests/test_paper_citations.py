@@ -373,3 +373,32 @@ def test_withdrawn_arxiv_paper_degrades_to_metadata_only(tmp_path: Path) -> None
         downloader=lambda url: b"%PDF-1.4 fake",
     )
     assert ok.full_text_accessible is True
+
+
+# --- typographic hyphens inside artifact ids -----------------------------------
+
+
+def test_a_citation_with_a_typographic_hyphen_still_counts() -> None:
+    """ "Does this line cite a paper" gates three decisions; all read ASCII only.
+
+    A recorded Casas-Alvero run wrote nine of eleven citations as "PAPER‑0001" with
+    U+2011, so the same honestly attributed sentence passed with "-" and was flagged as
+    an overclaim with "‑". The literature gate refused a memory_add that plainly cited a
+    paper, and the proof-sketch linter warned about a resolution claim that named its
+    source. One shared, hyphen-tolerant pattern now backs all three.
+    """
+    from opentorus.agent.literature_gate import _PAPER_ID
+    from opentorus.research.dossier.honesty import lint_report
+
+    sentence = "Barajas and Serra prove the conjecture for degree 6, PAPER-0001 Theorem 3."
+    for hyphen in "-‐‑‒–—―−":
+        line = sentence.replace("PAPER-0001", f"PAPER{hyphen}0001")
+        assert lint_report(line) == [], f"flagged with U+{ord(hyphen):04X}"
+        assert _PAPER_ID.search(line) is not None, f"gate blind to U+{ord(hyphen):04X}"
+
+
+def test_a_missing_citation_is_still_flagged() -> None:
+    """Tolerating the hyphen must not tolerate an uncited claim."""
+    from opentorus.research.dossier.honesty import lint_report
+
+    assert lint_report("Barajas and Serra prove the conjecture for degree 6.") != []

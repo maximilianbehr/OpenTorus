@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from opentorus.research.identifiers import PAPER_REF_RE
+
 
 class IssueKind(StrEnum):
     PROOF_CLAIM = "proof_claim"
@@ -105,7 +107,7 @@ _WEASEL = re.compile(
 # citation-grounding check separately validates the theorem number, so flagging
 # it here punished honest literature reporting. First-person and "provably"
 # claims stay flagged: citing a paper does not launder one's own assertion.
-_PAPER_REF = re.compile(r"\bPAPER-\d{4}\b", re.IGNORECASE)
+_PAPER_REF = PAPER_REF_RE
 
 # Referee findings quote the offending phrase ("[REFEREE] ... 'is proved' ...");
 # re-flagging the quotation inside the finding loops the linter on its own

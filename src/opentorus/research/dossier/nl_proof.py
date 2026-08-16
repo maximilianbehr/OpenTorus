@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Literal
 
+from opentorus.research.identifiers import PAPER_REF_RE
+
 ProofScope = Literal["primary", "exploration"]
 
 # Sections the honesty linter and reviewers expect in an NL proof artifact.
@@ -437,7 +439,7 @@ _RESOLVED_OPEN = re.compile(
     r"establish(?:es|ed)\s+the\s+(?:polynomial\s+)?(?:hirsch|conjecture))\b",
     re.IGNORECASE,
 )
-_PAPER_REF_RE = re.compile(r"\bPAPER-\d{4}\b", re.IGNORECASE)
+_PAPER_REF_RE = PAPER_REF_RE
 
 
 def lint_proof_sketch(

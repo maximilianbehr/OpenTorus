@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from pathlib import Path
 
+from opentorus.research.identifiers import PAPER_REF_RE
+
 LITERATURE_PHASE_FORBIDDEN = frozenset({"proof_write", "proof_submit", "claim_new", "evidence_add"})
 
-_PAPER_ID = re.compile(r"PAPER-\d{4}", re.I)
+_PAPER_ID = PAPER_REF_RE
 
 
 def literature_tool_gate(
