@@ -65,6 +65,14 @@ _MAX_IDENTICAL_FAILURES = 6
 # the arguments are not what is wrong. Calibrated on the recorded runs: the two
 # pathological ones reach 11 and 9, every healthy one reaches 1.
 _MAX_UNCHANGED_ERROR_ATTEMPTS = 4
+# …and a ceiling, because the warning alone changed nothing. A prove run rewrote its
+# run_shell command 20 times and got the identical "not available during prove" block
+# every time; the nudge fired from the fourth on and the model kept going for another
+# sixteen turns. The consecutive-failure ladder cannot stop this — the arguments differ,
+# so its streak resets on every call. Calibrated across 19 recorded workspaces: the
+# median run reaches 1 distinct argument set per error, only three exceed 6 (at 20, 11
+# and 9), so 8 stops every pathological run without touching a healthy one.
+_MAX_UNCHANGED_ERROR_STOP = 8
 
 # Tokens the *system* mints per call, which make two reports of one and the same error
 # look like two different errors. A verifier rejection carries a fresh artifact id, a
@@ -271,6 +279,7 @@ class AgentLoop:
         # (tool, error) -> the distinct argument sets that produced it. Catches a model
         # that keeps changing the call without addressing what the error actually says.
         self._error_signatures: dict[str, set[str]] = {}
+        self._unchanged_error_stop: str | None = None
         # (tool, args, error) -> how often it failed, consecutive or not. Deliberately
         # NOT reset per run(): the prove loop runs several phases against one loop, and
         # a wall hit in the literature phase is still a wall in the proof phase.
@@ -666,6 +675,13 @@ class AgentLoop:
         error_key = f"{name}\n{_stable_error_key(content[:2000])}"
         seen_sigs = self._error_signatures.setdefault(error_key, set())
         seen_sigs.add(sig)
+        if len(seen_sigs) >= _MAX_UNCHANGED_ERROR_STOP and self._unchanged_error_stop is None:
+            self._unchanged_error_stop = (
+                f"Stopped: {name} failed {len(seen_sigs)} times with different arguments and "
+                "the identical error every time — the arguments were never what was wrong, "
+                "and rewriting them again cannot help. The failing calls and their error are "
+                "preserved in the session log; the dossier holds the current state."
+            )
         if len(seen_sigs) < _MAX_UNCHANGED_ERROR_ATTEMPTS:
             return content
         return (
@@ -757,7 +773,14 @@ class AgentLoop:
         return content + guard
 
     def _identical_failure_stop(self) -> str | None:
-        """Return an honest stop message once the identical-failure cap is reached."""
+        """Return an honest stop message once either dead-end cap is reached.
+
+        Two ladders end here. The streak counts an unchanged call repeated verbatim; the
+        unchanged-error ceiling counts one error surviving ever-changing arguments, which
+        the streak structurally cannot see because every new argument set resets it.
+        """
+        if self._unchanged_error_stop is not None:
+            return self._unchanged_error_stop
         if self._fail_streak < _MAX_IDENTICAL_FAILURES:
             return None
         return (

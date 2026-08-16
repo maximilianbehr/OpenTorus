@@ -228,3 +228,34 @@ def test_the_original_error_text_is_kept(tmp_path: Path) -> None:
     for i in range(4):
         note = loop._note_tool_failure("proof_write", f"proof_write:{{'b':'{i}'}}", error)
     assert error in note
+
+
+def test_one_error_surviving_changing_arguments_eventually_stops_the_run(tmp_path: Path) -> None:
+    """The warning alone changed nothing, so the ladder needed a ceiling.
+
+    A prove run rewrote its run_shell command 20 times and got the identical "not
+    available during prove" block every time. The nudge fired from the fourth on and the
+    model kept going for another sixteen turns; the consecutive-failure ladder cannot
+    stop this, because a new argument set resets its streak on every call.
+    """
+    loop = _loop(tmp_path)
+    error = "Blocked: run_shell is not available during prove. Use exp_new then exp_run."
+
+    for i in range(7):
+        loop._note_tool_failure("run_shell", f"run_shell:{{'command':'ls -{i}'}}", error)
+    assert loop._identical_failure_stop() is None, "seven distinct attempts must not stop yet"
+
+    loop._note_tool_failure("run_shell", "run_shell:{'command':'ls -8'}", error)
+    stop = loop._identical_failure_stop()
+
+    assert stop is not None
+    assert "8 times with different arguments" in stop
+    assert "preserved in the session log" in stop
+
+
+def test_a_healthy_run_never_reaches_the_ceiling(tmp_path: Path) -> None:
+    """Across 19 recorded workspaces the median run reaches one argument set per error."""
+    loop = _loop(tmp_path)
+    for i in range(12):
+        loop._note_tool_failure("proof_write", f"proof_write:{{'b':'{i}'}}", f"distinct error {i}")
+    assert loop._identical_failure_stop() is None
