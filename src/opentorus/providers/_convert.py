@@ -178,7 +178,30 @@ def to_ollama_messages(messages: list[SessionMessage]) -> list[dict]:
             if name:
                 entry["tool_name"] = name
             out.append(entry)
-    return out
+    return _merge_leading_system(out)
+
+
+def _merge_leading_system(messages: list[dict]) -> list[dict]:
+    """Collapse the leading run of system messages into exactly one.
+
+    OpenTorus builds several leading system blocks (workspace context, task goal,
+    retrieval, …). Strict chat templates accept only a single system message and
+    reject the rest with the *misleading* error "system message must be at the
+    beginning" — verified against Ollama: one leading system works, two do not,
+    regardless of position. That made whole model families (e.g. qwen3.8) fail on
+    their first turn with zero tool calls. Merging preserves the content verbatim
+    and every template accepts the result.
+    """
+    lead = 0
+    while lead < len(messages) and messages[lead].get("role") == "system":
+        lead += 1
+    if lead <= 1:
+        return messages
+    merged = {
+        "role": "system",
+        "content": "\n\n".join(m.get("content") or "" for m in messages[:lead]).strip(),
+    }
+    return [merged, *messages[lead:]]
 
 
 def to_function_tools(specs: list[dict]) -> list[dict]:

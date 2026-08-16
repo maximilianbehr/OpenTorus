@@ -385,3 +385,30 @@ def test_loop_executes_all_tool_calls_in_one_turn(tmp_path: Path) -> None:
     # One assistant turn lists both calls.
     at = next(m for m in msgs if m.role == "assistant" and m.metadata.get("tool_calls"))
     assert len(at.metadata["tool_calls"]) == 2
+
+
+def test_leading_system_messages_are_merged_for_ollama() -> None:
+    # Strict chat templates accept exactly ONE system message and reject the rest
+    # with "system message must be at the beginning" — verified against Ollama:
+    # one leading system works, two do not, regardless of position. OpenTorus
+    # builds four leading system blocks, so whole model families failed on turn 1.
+    from opentorus.agent.session import SessionMessage
+    from opentorus.providers._convert import to_ollama_messages
+
+    msgs = [
+        SessionMessage(role="system", content="workspace"),
+        SessionMessage(role="system", content="goal"),
+        SessionMessage(role="system", content="retrieval"),
+        SessionMessage(role="user", content="task"),
+        SessionMessage(role="assistant", content="reply"),
+    ]
+    out = to_ollama_messages(msgs)
+    assert [m["role"] for m in out] == ["system", "user", "assistant"]
+    assert out[0]["content"] == "workspace\n\ngoal\n\nretrieval"  # content preserved verbatim
+
+    # A single leading system message is passed through untouched.
+    single = to_ollama_messages(
+        [SessionMessage(role="system", content="only"), SessionMessage(role="user", content="hi")]
+    )
+    assert [m["role"] for m in single] == ["system", "user"]
+    assert single[0]["content"] == "only"
