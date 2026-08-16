@@ -11,6 +11,7 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -188,7 +189,23 @@ class OllamaProvider(BaseProvider):
         role = "assistant"
         tool_calls: list | None = None
         usage: TokenUsage | None = None
+        # ``timeout_seconds`` reaches urlopen as a *socket* timeout, so it bounds the
+        # wait for the next chunk, not the response. A model that degenerates into an
+        # endless repetition keeps chunks arriving, so nothing ever fires — and with
+        # tools enabled ``num_predict`` is -1, i.e. no token cap either. Observed on a
+        # 33B model: one turn generating "Also maybe PAPER-1412 for …" for half an hour,
+        # holding a 50-minute run hostage. Bound the whole response by the same budget.
+        deadline = time.monotonic() + self.config.model.timeout_seconds
         for raw_line in response:  # type: ignore[attr-defined]
+            if time.monotonic() > deadline:
+                raise ProviderError(
+                    f"Ollama kept streaming for {self.config.model.timeout_seconds}s "
+                    f"without finishing the response for model "
+                    f"'{self.config.model.name}' ({len(accumulated)} characters so far) "
+                    "— the model is very likely stuck repeating itself. The run state is "
+                    "preserved; re-run to resume. Set model.num_predict to cap the reply, "
+                    "or raise model.timeout_seconds if the model is merely slow."
+                )
             if not raw_line:
                 continue
             chunk = json.loads(raw_line.decode("utf-8"))

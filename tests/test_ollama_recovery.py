@@ -318,3 +318,52 @@ def test_connection_drop_becomes_clean_provider_error(monkeypatch) -> None:
         provider.respond([SessionMessage(role="user", content="hi")])
     assert "dropped mid-request" in str(err.value)
     assert "re-run to resume" in str(err.value).lower()
+
+
+# --- a response that never ends ------------------------------------------------
+
+
+def _chunk(text: str) -> bytes:
+    import json as _json
+
+    return _json.dumps({"message": {"role": "assistant", "content": text}}).encode()
+
+
+def test_endless_stream_is_cut_off_by_the_timeout_budget() -> None:
+    """``timeout_seconds`` must bound the response, not just the wait for a chunk.
+
+    urlopen gets it as a socket timeout, so a model that degenerates into an endless
+    repetition keeps chunks arriving and nothing fires; with tools enabled num_predict
+    is -1, so there is no token cap either. Observed on a 33B model: half an hour of
+    "Also maybe PAPER-1412 for …" inside a single turn.
+    """
+    from opentorus.providers.ollama_provider import OllamaProvider
+
+    config = default_config()
+    config.model.timeout_seconds = 0.05
+
+    def forever():
+        import time as _t
+
+        while True:
+            _t.sleep(0.01)
+            yield _chunk("Also maybe PAPER-1412 for 10.1007/1-4020-0611-x. ")
+
+    provider = OllamaProvider(config)
+    with pytest.raises(ProviderError) as excinfo:
+        provider._read_stream(forever(), None)
+
+    message = str(excinfo.value)
+    assert "stuck repeating itself" in message
+    assert "re-run to resume" in message
+    assert "model.num_predict" in message
+
+
+def test_a_stream_that_finishes_in_time_is_untouched() -> None:
+    from opentorus.providers.ollama_provider import OllamaProvider
+
+    config = default_config()
+    config.model.timeout_seconds = 30.0
+    provider = OllamaProvider(config)
+    result = provider._read_stream(iter([_chunk("hello "), _chunk("world")]), None)
+    assert result.content == "hello world"
