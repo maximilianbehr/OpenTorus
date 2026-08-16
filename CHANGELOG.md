@@ -6,7 +6,148 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **The exported report PDF has a house style.** The dossier PDF was the stock
+  `preprint.cls` with Computer Modern, `\hline` tables and raw `verbatim` dumps.
+  A new bundled `opentorus.sty` (installed next to `preprint.cls` on every
+  compile, so it reaches dossiers built by an older OpenTorus) adds Libertinus
+  text/math with `microtype`, accent-coloured headings with a hairline rule, a
+  metadata strip under the title (dossier id, status, formalization, artifact
+  counts), booktabs/tabularx tables, tinted output panels, status chips and
+  callout boxes. `preprint.cls` itself is vendored third-party code and stays
+  byte-for-byte unchanged. Every optional package is probed with `\IfFileExists`,
+  so a minimal TeX installation still compiles — it just gets a plainer document.
+  Two of the conventions carry epistemic weight rather than being decorative:
+  chip colour never upgrades a claim (green is reserved for
+  `verified`/`formally_verified`/`supported`/`succeeded`; `unverified` and
+  anything unrecognised stay neutral grey), and the "a sketch is not a verified
+  proof" / "a counterexample candidate is not a refutation" caveats are now
+  boxes a skimming reader cannot miss instead of sentences buried in prose. The
+  compose prompt teaches the model the same macros, so the LLM-written report and
+  the deterministic fallback look alike. Documented in `docs/cli-ux.md`.
+
 ### Fixed
+- **Captured output ran off the right edge of the page.** Long stdout lines were
+  typeset in a `verbatim` block that cannot break, so anything past the margin
+  was simply lost from the PDF. Output now goes in an `otoutput` environment that
+  wraps with a continuation marker. It has to be a *new* environment name:
+  `preprint.cls` loads `lineno`, which pins the stock `verbatim` such that
+  `fvextra`'s `breaklines` silently never fires, and wrapping it in a
+  `\tcolorboxenvironment` defeats the breaking too (the body is captured as an
+  argument and typeset at its natural width). The generator, the LaTeX sanitiser
+  and the compose prompt all emit `otoutput`.
+- **Markdown bold reached the page as literal `\{}textbf{...}`.** The proof-sketch
+  fallback converter turned `**x**` into `\textbf{x}` and *then* LaTeX-escaped the
+  result, so the command it had just written was escaped into text. Escaping now
+  happens first. This also retires the old "the line contains `$`, so skip
+  escaping entirely" rule: `$...$` spans are preserved either way, but a stray
+  `_`/`&`/`%` in the surrounding prose can no longer abort the compile.
+- **A `$$…$$` block corrupted every formula after it.** Display math spans lines,
+  and the shared Markdown normaliser pairs `$` with a naive scan that reads the
+  *second* dollar of an opening `$$` as an inline-math opener — from there the
+  whole body pairs off by one, and `$1 + \sqrt{2}$` printed as
+  `$1 + $\sqrt${2}$`. Display blocks are now lifted out before any per-line or
+  Unicode pass touches the text, and emitted as `\[…\]` so the equation is
+  centred on its own line instead of crammed into the paragraph. The Unicode
+  guard tracks `\[…\]`/`\(…\)` as math too, so a symbol inside display math no
+  longer becomes a nested `$…$`.
+- **The problem statement was printed as its own source.** The deterministic
+  report path escaped `statement.md` wholesale, so a statement written in
+  Markdown with real LaTeX math rendered as `$W(A) = \{}mathbb{C}...$`. It now
+  goes through the Markdown converter, which also gained ordered lists (numbered
+  proof steps were running together into one paragraph) and keeps indented
+  continuation lines inside their bullet.
+- **`\item [REFEREE] …` was read as an optional argument** and typeset as a
+  hanging description label. List items whose text starts with `[` are now
+  guarded.
+- **Claim-table cells collided.** The claim column was 51pt wide for an artifact
+  id that needs 61pt, and a status chip is an unbreakable box up to 74pt, so
+  `COUNTEREXAMPLE_CANDIDATE` overprinted the statement next to it. The table is
+  now four columns with the type stacked under the id, sized against the widest
+  real status and type values, with break opportunities after underscores and a
+  `\strut` so a short cell aligns with the statement it belongs to.
+
+- **An unchecked hole in EVAL-002.** `FORMAL_PROOF` / `VALIDATED_NUMERICAL`
+  evidence counted as verification-grade as soon as its *type field* said so —
+  the artifact was checked only for `EXPERIMENT`, i.e. for the one type that may
+  never verify anything. `problem evidence --type FORMAL_PROOF` with no artifact
+  at all promoted a claim to `formally_verified`. Verification-grade evidence
+  must now cite an accepted `PROOF-*`; missing, rejected and inconclusive
+  attempts are refused with a reason. Six test files rested on the hole (one with
+  the summary "accepted Lean proof" and no Lean proof) and now produce a real
+  verifier run through the new `accepted_proof` fixture. New:
+  `problem evidence --artifact PROOF-0003` — the option was missing, so the
+  legitimate route did not exist. The interval path
+  (`record_validated_numerical`) records its own `PROOF-*`, so every promotion is
+  traceable in `proofs.jsonl`.
+- **A read timeout killed runs with a raw traceback.** `urlopen` raises a bare
+  `TimeoutError` on a read timeout — an `OSError`, but not a `URLError`, so it
+  escaped every handler that caught only `URLError`. Four example runs
+  (bollobas-nikiforov, calibration-brouwer, kalai-3d, marcus-de-oliveira,
+  2026-08-16 06:19) died in the tool-calling probe before doing anything, even
+  though `require_tool_calling_provider` promises in its own docstring that a
+  transient probe failure never blocks a run. Fixed at all five sites: the tool
+  probe, both literature fetches (every `lit_search`/`paper_fetch` ran through
+  the same hole), embeddings, and vision. An unreachable server is no longer
+  probed a second time on top.
+- **A proof could answer for a claim in a different store.** Proof attempts now
+  record which claim store their `claim_id` belongs to: a dossier proof no longer
+  answers a workspace lookup of the same id, and verification evidence rejects a
+  proof recorded under a different dossier. The collision was not hypothetical —
+  a real run held `CLAIM-0001` twice, once as "for every bipartite graph H and
+  every graph G …" in the dossier and once as a statement about one 4-vertex
+  graph in the workspace store, and the workspace promotion gate keyed on the
+  bare id. Note the scope honestly: the id collision is real
+  and recorded, but the promotion path it could open needs a workspace with
+  several dossiers, one of them demanding formalization, and an accepted proof
+  filed under another — a combination no recorded run reaches. This closes a
+  gap reachable in principle; it does not repair an observed failure.
+- **An undeclared constant could fabricate a formal proof.** An SMT verdict
+  printed alongside `(error …)` lines is now inconclusive in both directions. z3
+  and cvc5 drop an assertion they cannot parse and solve what remains, so the
+  verdict describes a different problem than the one submitted. Verified against
+  z3 5.0.0: four lines with a typo'd constant name previously produced
+  `accepted=True` — and an accepted verification artifact is the one thing that
+  may promote a claim to `formally_verified`. Surfaced by the first real SMT run
+  in the project's history (a Barnette encoding), which reported `sat` after two
+  "unknown constant" errors and was recorded as a rejection of mathematics the
+  solver had never seen.
+- **Verifiers reported non-results as rejection.** `smt.py` never inspected
+  `timed_out` and never set `inconclusive`: a z3 timeout, an explicit `unknown`,
+  and a solver error with no sat/unsat token all reached the model as `REJECTED`
+  — against the documented promise to report such cases "never as a rejection".
+  Likewise a signal-killed Lean/Coq process (SIGSEGV, OOM) and a failed container
+  start were not distinguished from a real rejection, and interval arithmetic
+  reported an enclosure that was merely too coarse as a refutation, though the
+  method is one-sided. New helper `ran_at_all()` in `verifiers/base.py`; exit 1
+  with error output remains a genuine rejection.
+- **`exp replay` ignored the command and the container.** Replay hard-coded
+  `python run.py` on the host and skipped `experiment.command`, `run_from` and
+  the pinned environment — for every containerized experiment (so, every example)
+  it ran with the wrong toolchain, and the divergence it reported was an artifact
+  of the replay itself. It now goes through `_run_via_backend`, the same path as
+  the original run, and additionally compares the git commit and image digest
+  that were recorded all along but never checked.
+- **A test poisoned the session.** `test_tool_support.py` set a module attribute
+  raw instead of through `monkeypatch`, so every later test in the run saw a
+  permanent "this model cannot call tools".
+- **`paper_fetch` leaked exceptions to the model.** `SourceError` is a
+  `RuntimeError`, not an `OpenTorusError`, so every HTTP failure escaped the
+  tool's handler and reached the model as "Tool paper_fetch failed: HTTP 404 from
+  …". Observed twice in live runs — one of them instructive: arXiv 1709.04009
+  *exists* but is withdrawn and has no PDF at all, so the model had done nothing
+  wrong. A 404 now explains both possibilities (no such identifier, or a
+  withdrawn / source-only record), points at `lit_search` as the source of
+  identifiers, and says to mark the step `[GAP-n]` instead.
+- **A withdrawn paper discarded the whole record.** The resolver only decides that
+  a PDF *should* exist; the fetch can still fail for a perfectly legitimate record,
+  and `acquire_paper` let that failure abort the acquisition. arXiv keeps metadata
+  and abstract for withdrawn and source-only papers but serves no PDF at all, so a
+  citable record was thrown away and the model was handed an error for something it
+  had not done wrong. Such a fetch now degrades to metadata-only — exactly how
+  paywalled sources are already handled — with the reason recorded in the paper's
+  access note.
+
 Five defects in the formal-verification path, every one surfaced by running the
 calibration examples against a range of local models — before that, no run had
 ever called `proof_submit`, so the tests were green on stubs and well-formed input:
@@ -43,8 +184,70 @@ ever called `proof_submit`, so the tests were green on stubs and well-formed inp
   line, bullet or heading is now treated as the author's own numbering; citations
   appear mid-sentence ("by Lemma 1 of PAPER-0003", "PAPER-0003 Theorem 2").
 
+### Changed
+- **Stable prompt prefix.** The workspace inventory sat at position 2 of every
+  request and changes almost every step, so the reusable prefix ended after a few
+  hundred tokens and the whole history behind it was re-evaluated on every call.
+  Measured on a real run (matrix-spencer, gemma4:31b, server-reported numbers):
+  1,263,204 prompt tokens against 51,534 completion tokens, with
+  `prompt_eval_count` growing 8k → 30k in step with latency — 96 % of all
+  processed tokens were prompt sent again. Volatile blocks now sit behind the
+  history, directly before the last turn (not after it: the last turn is the
+  answer template, and a tool_call/tool_result pair must not be split).
+  `context.stable_prefix: false` restores the old order.
+- **Failed attempts survive compaction.** The summarizer kept only tool *names*,
+  so a dead end survived as the word `proof_write` in a comma-separated list —
+  while the loop and the prove loop explicitly promise the user that the failed
+  call and its error are preserved in the session log. Tool results now carry an
+  `ok` flag, and the summary lists failed calls with their error text and a
+  do-not-repeat note.
+- **The referee flags a quantified claim whose verification artifact compares
+  constants** (observed: `1/8 >= 1/16` as the only accepted proof in a dossier
+  about all bipartite graphs). Advisory, not blocking: an accepted proof shows
+  that something was checked, never that it was the claim citing it, and a
+  heuristic about an artifact's meaning should raise the question rather than
+  halt the run.
+- **The search nudge now tracks the acquisition-to-processing ratio**, not just
+  consecutive searches: a fetch between every pair of searches reset the streak
+  counter while nothing was actually read (observed in a real run: 106 acquisition
+  calls against 5 processing calls, and not one proof draft). Calibrated against
+  twelve recorded runs rather than guessed — at ratio 4.0 with a minimum of 15
+  acquisitions it fires on exactly that run and on none of the other eleven, whose
+  end ratios sit between 0.2 and 1.6. Processing is the complement of acquisition,
+  so a newly added tool cannot silently inflate the ratio; inventory polls count on
+  neither side. The nudge rides on acquisition calls only, so a run that has moved
+  on to processing is never nagged about its own results.
+- **A third dead-end guard: the same error from N distinct argument sets.** The
+  existing guards key on the whole `(tool, args, error)` triple, so a model that
+  rewrites its arguments every time repeats none of them while making the
+  identical mistake — circling then looks like progress. Observed on a recorded
+  run as 36 `proof_write` failures across 26 argument sets, 11 of them returning
+  one identical citation error. Calibrated against the recorded runs: the two
+  pathological ones reach 11 and 9 distinct argument sets per error, every healthy
+  one reaches 1. The hint is worded differently from the repeat hint, because here
+  the model *is* changing something, just not the thing that matters.
+- **Memory for non-consecutive dead ends.** The identical-failure guard held
+  exactly one key, so a model alternating between two failing calls (A, B, A)
+  reset the streak every time. Every distinct failure is now counted across the
+  whole run and named when it reappears.
+- **`agent.max_wall_seconds`** (off by default): a wall-clock budget per run,
+  checked between steps. Every other guard assumes turns come back — a hung model
+  call satisfies none of them.
+- **Verification cache.** Byte-identical source is answered from the ledger
+  instead of re-checked (minutes per submission on Lean/Coq), with no second
+  artifact and an explicit note that resubmitting unchanged source cannot change
+  the verdict. Inconclusive runs are deliberately not cached.
 
 ### Added
+- **`opentorus eval digest [PATH…] [--json]`** — reads a finished workspace and
+  reports the tool histogram, repeated failures with their error text, the
+  longest search streak, verifier outcomes split into accepted / rejected /
+  inconclusive, claim statuses, experiment outcomes, and the prompt share of
+  tokens. Descriptive, not judgmental: the flags name patterns that have marked
+  stuck runs before, and say nothing about the mathematics. On
+  `examples/matrix-spencer` it reproduces the three findings that were hand-work
+  before: a 5-call search streak, a proof written but never submitted, and a
+  96 % prompt share.
 - `proof_submit` agent tool: the model can now submit formal source (Lean 4, Coq,
   SMT-LIB, interval/sympy certificates) to the enabled verifier backends directly
   from the prove loop, closing the write → compile → error-feedback → resubmit

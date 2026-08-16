@@ -61,7 +61,17 @@ the pieces fit together and the boundaries that keep it inspectable.
 
 1. The user issues a command or interactive turn.
 2. The loop assembles **context** (transparent, retrieval-driven, honoring the
-   privacy filter) and asks the provider for the next step.
+   privacy filter) and asks the provider for the next step. The request is ordered
+   *stable first*: system prompt, tool-routing guide, run goal, then history, and only
+   then the volatile block (workspace inventory, retrieval hits, recovery hint), which
+   is inserted just ahead of the final turn. A local server can reuse its KV cache only
+   for a prefix it has already seen, and the inventory changes almost every step — with
+   it near the front, the whole history behind it was re-evaluated on every call
+   (measured: 96% of processed tokens were re-sent prompt). Set
+   `context.stable_prefix: false` for the previous ordering.
+   A run is bounded by `agent.max_steps`, by the cost/token budgets, and — because
+   every other guard assumes turns come back — optionally by `agent.max_wall_seconds`,
+   checked between steps.
 3. If the provider requests a tool, the **permission policy** decides
    allow / ask / block. Allowed tools execute (possibly inside an execution
    backend); the call, result, and decision are appended to the action log.

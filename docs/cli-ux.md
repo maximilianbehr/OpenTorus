@@ -74,6 +74,76 @@ Markdown extraction defaults to the **LLM** path.
 | Authoring | `problem report/export`, `paper compile`, `pack export/reproduce/notebook` |
 | Sessions | `replay last/session`, `export`, `import` |
 | Governance & cost | `usage`, `governance budget/scan`, `dashboard` |
+| Evaluation | `eval run`, `eval digest [PATH…] [--json]`, `eval record` |
+
+### `eval digest` — what a finished run actually did
+
+`opentorus eval digest [PATH…]` reads a finished workspace and reports counts and
+patterns: the tool-call histogram, repeated failures with their error text, the longest
+run of consecutive searches, verifier outcomes split into accepted / rejected /
+inconclusive, claim statuses, experiment outcomes, and the prompt-to-completion token
+split. `--json` emits the same record for scripting; several paths can be passed at once
+to compare runs.
+
+A digest is deliberately *descriptive*. Its flags name patterns that have marked stuck
+runs before — a search loop, a proof written but never submitted to a verifier, a run
+where every experiment failed — and nothing in it judges whether the mathematics was
+right. That judgement stays with the artifacts, the referee, and the honesty linter.
+
+### Recording verification evidence
+
+`FORMAL_PROOF` and `VALIDATED_NUMERICAL` are the only verification-grade evidence types:
+they are what lets a claim leave `supported`. Both must cite an accepted verifier run,
+so `problem evidence` requires the artifact:
+
+```bash
+opentorus proof submit --backend coq --claim CLAIM-0001 --file proof.v   # → PROOF-0003
+opentorus problem evidence --claim CLAIM-0001 --type FORMAL_PROOF --artifact PROOF-0003
+```
+
+A missing, rejected, or inconclusive attempt is refused with the reason. If nothing was
+machine-checked, record support-only evidence (`EXPERIMENT`, `COMPUTATION`,
+`PROOF_SKETCH`) instead — that is honest, and it keeps the claim at `supported`.
+
+### The report PDF
+
+`problem export --pdf` typesets the dossier with the bundled `preprint.cls`
+(third-party, BSD-2) plus `opentorus.sty`, the OpenTorus design layer. Both live in
+`opentorus/research/dossier/templates/` and are re-copied into the workspace on every
+compile, so template fixes reach dossiers built by an older OpenTorus. `preprint.cls`
+is vendored verbatim and must stay that way — the house style belongs in
+`opentorus.sty`.
+
+Every optional package in `opentorus.sty` is probed with `\IfFileExists` first, so a
+minimal TeX installation still produces a PDF; it just gets a plainer one (no
+Libertinus text/math fonts, no tinted boxes). What the style provides:
+
+| Macro / environment | Use |
+|---|---|
+| `\artifact{EXP-0001}` | any local artifact id |
+| `\statusok` / `\statuswarn` / `\statusbad` / `\statusbadge` | status chips |
+| `\gapmarker{[GAP-1]}` | a gap marker in a proof sketch |
+| `otoutput` | captured program output — **use instead of `verbatim`** |
+| `\otruncmd{...}` | the command line an experiment ran |
+| `otcaution` / `otpanel` | epistemic caveat box / neutral panel |
+| `\othead`, `\ottype`, column types `L` and `P{...}` | booktabs + tabularx tables |
+| `\otdossierpanel`, `\otmeta` | the metadata strip under the title |
+| `\otartifactindex{...}` | the closing artifact roll-up |
+
+Two conventions carry epistemic weight rather than being decorative:
+
+- **Chip colour tracks what the artifacts license.** Green is reserved for
+  `verified` / `formally_verified` / `supported` / `succeeded`; open and in-flight
+  statuses are amber, negative outcomes red, and anything unrecognised — including
+  `unverified` — stays neutral grey. Colour must never upgrade a claim.
+- **Caveats get a box, not a buried sentence.** The "sketches are not verified
+  proofs" and "a counterexample candidate is not a refutation" notes are `otcaution`
+  blocks, so a reader skimming the PDF cannot miss them.
+
+`otoutput` exists because `preprint.cls` loads `lineno`, which pins the stock
+`verbatim` in a way that defeats `fvextra`'s `breaklines` — long stdout then runs off
+the page. The generator and the LaTeX sanitiser both rewrite `verbatim` blocks to
+`otoutput`, and the compose prompt tells the model to emit it directly.
 
 ## Output conventions
 

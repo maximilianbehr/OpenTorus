@@ -112,6 +112,42 @@ workspace-global claims ladder above). A claim carries a `type` and a `status`:
   requires a verification artifact. The verified tier still requires one — adding
   these values does not weaken EVAL-001/EVAL-002.
 
+### What "a verification artifact" means
+
+`FORMAL_PROOF` and `VALIDATED_NUMERICAL` are the two verification-grade evidence types
+(`epistemics.VERIFICATION_EVIDENCE`); every other type is support-only. Being
+verification-grade is a property of the *artifact*, not of the type name: recording
+either kind requires citing a `PROOF-*` attempt in this workspace's proof ledger that a
+backend **accepted**. A hallucinated id, a rejected attempt, and an inconclusive one
+(timeout, crash, unreadable source) are each refused, naming which.
+
+This is what makes EVAL-002 enforceable rather than declarative. Checking only the type
+field meant `problem evidence --type FORMAL_PROOF`, with nothing behind it, satisfied
+the verification check and unlocked `formally_verified`.
+
+The same distinction runs through the verifier backends: a result is `accepted`,
+`rejected`, or `inconclusive`, and only the first two are statements about the
+mathematics. A solver timeout or an `unknown` verdict, a prover killed by a signal, and
+an interval enclosure too coarse to settle the question are all `inconclusive` — "the
+check did not conclude", never "the claim is false".
+
+A ``PROOF-*`` record carries two dossier references, and they answer different
+questions. `problem_id` says which claim *store* its `claim_id` belongs to — the
+workspace ladder and each dossier share the `CLAIM-NNNN` space, so an unqualified id is
+ambiguous. `submitted_under` says which campaign produced the submission, and is what
+the referee's formalization demand is scoped by. Keeping them apart matters: the agent's
+`proof_submit` targets workspace claims and so carries no `problem_id`, so scoping the
+demand by that field instead would never let any agent submission clear it. Records
+written before provenance existed carry neither, and count only in a workspace holding a
+single dossier, where there is nothing to confuse them with.
+
+A verdict is also discarded when the solver printed `(error …)` alongside it. z3 and
+cvc5 do not abort on a malformed assertion: they drop it and solve what remains, so the
+verdict describes a different problem than the one submitted. This matters in both
+directions — a `sat` there is not a refutation, and an `unsat` there is not a proof,
+which is the more dangerous of the two given that an accepted proof is the one artifact
+that can promote a claim to `formally_verified`.
+
 A claim type may only ever be **weakened** programmatically
 (`downgrade_claim_type`, e.g. `THEOREM → CONJECTURE`), which sets the status to
 `needs_review` and logs the change; promotion to a settled result still requires

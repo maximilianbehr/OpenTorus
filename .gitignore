@@ -231,7 +231,22 @@ __marimo__/
 examples/*/docker/
 examples/*/papers/
 examples/*/notes.md
-examples/nystrom-submodularity/scripts/
-# …but bundled *input* notes.md files are tracked sources, not run outputs:
+# Scripts the agent writes during a run (write_file -> exp_new -> exp_run; the
+# provenance is in each workspace's actions.jsonl). These were surfacing as untracked
+# noise, and three of them had already been committed by accident, because the rule
+# below used to name a single example instead of the pattern.
+examples/*/scripts/
+examples/*/experiments/
+# …and scripts the agent writes straight into the example directory, which is the
+# workspace root of a run. The rules above only caught the subdirectory case, so three
+# such files (a search_dts.py / _v2 / _v3 retry chain, LLM self-talk still in the
+# comments) reached the repository. Every hand-written input script lives in a
+# scripts/ subdirectory, so this pattern touches nothing legitimate.
+examples/*/*.py
+# …but bundled *input* files are tracked sources, not run outputs. Anything listed
+# here is referenced by a driver script or ships as part of a sample dossier:
 !examples/matrix-functions/notes.md
 !examples/simons-eigenvalue-problems/notes.md
+!examples/matrix-functions/scripts/
+!examples/simons-eigenvalue-problems/scripts/
+!examples/nystrom-submodularity/sample-output/
