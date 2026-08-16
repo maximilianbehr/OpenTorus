@@ -6,6 +6,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+Five defects in the formal-verification path, every one surfaced by running the
+calibration examples against a range of local models — before that, no run had
+ever called `proof_submit`, so the tests were green on stubs and well-formed input:
+
+- **Containerized proof assistants could not verify anything.** `coqc` writes
+  `.vo`/`.glob` next to the source and the container uid cannot write into a
+  host-owned temp dir, so every submission failed "Can't find file". The verifier
+  now makes its temp file readable for foreign uids, and the strassen example
+  drives `coqtop -batch -load-vernac-source`, which checks without compiling.
+  Verified end to end: a valid `ring` lemma is ACCEPTED, a false one REJECTED with
+  the exact error line — the project's first real Coq verification.
+- **Rejections never taught the certificate format.** Two capable models submitted
+  malformed certificates and then switched backends instead of fixing the shape.
+  Rejected and inconclusive `proof_submit` results now carry a minimal *valid*
+  example for the JSON-certificate backends plus an explicit "do not switch
+  backends because of a format error"; the tool description keeps a one-line
+  summary so the per-request cost stays small.
+- **The sympy backend crashed on a list-shaped `vars`**, handing the model
+  `'list' object has no attribute 'items'` — 19 submissions across the benchmark
+  died that way, exclusively among the models that engaged the formal path hardest.
+  `vars`/`variables` are now accepted as object *or* list, unknown shapes degrade
+  to plain symbols, and `proof_submit` wraps any backend exception into a
+  malformed-input rejection, so no Python traceback ever reaches a model again.
+- **Four leading system messages broke strict chat templates.** Whole model
+  families failed on turn 1 with zero tool calls. The cause is the message *count*,
+  not its position — Ollama's own error ("system message must be at the beginning")
+  is misleading; verified against the server, one leading system message works and
+  two do not. `to_ollama_messages` now merges the leading run into one, content
+  preserved verbatim.
+- **A model's own lemma numbering was read as a citation.** "- Lemma 6 (…):
+  PAPER-0003 shows …" was attributed to PAPER-0003, which has no result 6 —
+  unfixable from the model's side, and it cost one benchmark cell all 13 of its
+  `proof_write` attempts and its entire deliverable. A result label that opens a
+  line, bullet or heading is now treated as the author's own numbering; citations
+  appear mid-sentence ("by Lemma 1 of PAPER-0003", "PAPER-0003 Theorem 2").
+
+
 ### Added
 - `proof_submit` agent tool: the model can now submit formal source (Lean 4, Coq,
   SMT-LIB, interval/sympy certificates) to the enabled verifier backends directly

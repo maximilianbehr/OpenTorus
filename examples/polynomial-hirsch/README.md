@@ -37,7 +37,7 @@ missing, never invented.
 ## Prerequisites
 
 - **Docker** — for the `polymake` container.
-- **A tool-calling model** — the script defaults to a local Ollama model on port 11434 (`muse-glimmer:30b`); override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL` or edit the `opentorus config set model.*` lines.
+- **A tool-calling model** — the script defaults to a local Ollama model on port 11434 (`gemma4:31b`); override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL` or edit the `opentorus config set model.*` lines.
 - The script **resets the local workspace** (`rm -rf .opentorus`).
 
 ## Run

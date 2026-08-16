@@ -32,7 +32,7 @@ opentorus init
 
 # --- 2. Model & agent configuration -----------------------------------------
 opentorus config set model.provider ollama
-opentorus config set model.name "${OPENTORUS_MODEL:-muse-glimmer:30b}"
+opentorus config set model.name "${OPENTORUS_MODEL:-gemma4:31b}"
 opentorus config set model.base_url "${OPENTORUS_BASE_URL:-http://localhost:11434}"
 opentorus config set model.timeout_seconds 1200
 opentorus config set agent.style autonomous

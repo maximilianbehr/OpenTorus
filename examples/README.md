@@ -94,11 +94,43 @@ description of the workflow, and prerequisites.
 ## Prerequisites
 
 - **Docker** for the `python-sci` container (the numerical example).
-- **A tool-calling model.** The scripts default to a local Ollama model on port
-  11434; override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL`, or set
-  `model.provider` / `model.name` / `model.base_url` to your own provider with
+- **A tool-calling model.** The scripts default to `gemma4:31b` on a local Ollama
+  server (port 11434); override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL`, or
+  set `model.provider` / `model.name` / `model.base_url` to your own provider with
   `opentorus config set …`. The default `mock` provider is an offline smoke test
-  only.
+  only. Which model to pick is measured, not guessed — see below.
+
+---
+
+## Which model for which job
+
+The scripts default to `gemma4:31b` because it did best in our own informal runs
+of the calibration examples on local hardware. This is **not** a benchmark: a
+handful of runs per model on a few examples, no statistical claim, and results
+will differ on your hardware, your Ollama build, and your problems. Treat the
+table as a starting point and re-check it yourself.
+
+| Job | Model | What we saw |
+|-----|-------|-------------|
+| **Default** | **`gemma4:31b`** | Finished every task we gave it, labelled the 2026 Casas-Alvero and Crouzeix proof claims as *claimed, not peer-reviewed*, and had its verifier submissions accepted throughout. |
+| Fast formal verification only | `qwen3.8:latest` | Much faster on the pure formalization example, but did not finish the open-ended ones inside our time budget, so it left no report to review. |
+| Also workable | `nemotron-3-super`, `qwen3.6:27b`, `mistral-medium-3.5` | Reached full coverage on the formalization example; each was weaker than `gemma4:31b` on at least one open-ended example. |
+| Did not get far for us | `gpt-oss:120b`, `deepseek-r1:70b`, `glm-4.7-flash`, `qwen3-vl:32b`, `qwen3-coder`, `muse-glimmer:30b` | Never reached the formal path, or produced no deliverable, in the runs we did. |
+
+Three observations worth carrying over to your own model choices:
+
+1. **Parameter count predicted little.** In our runs, 27–31 B models did better
+   than everything above 100 B, and both sibling pairs inverted (`gemma4:31b` did
+   better than `gemma4:26b`, but `qwen3.6:27b` better than `qwen3.6:35b`). What
+   seemed to separate them was willingness to call a tool instead of writing more
+   prose, and discipline in keeping to a format.
+2. **Formal skill ≠ research skill.** A model that does well on the formalization
+   example (fixed target, one tool, four identities) can still fail an open-ended
+   dossier where it must decide *what* to do, run experiments, and finish in time.
+   Try both before settling on a model.
+3. **A single run tells you very little.** The same model produced 3 verifier
+   submissions in one run and 0 in the next on an identical task. Repeat a few
+   times before drawing conclusions.
 
 ---
 

@@ -46,7 +46,7 @@ opentorus init
 #   opentorus config set model.provider openai
 #   opentorus config set model.base_url http://localhost:11434   # add /v1 if your server needs it
 opentorus config set model.provider ollama
-opentorus config set model.name "${OPENTORUS_MODEL:-muse-glimmer:30b}"            # or: gemma4:31b, gpt-4o-mini, …
+opentorus config set model.name "${OPENTORUS_MODEL:-gemma4:31b}"            # or: gemma4:31b, gpt-4o-mini, …
 opentorus config set model.base_url "${OPENTORUS_BASE_URL:-http://localhost:11434}"
 opentorus config set model.timeout_seconds 1200         # raise for large local models
 opentorus config set agent.style autonomous            # fewer prompts; destructive ops still confirmed
