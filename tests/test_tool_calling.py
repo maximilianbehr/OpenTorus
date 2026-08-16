@@ -437,3 +437,59 @@ def test_leading_system_messages_are_merged_for_ollama() -> None:
     )
     assert [m["role"] for m in single] == ["system", "user"]
     assert single[0]["content"] == "only"
+
+
+# --- arguments a model encoded as strings ---------------------------------------
+
+_COERCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "gaps": {"type": "array"},
+        "limit": {"type": "integer"},
+        "meta": {"type": "object"},
+    },
+}
+
+
+def test_a_json_encoded_argument_is_read_back(tmp_path: Path) -> None:
+    """Teaching the shape was not enough; the value was already right.
+
+    llama3.1:70b sent ``gaps`` as a string sixteen times across two examples with the
+    required JSON spelled out in every reply — and what it sent was the correct array,
+    JSON-encoded once too often, plus ``limit='10'`` for an integer. Those are encodings
+    of the intended value, not different values.
+    """
+    from opentorus.tools.base import coerce_tool_args, validate_tool_args
+
+    args = coerce_tool_args(
+        _COERCE_SCHEMA,
+        {"gaps": '["[GAP-1] We need to show the bound"]', "limit": "10", "meta": '{"k": 1}'},
+    )
+
+    assert args == {"gaps": ["[GAP-1] We need to show the bound"], "limit": 10, "meta": {"k": 1}}
+    assert validate_tool_args(_COERCE_SCHEMA, args) is None
+
+
+def test_a_single_bare_item_is_wrapped_but_a_list_in_prose_is_not() -> None:
+    """Wrapping one item invents no boundaries; splitting a bullet list would.
+
+    A gap count is load-bearing — the referee counts them — so guessing how many items
+    a multi-line string held is exactly the kind of silent reinterpretation to avoid.
+    """
+    from opentorus.tools.base import coerce_tool_args, validate_tool_args
+
+    single = coerce_tool_args(_COERCE_SCHEMA, {"gaps": "[GAP-1]"})
+    assert single == {"gaps": ["[GAP-1]"]}
+
+    prose = {"gaps": "- no explicit n_0 in Tao\n- degrees 9..n_0 unresolved"}
+    assert coerce_tool_args(_COERCE_SCHEMA, prose) == prose
+    error = validate_tool_args(_COERCE_SCHEMA, prose)
+    assert error is not None and "not one string with newlines or bullets" in error
+
+
+def test_coercion_never_papers_over_a_real_mistake() -> None:
+    from opentorus.tools.base import coerce_tool_args, validate_tool_args
+
+    for bad in ({"limit": "zehn"}, {"limit": True}, {"meta": "{broken"}):
+        assert coerce_tool_args(_COERCE_SCHEMA, bad) == bad
+        assert validate_tool_args(_COERCE_SCHEMA, bad) is not None

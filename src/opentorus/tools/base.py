@@ -7,6 +7,7 @@ plugins share a stable contract.
 
 from __future__ import annotations
 
+import json
 import uuid
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
@@ -92,6 +93,73 @@ _JSON_TYPES: dict[str, tuple[type, ...]] = {
 
 def _article(declared: str) -> str:
     return f"an {declared}" if declared[:1] in "aeiou" else f"a {declared}"
+
+
+def _coerced(declared: str, value: object) -> object | None:
+    """Return ``value`` in the declared type when the change loses nothing, else None.
+
+    Teaching the shape in the rejection was not enough: llama3.1:70b sent ``gaps`` as a
+    string sixteen times across two examples, with the required JSON spelled out in
+    every reply. What it sent, though, was ``'["[GAP-1] We need to show …"]'`` — the
+    right array, JSON-encoded once too often — and ``limit='10'`` for an integer. Those
+    are encodings of the intended value, not different values, so re-reading them is
+    honest rather than lenient.
+
+    What is *not* coerced: a multi-line string for an array. Splitting it on newlines
+    would guess how many items the model meant, and a gap count is load-bearing — the
+    referee counts them. That case keeps the teaching rejection.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if declared in ("array", "object") and text[:1] in "[{":
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None  # not JSON after all — an array may still be one bare item
+        if isinstance(parsed, _JSON_TYPES[declared]):
+            return parsed
+        if declared == "object":
+            return None
+    if declared == "array" and "\n" not in text:
+        # One item, written bare (``"[GAP-1]"`` looks like JSON but is not). Wrapping it
+        # invents no boundaries; splitting a multi-line string would.
+        return [text]
+    if declared in ("integer", "number"):
+        try:
+            return int(text) if declared == "integer" else float(text)
+        except ValueError:
+            return None
+    if declared == "boolean" and text.lower() in ("true", "false"):
+        return text.lower() == "true"
+    return None
+
+
+def coerce_tool_args(input_schema: dict, args: dict) -> dict:
+    """Re-read arguments a model encoded as strings, leaving everything else alone."""
+    try:
+        properties = input_schema.get("properties")
+        if not isinstance(input_schema, dict) or not isinstance(properties, dict):
+            return args
+        out = dict(args)
+        for key, value in args.items():
+            spec = properties.get(key)
+            if not isinstance(spec, dict):
+                continue
+            declared = spec.get("type")
+            accepted = _JSON_TYPES.get(declared) if isinstance(declared, str) else None
+            if accepted is None or isinstance(value, accepted):
+                continue
+            if declared in ("integer", "number") and isinstance(value, bool):
+                continue  # a boolean where a number belongs is a real mistake
+            coerced = _coerced(str(declared), value)
+            if coerced is not None:
+                out[key] = coerced
+        return out
+    except Exception:  # noqa: BLE001 — coercion must never crash a tool call
+        return args
 
 
 def _wrong_type_message(key: str, declared: str, value: object) -> str:

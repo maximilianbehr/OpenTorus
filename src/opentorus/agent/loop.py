@@ -33,7 +33,7 @@ from opentorus.permissions.policy import (
     evaluate_write,
 )
 from opentorus.providers.base import BaseProvider, ProviderResponse
-from opentorus.tools.base import Tool, ToolCall, validate_tool_args
+from opentorus.tools.base import Tool, ToolCall, coerce_tool_args, validate_tool_args
 from opentorus.tools.registry import ToolRegistry
 
 # A confirmation callback receives the decision, a human-readable description
@@ -1078,7 +1078,13 @@ class AgentLoop:
             log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
             return self._note_tool_failure(name, sig, message)
 
-        schema_error = validate_tool_args(getattr(tool, "input_schema", {}) or {}, args)
+        # A model that JSON-encodes an argument one time too many sent the right value,
+        # only wrapped in a string. Re-read those before validating — the rejection text
+        # alone did not help: llama3.1:70b repeated the same mistake sixteen times with
+        # the required shape spelled out in every reply.
+        schema = getattr(tool, "input_schema", {}) or {}
+        args = coerce_tool_args(schema, args)
+        schema_error = validate_tool_args(schema, args)
         if schema_error is not None:
             message = f"Invalid arguments for {name}: {schema_error}"
             log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
