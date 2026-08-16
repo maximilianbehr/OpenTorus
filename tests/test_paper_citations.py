@@ -301,3 +301,75 @@ def test_own_lemma_numbering_is_not_a_citation() -> None:
     # A real citation mid-sentence is still attributed, in both idioms.
     real = "The claim follows by Lemma 1 of PAPER-0003, and PAPER-0003 Theorem 2 gives the rest."
     assert cited_theorems_for_paper(real, "PAPER-0003") == {"1", "2"}
+
+
+def test_paper_fetch_reports_a_missing_paper_instead_of_leaking_an_exception(
+    tmp_path: Path,
+) -> None:
+    # Observed live twice: a model asked for an arXiv id whose PDF does not exist
+    # (guessed id, or a withdrawn/source-only record). SourceError is a RuntimeError,
+    # not an OpenTorusError, so it escaped the tool's handler and reached the model as
+    # "Tool paper_fetch failed: HTTP 404 from https://…" — an internal-looking message
+    # that teaches nothing about what to do next.
+    from opentorus.config import default_config
+    from opentorus.research import papers as papers_mod
+    from opentorus.research.sources.base import SourceError
+    from opentorus.tools.base import ToolCall
+    from opentorus.tools.research import PaperFetchTool
+
+    ot = _ot(tmp_path)
+    config = default_config()
+    config.permissions.mode = "trusted"
+
+    def _boom(*args, **kwargs):
+        raise SourceError("HTTP 404 from https://arxiv.org/pdf/1709.04009: Not Found", status=404)
+
+    tool = PaperFetchTool(ot, config)
+    original = papers_mod.acquire_paper
+    papers_mod.acquire_paper = _boom
+    try:
+        result = tool.run(ToolCall(name="paper_fetch", args={"identifier": "1709.04009"}))
+    finally:
+        papers_mod.acquire_paper = original
+
+    assert result.ok is False
+    assert "Tool paper_fetch failed" not in result.content  # not the generic loop wrapper
+    assert "1709.04009" in result.content
+    assert "withdrawn" in result.content or "does not exist" in result.content
+    assert "[GAP-n]" in result.content  # tells the model what to do instead
+
+
+def test_withdrawn_arxiv_paper_degrades_to_metadata_only(tmp_path: Path) -> None:
+    # arXiv keeps metadata for withdrawn / source-only records but serves no PDF
+    # (observed: 1709.04009 — /abs/ is 200, every /pdf/ form 404s). Losing the whole
+    # record there would discard a citable paper and blame the model for a fetch it
+    # could not have made succeed.
+    from opentorus.research.papers import acquire_paper, list_papers
+    from opentorus.research.sources.base import SourceError, SourceRecord
+
+    ot = _ot(tmp_path)
+
+    def _no_pdf(url: str) -> bytes:
+        raise SourceError(f"HTTP 404 from {url}: Not Found", status=404)
+
+    record = SourceRecord(
+        source="arxiv",
+        title="Conjectured bound for the distribution of eigenvalues of a graph",
+        arxiv_id="1709.04009",
+        abstract="An abstract that arXiv still serves.",
+    )
+    paper = acquire_paper(ot, record, downloader=_no_pdf)
+
+    assert paper.full_text_accessible is False
+    assert "not retrievable" in (paper.access_note or "")
+    assert paper.arxiv_id == "1709.04009"
+    assert paper.title.startswith("Conjectured bound")  # still citable as metadata
+    assert [p.id for p in list_papers(ot)] == [paper.id]  # recorded, not discarded
+
+    # A working download is unaffected.
+    ok = acquire_paper(
+        ot,
+        SourceRecord(source="arxiv", title="Fine", arxiv_id="2411.10633"),
+        downloader=lambda url: b"%PDF-1.4 fake",
+    )
+    assert ok.full_text_accessible is True

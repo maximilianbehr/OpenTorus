@@ -308,7 +308,7 @@ class PaperFetchTool(Tool):
         from opentorus.research.egress import EgressBlocked, EgressGuard
         from opentorus.research.identifiers import IdentifierError, normalize_paper_identifier
         from opentorus.research.papers import acquire_paper, describe_fetched_paper
-        from opentorus.research.sources.base import SourceRecord
+        from opentorus.research.sources.base import SourceError, SourceRecord
         from opentorus.research.sources.crossref import API as CROSSREF_API
         from opentorus.research.sources.crossref import CrossrefSource
 
@@ -344,6 +344,29 @@ class PaperFetchTool(Tool):
             return self.fail(call, f"Network egress denied: {exc}")
         except OpenTorusError as exc:
             return self.fail(call, str(exc))
+        except SourceError as exc:
+            # SourceError is a RuntimeError, not an OpenTorusError, so it used to
+            # escape into the loop's generic wrapper and reach the model as
+            # "Tool paper_fetch failed: HTTP 404 from https://…". A missing paper is
+            # an ordinary, expected outcome — the model guessed an identifier, or the
+            # id exists but has no PDF (withdrawn / source-only on arXiv). Say that,
+            # and say what to do next, instead of leaking a raw exception.
+            status = getattr(exc, "status", None)
+            if status == 404:
+                detail = (
+                    f"No fetchable full text for '{raw}' (HTTP 404). Either the "
+                    "identifier does not exist — do not invent one, take it from "
+                    "lit_search results — or the record has no PDF (an arXiv paper can "
+                    "be withdrawn or source-only). Cite it only if lit_search returns "
+                    "it, and mark the step [GAP-n] rather than relying on unread text."
+                )
+            else:
+                detail = (
+                    f"Could not fetch '{raw}': {exc}. This is a source/network problem, "
+                    "not a statement about the paper; try another identifier from "
+                    "lit_search or continue without it."
+                )
+            return self.fail(call, detail, identifier=raw, status=status)
 
         body = describe_fetched_paper(self._ot_dir, paper)
         return self.ok(call, body, paper_id=paper.id)
@@ -1167,9 +1190,15 @@ class ProofSubmitTool(Tool):
     }
     risk_level = "medium"
 
-    def __init__(self, ot_dir: Path, config, *, resolver=None) -> None:
+    def __init__(
+        self, ot_dir: Path, config, *, problem_id: str | None = None, resolver=None
+    ) -> None:
         self._ot_dir = ot_dir
         self._config = config
+        # The dossier this agent run is working on, recorded as provenance on every
+        # submission. ``claim_id`` still names a *workspace* claim — the two are
+        # different questions and are kept in different fields.
+        self._problem_id = problem_id
         # Test seam: maps backend name → Verifier, bypassing config resolution.
         self._resolver = resolver
         backends = ", ".join(enabled_verifier_backends(config)) or "none"
@@ -1213,6 +1242,7 @@ class ProofSubmitTool(Tool):
                 backend,
                 source,
                 claim_id=claim_id,
+                submitted_under=self._problem_id,
                 verifier=verifier,
             )
         except OpenTorusError as exc:
@@ -1336,8 +1366,15 @@ class KbQueryTool(Tool):
         return self.ok(call, "\n".join(lines), count=len(hits))
 
 
-def register_research_tools(registry, root: Path, ot_dir: Path, config) -> None:
-    """Register paper + research artifact tools when enabled in config."""
+def register_research_tools(
+    registry, root: Path, ot_dir: Path, config, problem_id: str | None = None
+) -> None:
+    """Register paper + research artifact tools when enabled in config.
+
+    ``problem_id`` names the dossier an agent run is working on, if any; it is recorded
+    as provenance on verifier submissions. ``None`` (the default, and what every
+    non-``prove`` entry point passes) means the submission belongs to no campaign.
+    """
     if config is None:
         return
     lit = config.tools.literature
@@ -1358,4 +1395,4 @@ def register_research_tools(registry, root: Path, ot_dir: Path, config) -> None:
     registry.register(ExpNewTool(ot_dir))
     registry.register(ExpRunTool(ot_dir))
     if enabled_verifier_backends(config):
-        registry.register(ProofSubmitTool(ot_dir, config))
+        registry.register(ProofSubmitTool(ot_dir, config, problem_id=problem_id))

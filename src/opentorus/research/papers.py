@@ -515,10 +515,26 @@ def acquire_paper(
             license=resolution.license,
         )
 
+    from opentorus.research.sources.base import SourceError
+
+    data: bytes | None = None
+    fetch_note: str | None = None
     if resolution.accessible and resolution.pdf_url:
         if egress is not None:
             egress.authorize(resolution.pdf_url)
-        data = download(resolution.pdf_url)
+        try:
+            data = download(resolution.pdf_url)
+        except SourceError as exc:
+            # The resolver only decides that a PDF *should* exist; the fetch can still
+            # fail for an entirely legitimate record. arXiv keeps metadata and abstract
+            # for withdrawn and source-only papers but serves no PDF at all (observed:
+            # 1709.04009 — /abs/ is 200, every /pdf/ form is 404). Failing the whole
+            # acquisition there would throw away a citable record and hand the model an
+            # error for something it did not do wrong; degrade to metadata-only instead,
+            # which is exactly how paywalled sources are already handled.
+            fetch_note = f"full text not retrievable ({exc}); metadata and abstract only"
+
+    if data is not None and resolution.pdf_url:
         dest = paper_dir / "paper.pdf"
         dest.write_bytes(data)
         paper.local_path = str(dest.relative_to(ot_dir))
@@ -528,7 +544,7 @@ def acquire_paper(
         paper.access_note = f"full text retrieved via {resolution.resolver}"
     else:
         paper.full_text_accessible = False
-        paper.access_note = resolution.note or "full text not accessible"
+        paper.access_note = fetch_note or resolution.note or "full text not accessible"
 
     if record.abstract:
         abstract_path = paper_dir / "abstract.txt"
