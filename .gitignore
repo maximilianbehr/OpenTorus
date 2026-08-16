@@ -247,8 +247,14 @@ examples/*/*.py
 # here is referenced by a driver script or ships as part of a sample dossier:
 !examples/matrix-functions/notes.md
 !examples/simons-eigenvalue-problems/notes.md
-!examples/matrix-functions/scripts/
 !examples/simons-eigenvalue-problems/scripts/
+# matrix-functions bundles exactly one input script, so un-ignoring the whole
+# directory was too coarse: five agent-written retry scripts from a later run
+# (test_nonmonotonic, _v2, _v3, …) landed in it and were offered for commit.
+# Re-include the directory, re-exclude its contents, name the one tracked input.
+!examples/matrix-functions/scripts/
+examples/matrix-functions/scripts/*
+!examples/matrix-functions/scripts/restart_experiment.py
 !examples/nystrom-submodularity/sample-output/
 
 # Agent output written into an example workspace during a run. Drivers generate
