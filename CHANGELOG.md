@@ -52,6 +52,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   answered "No PAPER-002 … call paper_list or paper_fetch first" while the paper sat in
   the workspace. Applied to every artifact-id lookup in the tool layer; anything that is
   not `PREFIX-<digits>` still misses, and still says so.
+- **A system message that is not at the beginning never reaches Ollama.** The
+  stable-prefix ordering deliberately puts the volatile workspace state in a `system`
+  message just before the final turn, so the reusable prefix ends as late as possible.
+  Strict local chat templates reject that outright — and here "system message must be
+  at the beginning" means literally what it says, unlike the leading-run case
+  `_merge_leading_system` already handles; two independent bugs behind one string.
+  Observed as HTTP 500 on qwen3.8 and qwen3-coder about ninety seconds into a run,
+  nothing produced. Folded in the Ollama conversion rather than the context builder, so
+  no other provider and no golden transcript changes: the block attaches to the user
+  turn it was meant to inform, or to the last tool result when the next turn is a
+  tool_calls group that must not be split.
+- **The unchanged-error ladder gained a ceiling.** It only ever warned. A prove run
+  rewrote its `run_shell` command 20 times and got the identical "not available during
+  prove" block every time; the nudge fired from the fourth attempt and the model kept
+  going for another sixteen turns. The consecutive-failure ladder cannot stop this —
+  every new argument set resets its streak. Calibrated across 19 recorded workspaces
+  (median 1 argument set per error, only three exceed six, at 20, 11 and 9), the run
+  now ends honestly at eight.
 - **A rejected argument says what arrived and what shape to send.** "Argument 'gaps'
   must be a array." is ungrammatical, silent about what was sent, and shows nothing to
   correct against; a Sendov run passed its whole gap list as one newline-separated
