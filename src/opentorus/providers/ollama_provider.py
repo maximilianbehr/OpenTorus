@@ -198,11 +198,19 @@ class OllamaProvider(BaseProvider):
         deadline = time.monotonic() + self.config.model.timeout_seconds
         for raw_line in response:  # type: ignore[attr-defined]
             if time.monotonic() > deadline:
+                # Report both channels. A thinking model streams its reasoning in
+                # ``thinking`` and may never emit a single content character, so counting
+                # only ``accumulated`` said "0 characters so far" about a run that had
+                # produced six thousand characters of reasoning — the opposite diagnosis.
+                produced = (
+                    f"{len(accumulated)} characters of reply and "
+                    f"{len(accumulated_thinking)} of reasoning so far"
+                )
                 raise ProviderError(
                     f"Ollama kept streaming for {self.config.model.timeout_seconds}s "
                     f"without finishing the response for model "
-                    f"'{self.config.model.name}' ({len(accumulated)} characters so far) "
-                    "— the model is very likely stuck repeating itself. The run state is "
+                    f"'{self.config.model.name}' ({produced}) — the model is stuck "
+                    "repeating itself, or is too slow for this budget. The run state is "
                     "preserved; re-run to resume. Set model.num_predict to cap the reply, "
                     "or raise model.timeout_seconds if the model is merely slow."
                 )

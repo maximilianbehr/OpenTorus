@@ -354,9 +354,13 @@ def test_endless_stream_is_cut_off_by_the_timeout_budget() -> None:
         provider._read_stream(forever(), None)
 
     message = str(excinfo.value)
-    assert "stuck repeating itself" in message
+    assert "stuck" in message
     assert "re-run to resume" in message
     assert "model.num_predict" in message
+    # Both channels are reported: a thinking model may stream thousands of characters
+    # of reasoning and never a single content character, and saying "0 characters" about
+    # that run gives the opposite diagnosis.
+    assert "characters of reply" in message and "of reasoning" in message
 
 
 def test_a_stream_that_finishes_in_time_is_untouched() -> None:
