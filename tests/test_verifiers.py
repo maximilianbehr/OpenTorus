@@ -116,3 +116,54 @@ def test_enabled_backend_resolves_from_config(tmp_path: Path) -> None:
     proof = submit_proof(ot, config, "lean4", "theorem t : VALID := rfl")
     assert proof.available is False
     assert proof.accepted is False
+
+
+def test_verify_tempfile_readable_by_other_uids(tmp_path: Path) -> None:
+    # Containerized checkers (Docker Coq fallback) run as a different uid: with the
+    # default 0700 tempdir every submission failed with "Can't find file". The
+    # backend must make the dir/file world-readable (proof sources are not secrets —
+    # they are persisted verbatim in the PROOF-* artifact).
+    from opentorus.research.verifiers.backends import Lean4Backend
+
+    backend = Lean4Backend('sh -c \'stat -c "%a" "$(dirname "$1")"; stat -c "%a" "$1"\' sh')
+    result = backend.verify("theorem t : VALID := rfl")
+    assert result.available is True
+    assert "755" in result.output  # tempdir traversable by the container uid
+    assert "644" in result.output  # source readable by the container uid
+
+
+def test_sympy_accepts_list_and_alias_variable_specs() -> None:
+    # Benchmark finding: models write `vars` as a bare list of names, or use the
+    # `variables` alias. Both used to raise AttributeError inside the backend,
+    # which reached the model as an internal traceback (19 lost submissions).
+    import json
+
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    v = SymPyVerifier()
+    identity = {"lhs": "(a+b)*(a-b)", "rhs": "a*a - b*b", "relation": "eq"}
+
+    for spec in (
+        {"vars": {"a": "real", "b": "real"}},  # documented object form
+        {"vars": ["a", "b"]},  # bare list of names
+        {"variables": ["a", "b"]},  # alias, list
+        {"variables": {"a": "real"}},  # alias, object
+        {},  # omitted entirely
+    ):
+        result = v.verify(json.dumps({**identity, **spec}))
+        assert result.accepted is True, spec
+
+    # A nonsense spec must not raise: it degrades to plain symbols and still verifies.
+    assert v.verify(json.dumps({**identity, "vars": "a,b"})).accepted is True
+
+
+def test_sympy_never_raises_on_malformed_certificates() -> None:
+    import json
+
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    v = SymPyVerifier()
+    for bad in ("not json", json.dumps([1, 2]), json.dumps({"lhs": "a"})):
+        result = v.verify(bad)  # must return, never raise
+        assert result.accepted is False
+        assert result.output

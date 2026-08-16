@@ -22,9 +22,12 @@ The script picks, in order:
 2. **host `lake` with `LEAN_PROJECT`** pointing to a Mathlib-enabled Lean project —
    `lean_command` becomes `lake --dir $LEAN_PROJECT env lean`;
 3. **Docker fallback** — containerized Coq via `coqorg/coq:8.20`, with `/tmp` (and
-   `$TMPDIR`) mounted so the verifier's temp file is visible in the container. Verified
-   working: `docker run --rm -v /tmp:/tmp coqorg/coq:8.20 coqc <file>` accepts a `ring`
-   proof out of the box.
+   `$TMPDIR`) mounted so the verifier's temp file is visible in the container. The
+   command is `coqtop -batch -load-vernac-source`, not `coqc`: batch-loading *checks*
+   without compiling, so it needs read access only. `coqc` writes `proof.vo`/`.glob`
+   next to the source, and the container uid cannot write into the host-owned temp
+   dir — that broke every submission in the first benchmark wave. Verified end to end:
+   a valid `ring` lemma is ACCEPTED, a false one REJECTED with the exact error line.
 
 ## Expected honest outcome
 

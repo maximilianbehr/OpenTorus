@@ -62,7 +62,14 @@ class SymPyVerifier:
         if relation not in _RELATIONS:
             return self._inconclusive(f"unknown relation '{relation}'; valid: {sorted(_RELATIONS)}")
 
-        symbols = self._symbols(sp, cert.get("vars") or {})
+        # Models write the variable spec as `vars` or `variables`, and as either a
+        # name -> kind object or a bare list of names. All four shapes are accepted:
+        # a rejected certificate must teach the format, never crash (a list used to
+        # raise AttributeError, which reached the model as an internal traceback).
+        spec = cert.get("vars")
+        if spec is None:
+            spec = cert.get("variables")
+        symbols = self._symbols(sp, spec or {})
         try:
             lhs = sp.sympify(cert["lhs"], locals=symbols)
             rhs = sp.sympify(cert["rhs"], locals=symbols)
@@ -76,8 +83,13 @@ class SymPyVerifier:
 
         return self._decide(sp, relation, diff)
 
-    def _symbols(self, sp, vars_spec: dict) -> dict:  # noqa: ANN001
+    def _symbols(self, sp, vars_spec) -> dict:  # noqa: ANN001
         out: dict = {}
+        if isinstance(vars_spec, (list, tuple, set)):
+            # A bare list of names means "plain symbols, no assumptions".
+            vars_spec = {str(n): "" for n in vars_spec}
+        if not isinstance(vars_spec, dict):
+            return out
         for name, kind in vars_spec.items():
             assumptions = {}
             k = str(kind).lower()

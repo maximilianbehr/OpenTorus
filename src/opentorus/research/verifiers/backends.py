@@ -53,6 +53,12 @@ class _CommandBackend:
         with tempfile.TemporaryDirectory(prefix="opentorus-proof-") as tmp:
             src = Path(tmp) / f"proof{self.suffix}"
             src.write_text(source, encoding="utf-8")
+            # Deliberately world-readable: containerized checkers (the Docker Coq
+            # fallback) run as a different uid and cannot traverse the default 0700
+            # tempdir — every submission failed with "Can't find file". Proof sources
+            # are not sensitive: they are persisted verbatim in the PROOF-* artifact.
+            Path(tmp).chmod(0o755)
+            src.chmod(0o644)
             result = run_shell(f"{self.command} {shlex.quote(str(src))}", timeout=self.timeout)
         output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()
         # A timeout is "the checker gave up", not "the proof is wrong": report it as

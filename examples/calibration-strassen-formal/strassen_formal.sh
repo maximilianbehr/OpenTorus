@@ -33,7 +33,7 @@ opentorus init
 
 # --- 2. Model & agent configuration -----------------------------------------
 opentorus config set model.provider ollama
-opentorus config set model.name "${OPENTORUS_MODEL:-muse-glimmer:30b}"
+opentorus config set model.name "${OPENTORUS_MODEL:-gemma4:31b}"
 opentorus config set model.base_url "${OPENTORUS_BASE_URL:-http://localhost:11434}"
 opentorus config set model.timeout_seconds 2400
 opentorus config set agent.style autonomous
@@ -56,8 +56,13 @@ elif command -v docker >/dev/null 2>&1; then
   if [ -n "${TMPDIR:-}" ] && [ "${TMPDIR}" != "/tmp" ]; then
     MOUNTS="${MOUNTS} -v ${TMPDIR}:${TMPDIR}"
   fi
+  # `coqtop -batch -load-vernac-source` CHECKS without compiling: coqc would write
+  # proof.vo/.glob next to the source, and the container's uid cannot write into the
+  # host-owned temp dir (every submission failed "Permission denied"). Batch-loading
+  # needs read access only, and still exits non-zero on a real proof error.
   opentorus config set tools.verifiers.coq true
-  opentorus config set tools.verifiers.coq_command "docker run --rm ${MOUNTS} coqorg/coq:8.20 coqc"
+  opentorus config set tools.verifiers.coq_command \
+    "docker run --rm ${MOUNTS} coqorg/coq:8.20 coqtop -batch -load-vernac-source"
   BACKEND=coq
 else
   echo "ERROR: no formal backend available. Install coqc, provide lake + LEAN_PROJECT" >&2

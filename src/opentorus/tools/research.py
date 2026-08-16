@@ -1129,6 +1129,19 @@ def enabled_verifier_backends(config) -> list[str]:
     return names
 
 
+# Minimal VALID certificate per JSON-certificate backend. Injected verbatim into
+# rejection/inconclusive tool results: benchmark runs showed models reliably read
+# and act on error feedback but skim tool descriptions — two capable models each
+# submitted malformed certificates and then switched backends instead of fixing
+# the shape, because the error never showed what a valid one looks like.
+_CERTIFICATE_EXAMPLES = {
+    "sympy": '{"lhs": "sin(x)**2 + cos(x)**2", "rhs": "1", "relation": "eq", '
+    '"vars": {"x": "real"}}',
+    "interval": '{"variables": {"x": [1.0, 2.0]}, "expression": "x*x - 1", '
+    '"relation": ">=", "bound": 0.0, "precision": 50}',
+}
+
+
 class ProofSubmitTool(Tool):
     name = "proof_submit"
     input_schema: dict = {
@@ -1166,7 +1179,11 @@ class ProofSubmitTool(Tool):
             "targeting a claim adds a 'validates' graph edge. On REJECTED, fix the source "
             "using the returned verifier output and call proof_submit again — rejected "
             "attempts are preserved, never overwritten. Only an accepted proof_submit is "
-            f"machine-checked; proof_write never is. Enabled backends: {backends}."
+            f"machine-checked; proof_write never is. Enabled backends: {backends}. "
+            "Source format: lean4/coq take a complete source file; smt takes SMT-LIB 2; "
+            "sympy/interval take a JSON certificate (sympy keys: lhs, rhs, "
+            "relation=eq|ne|le|lt|ge|gt, vars; interval keys: variables, expression, "
+            "relation=<|<=|>|>=, bound) — a rejected call shows a full valid example."
             + ex(backend="smt", source="(assert (> 1 2))\n(check-sat)", claim_id="CLAIM-0001")
         )
 
@@ -1200,10 +1217,36 @@ class ProofSubmitTool(Tool):
             )
         except OpenTorusError as exc:
             return self.fail(call, str(exc))
+        except Exception as exc:  # noqa: BLE001 — a backend defect must teach, not leak
+            # A verifier crashing on an unexpected certificate shape used to surface as
+            # "Tool proof_submit failed: 'list' object has no attribute 'items'" — an
+            # internal message the model cannot act on. 19 submissions across the model
+            # benchmark died that way. Report it as a malformed-input rejection and let
+            # the schema example below do the teaching.
+            example = _CERTIFICATE_EXAMPLES.get(backend)
+            hint = f"\n\nA minimal VALID certificate for '{backend}':\n{example}" if example else ""
+            return self.fail(
+                call,
+                f"The '{backend}' verifier could not process this submission "
+                f"({type(exc).__name__}: {exc}). Treat it as a malformed source/certificate, "
+                f"fix the shape, and call proof_submit again.{hint}",
+                backend=backend,
+            )
 
         output = (attempt.output or "").strip()
         if len(output) > 4000:
             output = output[:4000] + "\n… (output truncated)"
+        example = _CERTIFICATE_EXAMPLES.get(attempt.backend)
+        schema_hint = (
+            (
+                f"\n\nExpected certificate format for '{attempt.backend}' — a minimal "
+                f"VALID example:\n{example}\n"
+                "Adapt this exact JSON shape to your claim and resubmit with the same "
+                "backend; do not switch backends because of a format error."
+            )
+            if example and not attempt.accepted and attempt.available
+            else ""
+        )
         meta = {
             "proof_id": attempt.id,
             "backend": attempt.backend,
@@ -1237,7 +1280,7 @@ class ProofSubmitTool(Tool):
                 call,
                 f"{attempt.id} INCONCLUSIVE on {attempt.backend} (timeout, crash, or "
                 "unparseable source — NOT a mathematical rejection). Simplify or split "
-                "the goal, then resubmit.\n\n" + output,
+                "the goal, then resubmit.\n\n" + output + schema_hint,
                 **meta,
             )
         if attempt.outcome == "sat":
@@ -1252,7 +1295,7 @@ class ProofSubmitTool(Tool):
         return self.fail(
             call,
             f"{attempt.id} REJECTED by {attempt.backend}. Fix the source using this "
-            "verifier output and call proof_submit again:\n\n" + output,
+            "verifier output and call proof_submit again:\n\n" + output + schema_hint,
             **meta,
         )
 

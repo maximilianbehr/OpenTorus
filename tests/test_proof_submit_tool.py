@@ -193,3 +193,24 @@ def test_prove_prompt_mentions_formal_step_only_when_enabled() -> None:
     formal = build_prove_prompt("PROBLEM-0001", formal_backends=["lean4", "smt"])
     assert "proof_submit" in formal
     assert "lean4, smt" in formal
+
+
+def test_rejection_teaches_certificate_format_by_example(tmp_path: Path) -> None:
+    # Benchmark finding (wave 1): both capable models submitted malformed
+    # certificates and then SWITCHED BACKENDS, because the rejection never showed
+    # a valid shape. The failure text must carry a minimal valid example for the
+    # JSON-certificate backends and tell the model to stay on the same backend.
+    ot = _ot(tmp_path)
+
+    class _SympyStub(StubVerifier):
+        name = "sympy"
+
+    tool = ProofSubmitTool(ot, default_config(), resolver=lambda name: _SympyStub())
+    result = tool.run(_call(backend="sympy", source="not json"))
+    assert result.ok is False
+    assert '"lhs"' in result.content and '"relation"' in result.content
+    assert "do not switch backends" in result.content
+
+    # Non-certificate backends (stub name) keep their original, un-suffixed text.
+    plain = _tool(ot).run(_call(backend="lean4", source="theorem t : nonsense"))
+    assert "minimal VALID example" not in plain.content
