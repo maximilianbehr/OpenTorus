@@ -34,6 +34,48 @@ _ALLOWED_FUNCS = {"sqrt", "exp", "log", "sin", "cos", "tan", "abs"}
 _RELATIONS = {"<", "<=", ">", ">="}
 
 
+_BOX_ALIASES = ("variables", "domain", "box", "boxes", "bounds", "intervals", "vars")
+
+
+def _variable_boxes(cert: dict) -> dict | None:
+    """Read the variable boxes out of a certificate, tolerating the usual shapes.
+
+    Models split this in ways the documented form does not cover — most often the
+    names in ``variables`` and the boxes in a separate ``domain`` map::
+
+        {"variables": ["x"], "domain": {"x": [1, 2]}}
+
+    Observed live: a model submitted exactly that twice in a row, *after* being
+    shown a valid example, because its own layout is perfectly reasonable. So we
+    merge instead of rejecting: any alias that maps name -> [lo, hi] contributes,
+    and a bare list of names is satisfied from the other aliases. Returns ``None``
+    only when no boxes can be resolved at all — that stays an honest rejection.
+    """
+    boxes: dict = {}
+    names: list[str] = []
+    for key in _BOX_ALIASES:
+        value = cert.get(key)
+        if isinstance(value, dict):
+            for name, box in value.items():
+                if isinstance(box, (list, tuple)) and len(box) == 2:
+                    boxes.setdefault(str(name), list(box))
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str):
+                    names.append(item)
+                # [["x", 1, 2], ...] and [["x", [1, 2]], ...]
+                elif isinstance(item, (list, tuple)) and len(item) in (2, 3):
+                    name = str(item[0])
+                    rest = item[1] if len(item) == 2 else item[1:]
+                    if isinstance(rest, (list, tuple)) and len(rest) == 2:
+                        boxes.setdefault(name, list(rest))
+    if not boxes:
+        return None
+    if names and not all(n in boxes for n in names):
+        return None  # names given but no boxes for them — say so rather than guess
+    return boxes
+
+
 class IntervalVerifier:
     """Rigorous validated-numerics backend exposed through the verifier protocol."""
 
@@ -73,6 +115,11 @@ class IntervalVerifier:
         return VerificationResult(
             backend=self.name,
             accepted=False,
+            # A certificate this backend cannot read was never checked. Marking it
+            # rejected would tell the model its mathematics is wrong when the real
+            # problem is the JSON shape (the sympy backend already reports it this
+            # way; the two backends must not disagree about what a bad input means).
+            inconclusive=True,
             available=True,
             output=f"invalid certificate: {message}",
         )
@@ -86,9 +133,13 @@ class IntervalVerifier:
         expression = cert.get("expression")
         if not isinstance(expression, str) or not expression.strip():
             return self._invalid("'expression' must be a non-empty string")
-        variables = cert.get("variables", {})
-        if not isinstance(variables, dict):
-            return self._invalid("'variables' must be an object of name -> [lo, hi]")
+        variables = _variable_boxes(cert)
+        if variables is None:
+            return self._invalid(
+                "could not read the variable boxes: give them as an object of "
+                "name -> [lo, hi] under 'variables' (or list the names in "
+                "'variables' and their boxes in 'domain'/'box'/'bounds')"
+            )
         try:
             bound = float(cert.get("bound", 0.0))
         except (TypeError, ValueError):
@@ -135,6 +186,11 @@ class IntervalVerifier:
             backend=self.name,
             backend_version=self.version(),
             accepted=bool(accepted),
+            # Interval arithmetic is one-sided: an enclosure that straddles the bound
+            # fails to *prove* the inequality but does not *disprove* it — the box may
+            # simply be too coarse. Reporting that as REJECTED told the model a true
+            # inequality was false. (The output text already said "refine the box".)
+            inconclusive=not accepted,
             available=True,
             output=output,
             outcome=verdict.lower(),

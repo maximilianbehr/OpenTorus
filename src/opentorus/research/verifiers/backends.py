@@ -12,7 +12,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from opentorus.research.verifiers.base import VerificationResult
+from opentorus.research.verifiers.base import VerificationResult, ran_at_all
 from opentorus.tools.shell import run_shell
 
 
@@ -72,6 +72,22 @@ class _CommandBackend:
                 inconclusive=True,
                 output=output
                 or f"Timed out after {self.timeout}s (inconclusive, not a rejection).",
+                available=True,
+            )
+        # Likewise a crash: a prover killed by a signal (SIGSEGV, or SIGKILL from the
+        # OOM killer on a large Mathlib elaboration) or a launcher that could not start
+        # it at all judged nothing. Only a prover that ran and exited nonzero has
+        # actually rejected the proof.
+        if not ran_at_all(result.exit_code):
+            return VerificationResult(
+                backend=self.name,
+                backend_version=self.version(),
+                accepted=False,
+                inconclusive=True,
+                output=(
+                    f"'{self.name}' did not run to completion (exit {result.exit_code}); "
+                    f"this is inconclusive, not a rejection.\n{output}"
+                ).strip(),
                 available=True,
             )
         return VerificationResult(

@@ -167,3 +167,60 @@ def test_sympy_never_raises_on_malformed_certificates() -> None:
         result = v.verify(bad)  # must return, never raise
         assert result.accepted is False
         assert result.output
+
+
+def test_interval_accepts_the_shapes_models_actually_send() -> None:
+    # Observed live: a model submitted {"variables": ["x"], "domain": {"x": [1,1]}}
+    # twice in a row, after being shown a valid example — splitting names from
+    # boxes is a reasonable layout the documented form did not cover.
+    import json
+
+    from opentorus.research.verifiers.interval import IntervalVerifier
+
+    v = IntervalVerifier()
+    base = {"expression": "x*x", "relation": ">=", "bound": 0.0}
+    for spec in (
+        {"variables": {"x": [1.0, 2.0]}},  # documented form
+        {"variables": ["x"], "domain": {"x": [1.0, 2.0]}},  # names + separate boxes
+        {"variables": ["x"], "box": {"x": [1.0, 2.0]}},
+        {"domain": {"x": [1.0, 2.0]}},  # boxes only, no 'variables' key
+        {"variables": [["x", 1.0, 2.0]]},  # list of triples
+        {"variables": [["x", [1.0, 2.0]]]},  # list of name/box pairs
+    ):
+        result = v.verify(json.dumps({**base, **spec}))
+        assert result.accepted is True, spec
+
+    # No boxes anywhere is still an honest rejection that names the expected shape.
+    missing = v.verify(json.dumps({**base, "variables": ["x"]}))
+    assert missing.accepted is False
+    assert "name -> [lo, hi]" in missing.output
+
+
+def test_sympy_inequality_in_free_variables_names_the_routes_that_work() -> None:
+    # Observed live (tensor-concentration): the model submitted a correct power-mean
+    # inequality in free variables. sympy cannot decide a universally quantified
+    # inequality by simplification, which is honest — but the old message said only
+    # "needs a constant-sign difference", leaving a true statement with no next step.
+    import json
+
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify(
+        json.dumps(
+            {
+                "lhs": "x1**2 + x2**2",
+                "rhs": "2**(1 - 2/4) * (x1**4 + x2**4)**(2/4)",
+                "relation": "le",
+                "vars": ["x1", "x2"],
+            }
+        )
+    )
+    assert result.accepted is False
+    assert result.inconclusive is True  # not a refutation of the mathematics
+    assert "x1" in result.output and "x2" in result.output  # names what is still free
+    for route in ("interval", "smt", "relation='eq'", "[GAP-n]"):
+        assert route in result.output, route
+
+    # A constant comparison is still decided, not deflected into the advice branch.
+    decided = SymPyVerifier().verify(json.dumps({"lhs": "2**10", "rhs": "1000", "relation": "gt"}))
+    assert decided.accepted is True

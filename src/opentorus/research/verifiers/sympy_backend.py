@@ -109,10 +109,25 @@ class SymPyVerifier:
             if is_zero:
                 return self._rejected("lhs - rhs simplifies to 0, contradicting lhs != rhs.")
             return self._inconclusive("inequation of expressions is not settled symbolically.")
-        # Order relations need a provably constant sign of the difference.
+        # Order relations need a provably constant sign of the difference. A genuine
+        # inequality in free variables ("for all x1, x2: …") is not decided by
+        # simplification, and saying only that leaves the model stuck with a correct
+        # statement and no route — observed live on a power-mean inequality. Name the
+        # routes that do exist for this shape.
         if not getattr(diff, "is_number", False):
+            free = sorted(str(s) for s in getattr(diff, "free_symbols", set()))
+            names = ", ".join(free[:6]) or "the free variables"
             return self._inconclusive(
-                f"order relation needs a constant-sign difference; got non-constant {diff}."
+                f"order relation needs a constant-sign difference; lhs - rhs = {diff} "
+                f"still depends on {names}. This backend decides identities and "
+                "constant comparisons, not universally quantified inequalities. Routes "
+                "that do work: (a) prove it on a bounded box with "
+                "proof_submit(backend='interval') — rigorous, but only for that box; "
+                "(b) reduce it to an identity (e.g. show the difference equals an "
+                "explicitly non-negative expression, then submit THAT as relation='eq'); "
+                "(c) for quantifier-free arithmetic over the reals, submit the negation "
+                "to proof_submit(backend='smt') and get 'unsat'; (d) if none apply, "
+                "record it as a [GAP-n] rather than as verified."
             )
         try:
             ok = {
