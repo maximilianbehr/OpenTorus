@@ -137,3 +137,46 @@ def test_repeat_missing_read_file_is_blocked(tmp_path: Path) -> None:
     tool_text = "\n".join(m.content for m in messages if m.role == "tool")
     assert "Not a file" in tool_text or "Blocked repeat read_file" in tool_text
     assert tool_text.count("src/algorithms.py") >= 1
+
+
+class AlwaysRereadProvider(BaseProvider):
+    """A model that reads the same file forever instead of writing anything."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, messages, tools=None) -> ProviderResponse:
+        self.calls += 1
+        return ProviderResponse(
+            kind="tool_call", content="", tool_name="read_file", tool_args={"path": "notes.md"}
+        )
+
+
+def test_endless_rereading_stops_being_free(tmp_path: Path) -> None:
+    """A cache re-serve is logged ok=True, so no other guard can see the loop.
+
+    Two recorded runs re-read one and the same statement.md 24 and 25 times, each
+    costing a full model round-trip while nothing changed. The first few re-serves stay
+    (a compacted-away file must be recoverable); past that the call has to fail so the
+    identical-failure tracker takes over.
+    """
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    (tmp_path / "notes.md").write_text("SENTINEL", encoding="utf-8")
+    registry = build_default_registry(tmp_path, ot, default_config())
+    config = default_config()
+    config.permissions.mode = "trusted"
+    loop = AgentLoop(tmp_path, ot, AlwaysRereadProvider(), registry, config, max_steps=20)
+    loop.run("read notes forever")
+
+    from opentorus.agent.session import read_messages
+
+    tool_msgs = [m.content for m in read_messages(ot) if m.role == "tool"]
+    served = [c for c in tool_msgs if "re-showing the cached content" in c]
+    refused = [c for c in tool_msgs if "the content has not changed" in c]
+
+    assert len(served) == 4, f"expected 4 cached re-serves, got {len(served)}"
+    assert refused, "the loop must eventually stop re-serving"
+    assert "produce the deliverable" in refused[0]
+    # The run ends on its own rather than grinding to the step ceiling.
+    assert len(tool_msgs) < 20

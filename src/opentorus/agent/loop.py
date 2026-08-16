@@ -137,6 +137,17 @@ _REPEAT_GUARD_EXEMPT = frozenset({"lit_search", "paper_fetch", "paper_list", "st
 
 _REPEAT_GUARD_TOOLS = frozenset({"glob_files", "read_file", "list_files", "status", "paper_read"})
 
+# A re-read of an already-read path is served from the read cache and logged ok=True,
+# so that a compacted-away file can be recovered. That makes it look like progress to
+# every other guard: the chat-only streak resets, and neither failure tracker sees it
+# because nothing failed. It was also unbounded — two runs re-read one and the same
+# statement.md 24 and 25 times, burning a full model round-trip each time while doing
+# nothing. Half of the recorded workspaces (12 of 24) exceed three repeats; the ordinary
+# ones stop at five calls, the pathological ones run to 25. So the first few re-serves
+# stay, and past that the call fails instead — which finally feeds the identical-failure
+# tracker and ends the run honestly.
+_MAX_CACHED_RESERVES = 4
+
 # Search-spam nudge: three real runs died in a loop of consecutive lit_search /
 # web_search calls that never fetched or read anything (11 searches in one run).
 # Search tools are rightly exempt from the repeat guards (results change), so from
@@ -330,6 +341,7 @@ class AgentLoop:
         # Content of successful read_file calls, so a repeated read can be re-served
         # (its content may have been compacted out of context) instead of blocked.
         self._read_cache: dict[str, str] = {}
+        self._reserve_counts: dict[str, int] = {}
         # Tool calls the model produced on its own, excluding bootstrap fallbacks.
         # Lets callers detect a model that never tool-calls (vs. one that hiccuped).
         self.model_tool_calls = 0
@@ -704,7 +716,10 @@ class AgentLoop:
         self._last_tool_ok = False
         if name in _REPEAT_GUARD_EXEMPT:
             return content
-        key = f"{sig}\n{content[:2000]}"
+        # Normalized for the same reason as the unchanged-error key: a fresh artifact id,
+        # temp path or source position in the message must not split one recurring
+        # failure into a string of unique ones that no threshold can ever reach.
+        key = f"{sig}\n{_stable_error_key(content[:2000])}"
         # Run-lifetime memory, separate from the consecutive streak below. The streak
         # only ever held ONE key, so a model alternating between two failing calls —
         # A fails, B fails, A fails again — reset it every time and never tripped any
@@ -1007,18 +1022,32 @@ class AgentLoop:
             # cached content (with a nudge) rather than hard-blocking — which would
             # otherwise strand the agent, unable to recover a file it already read.
             if name in ("read_file", "paper_read") and sig in self._read_cache:
-                log_action(
-                    self.ot_dir,
-                    name,
-                    ok=True,
-                    args=args,
-                    stdout_summary="(re-served from read cache)",
+                served = self._reserve_counts.get(sig, 0) + 1
+                self._reserve_counts[sig] = served
+                if served <= _MAX_CACHED_RESERVES:
+                    log_action(
+                        self.ot_dir,
+                        name,
+                        ok=True,
+                        args=args,
+                        stdout_summary="(re-served from read cache)",
+                    )
+                    return (
+                        f"(Already read this earlier in the run; re-showing the "
+                        f"cached content — then produce the deliverable: {deliverable}.)\n\n"
+                        f"{self._read_cache[sig]}"
+                    )
+                # Deliberately free of a per-call counter: a number that ticks up would
+                # make every one of these look like a new error and blind the very
+                # streak guard that is supposed to end the loop.
+                message = (
+                    f"{name} with these arguments has already been re-served from cache "
+                    "several times and the content has not changed. Re-reading it cannot "
+                    f"move this run forward: produce the deliverable ({deliverable}), or "
+                    "if something is missing, get it with a different call."
                 )
-                return (
-                    f"(Already read this earlier in the run; re-showing the "
-                    f"cached content — then produce the deliverable: {deliverable}.)\n\n"
-                    f"{self._read_cache[sig]}"
-                )
+                log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
+                return self._note_tool_failure(name, sig, message)
             message = (
                 f"Blocked repeat {name} with the same arguments. "
                 f"Produce the deliverable now ({deliverable})."
