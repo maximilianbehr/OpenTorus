@@ -367,3 +367,60 @@ def test_a_stream_that_finishes_in_time_is_untouched() -> None:
     provider = OllamaProvider(config)
     result = provider._read_stream(iter([_chunk("hello "), _chunk("world")]), None)
     assert result.content == "hello world"
+
+
+# --- a system message that is not at the beginning ------------------------------
+
+
+def _roles(messages) -> list[str]:  # noqa: ANN001
+    return [m["role"] for m in messages]
+
+
+def test_volatile_state_before_the_final_turn_never_reaches_ollama_as_system() -> None:
+    """The stable-prefix ordering puts a system message mid-conversation on purpose.
+
+    Strict local templates reject that outright, and here the error "system message must
+    be at the beginning" means literally what it says — unlike the leading-run case
+    `_merge_leading_system` handles. Observed as HTTP 500 on qwen3.8 and qwen3-coder
+    about ninety seconds into a run, with nothing produced.
+    """
+    from opentorus.providers._convert import to_ollama_messages
+
+    built = [
+        SessionMessage(role="system", content="system prompt"),
+        SessionMessage(role="user", content="run status"),
+        SessionMessage(
+            role="assistant", content="", metadata={"tool_calls": [{"id": "c1", "name": "status"}]}
+        ),
+        SessionMessage(role="tool", content="observed", metadata={"tool_call_id": "c1"}),
+        # …and the volatile block, inserted before the final turn.
+        SessionMessage(role="system", content="Workspace context: recent actions: status(ok)"),
+        SessionMessage(role="user", content="the actual question"),
+    ]
+    out = to_ollama_messages(built)
+    roles = _roles(out)
+
+    assert [i for i, r in enumerate(roles) if r == "system"] == [0], roles
+    assert not [i for i in range(len(roles) - 1) if roles[i] == roles[i + 1]], roles
+    # The text survives, attached to the turn it belonged to, and the question ends it.
+    assert "recent actions: status(ok)" in out[-1]["content"]
+    assert out[-1]["content"].rstrip().endswith("the actual question")
+
+
+def test_a_tool_result_stays_the_last_message() -> None:
+    """When the final turn is a tool group, nothing may come after or between it."""
+    from opentorus.providers._convert import to_ollama_messages
+
+    built = [
+        SessionMessage(role="system", content="system prompt"),
+        SessionMessage(role="user", content="run status"),
+        SessionMessage(role="system", content="Workspace context: none"),
+        SessionMessage(
+            role="assistant", content="", metadata={"tool_calls": [{"id": "c1", "name": "status"}]}
+        ),
+        SessionMessage(role="tool", content="observed", metadata={"tool_call_id": "c1"}),
+    ]
+    out = to_ollama_messages(built)
+
+    assert _roles(out) == ["system", "user", "assistant", "tool"]
+    assert "Workspace context: none" in out[1]["content"]

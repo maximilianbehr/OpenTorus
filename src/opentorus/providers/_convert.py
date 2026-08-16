@@ -178,7 +178,7 @@ def to_ollama_messages(messages: list[SessionMessage]) -> list[dict]:
             if name:
                 entry["tool_name"] = name
             out.append(entry)
-    return _merge_leading_system(out)
+    return _merge_leading_system(_fold_stray_system(out))
 
 
 def _merge_leading_system(messages: list[dict]) -> list[dict]:
@@ -202,6 +202,68 @@ def _merge_leading_system(messages: list[dict]) -> list[dict]:
         "content": "\n\n".join(m.get("content") or "" for m in messages[:lead]).strip(),
     }
     return [merged, *messages[lead:]]
+
+
+def _fold_stray_system(messages: list[dict]) -> list[dict]:
+    """Fold every system message that is not in the leading run into its neighbour.
+
+    The stable-prefix ordering deliberately puts the volatile workspace state in a
+    ``system`` message just before the final turn, so the reusable prefix ends as late
+    as possible. Strict local chat templates reject that outright — and here the error
+    "system message must be at the beginning" means exactly what it says, unlike the
+    leading-run case that `_merge_leading_system` handles. Observed as HTTP 500 on
+    qwen3.8 and qwen3-coder about ninety seconds into a run, with nothing produced.
+
+    Folding keeps the text where it was — attached to the following user turn, or to the
+    preceding tool result when the next turn is a tool_calls group that must not be split
+    — so recency, prefix stability and pairing all survive. Only the Ollama payload is
+    reshaped; every other provider still sees the message list as built.
+    """
+    lead = 0
+    while lead < len(messages) and messages[lead].get("role") == "system":
+        lead += 1
+    if not any(m.get("role") == "system" for m in messages[lead:]):
+        return messages
+
+    rest = messages[lead:]
+    folded = list(messages[:lead])
+    for index, message in enumerate(rest):
+        if message.get("role") != "system":
+            folded.append(message)
+            continue
+        block = (message.get("content") or "").strip()
+        if not block:
+            continue
+        following = rest[index + 1] if index + 1 < len(rest) else None
+        if following is not None and following.get("role") == "user":
+            # Preferred home: the turn it was meant to inform. _merge_adjacent_users
+            # below collapses the two into one user message.
+            folded.append({"role": "user", "content": block})
+        elif folded and folded[-1].get("role") == "tool":
+            # The next turn is a tool_calls group (or the list ends here) — a user
+            # message would split the call from its results, so attach it to the last
+            # result instead, which also keeps that result the message being answered.
+            folded[-1] = {
+                **folded[-1],
+                "content": f"{folded[-1].get('content') or ''}\n\n---\n{block}",
+            }
+        else:
+            folded.append({"role": "user", "content": block})
+    return _merge_adjacent_users(folded)
+
+
+def _merge_adjacent_users(messages: list[dict]) -> list[dict]:
+    """Collapse consecutive user messages — a run of one role breaks strict templates."""
+    out: list[dict] = []
+    for message in messages:
+        if out and out[-1].get("role") == "user" and message.get("role") == "user":
+            out[-1] = {
+                **out[-1],
+                "content": f"{out[-1].get('content') or ''}\n\n{message.get('content') or ''}",
+            }
+            continue
+        out.append(message)
+    return out
 
 
 def to_function_tools(specs: list[dict]) -> list[dict]:
