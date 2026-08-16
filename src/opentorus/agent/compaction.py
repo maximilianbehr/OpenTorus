@@ -36,6 +36,12 @@ _COMPACTION_SUMMARY_PREFIX = (
     "Summary of earlier conversation (compacted to stay within the token budget):"
 )
 
+# A failed attempt is only useful if the model can tell *what* went wrong, so keep
+# enough of the error to be actionable — but a compaction summary that reproduces
+# whole tracebacks defeats its own purpose.
+_FAILURE_DETAIL_CHARS = 220
+_MAX_FAILURES_KEPT = 12
+
 _LLM_SUMMARY_SYSTEM = """\
 You compact conversation history for a research engineering agent.
 Preserve: user goals, decisions, artifact IDs (PAPER-*, CLAIM-*, PROBLEM-*),
@@ -99,6 +105,27 @@ def _format_turns_for_llm(messages: list[SessionMessage]) -> str:
     return "\n".join(lines)
 
 
+def _failed_attempts(messages: list[SessionMessage]) -> list[str]:
+    """Failed tool calls in a compacted window, kept with their error text.
+
+    "Failed attempts are first-class" is one of the project's invariants, and both the
+    loop and the prove loop tell the user in so many words that a failing call and its
+    error "are preserved in the session log". Compaction rewrites session.jsonl, so
+    without this the promise was false the moment a run got long enough to compact:
+    a dead end survived as the bare word ``proof_write`` in a list of tool names, and
+    the agent was free to walk into it again.
+    """
+    out: list[str] = []
+    for message in messages:
+        if message.role != "tool" or message.metadata.get("ok", True):
+            continue
+        name = str(message.metadata.get("name", "tool"))
+        error = " ".join(message.content.split())
+        out.append(f"{name} → {error[:_FAILURE_DETAIL_CHARS]}")
+    # Same tool, same error, many times over is one dead end, not twenty.
+    return list(dict.fromkeys(out))
+
+
 def _summarize_turns(messages: list[SessionMessage]) -> str:
     goals = [m.content for m in messages if m.role == "user" and m.content.strip()]
     tools: list[str] = []
@@ -122,6 +149,17 @@ def _summarize_turns(messages: list[SessionMessage]) -> str:
         lines.append("- Tools used: " + ", ".join(dict.fromkeys(tools)))
     if responses:
         lines.append("- Key responses: " + " | ".join(r[:160] for r in responses[-3:]))
+    failures = _failed_attempts(messages)
+    if failures:
+        lines.append(
+            "- Failed attempts (do NOT repeat these; they are recorded, not undone):\n  - "
+            + "\n  - ".join(failures[:_MAX_FAILURES_KEPT])
+        )
+        if len(failures) > _MAX_FAILURES_KEPT:
+            lines.append(
+                f"  - …and {len(failures) - _MAX_FAILURES_KEPT} further distinct failures "
+                "(see .opentorus/actions.jsonl)."
+            )
     return "\n".join(lines)
 
 

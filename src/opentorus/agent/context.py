@@ -162,14 +162,16 @@ def build_messages(
     """
     from opentorus.agent.prompts import build_system_prompt, build_task_execution_prompt
 
+    # Ordering matters for cost, not just for clarity. Everything below is re-sent on
+    # every model step, and a local server can only reuse its KV cache for the prompt
+    # prefix it has already seen. The workspace inventory used to sit at position 2 —
+    # it changes almost every turn, so the shared prefix ended a few hundred tokens in
+    # and the whole history behind it was re-evaluated each step. Measured on a real
+    # run (examples/matrix-spencer): 1,263,204 prompt tokens against 51,534 completion
+    # tokens, with prompt_eval_count climbing 8k -> 30k in lockstep with latency, i.e.
+    # no reuse at all. So: stable blocks first, volatile state last.
     system_prompt = build_system_prompt(config.project.mode, config.agent.style)
-    messages: list[SessionMessage] = [
-        SessionMessage(role="system", content=system_prompt),
-        SessionMessage(
-            role="system",
-            content=build_context_summary(root, ot_dir, config, tool_names),
-        ),
-    ]
+    messages: list[SessionMessage] = [SessionMessage(role="system", content=system_prompt)]
     from opentorus.agent.prompts import TOOL_ROUTING_GUIDE
 
     messages.append(SessionMessage(role="system", content=TOOL_ROUTING_GUIDE))
@@ -205,17 +207,86 @@ def build_messages(
             )
         )
 
+    inventory = build_context_summary(root, ot_dir, config, tool_names)
     selected = select_relevant(ot_dir, config, latest_user_query(ot_dir))
-    if selected:
-        messages.append(SessionMessage(role="system", content=format_relevant(selected)))
+    retrieval = format_relevant(selected) if selected else None
 
+    if not config.context.stable_prefix:
+        # Legacy ordering, kept verbatim so the change can be switched off if a model
+        # behaves differently with the state at the end.
+        messages.insert(1, SessionMessage(role="system", content=inventory))
+        if retrieval:
+            messages.append(SessionMessage(role="system", content=retrieval))
+        _extend_with_history(messages, ot_dir, config, include_history)
+        if recovery_hint:
+            messages.append(SessionMessage(role="user", content=recovery_hint))
+        return _finalize(ot_dir, config, messages, provider)
+
+    _extend_with_history(messages, ot_dir, config, include_history)
+
+    # Volatile state goes behind the history, but *not* dead last: the final turn is
+    # what the model is answering, and burying it under a page of inventory both shifts
+    # its salience and would split a tool_call/tool_result pair (which the OpenAI and
+    # Anthropic APIs reject). Inserting it just before the final turn keeps the answer
+    # target intact while still making everything ahead of it a stable, reusable prefix.
+    # Merged into ONE message because a run of consecutive same-role messages is what
+    # strict local chat templates choke on — and for the same reason it is a ``system``
+    # message: inserted before a user turn, a ``user`` block would produce exactly that
+    # forbidden pair. The trade-off is Anthropic, which hoists every system message into
+    # the top-level system field and so puts this back in front; that costs nothing
+    # today, because Anthropic prefix caching needs explicit cache_control breakpoints
+    # rather than message order, and the measured problem is the local Ollama path.
+    volatile = [part for part in (inventory, retrieval) if part]
+    if volatile:
+        messages.insert(
+            _final_turn_start(messages),
+            SessionMessage(role="system", content="\n\n".join(volatile)),
+        )
+    # The recovery hint stays last: it tells the model what to do *now*.
+    if recovery_hint:
+        messages.append(SessionMessage(role="user", content=recovery_hint))
+    return _finalize(ot_dir, config, messages, provider)
+
+
+def _final_turn_start(messages: list[SessionMessage]) -> int:
+    """Index of the first message of the final turn — where volatile state is inserted.
+
+    The final turn is either a lone user message or an assistant ``tool_calls`` message
+    followed by its ``tool`` results. Those results must stay adjacent to the call that
+    produced them, so the insertion point is *before* the whole group, never inside it.
+    """
+    idx = len(messages)
+    while idx > 0 and messages[idx - 1].role == "tool":
+        idx -= 1
+    if (
+        idx > 0
+        and messages[idx - 1].role == "assistant"
+        and messages[idx - 1].metadata.get("tool_calls")
+    ):
+        return idx - 1
+    if idx == len(messages) and idx > 0 and messages[idx - 1].role == "user":
+        return idx - 1
+    return idx
+
+
+def _extend_with_history(
+    messages: list[SessionMessage],
+    ot_dir: Path,
+    config: Config,
+    include_history: int | None,
+) -> None:
     turns = include_history if include_history is not None else config.context.history_turns
     history = _sanitize_session_history(read_messages(ot_dir))
     if history:
         messages.extend(history[-turns:])
-    if recovery_hint:
-        messages.append(SessionMessage(role="user", content=recovery_hint))
 
+
+def _finalize(
+    ot_dir: Path,
+    config: Config,
+    messages: list[SessionMessage],
+    provider,  # noqa: ANN001 - BaseProvider (lazy import)
+) -> list[SessionMessage]:
     from opentorus.privacy import redact_for_provider
 
     messages = redact_for_provider(messages, config.privacy.allow_sensitive_context)

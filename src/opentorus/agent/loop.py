@@ -61,6 +61,10 @@ _MAX_CHAT_ONLY_STALL = 8
 # to the call, a different error, or a success of that call resets it.
 _IDENTICAL_FAILURE_WARN = 3
 _MAX_IDENTICAL_FAILURES = 6
+# Distinct argument sets that may produce one identical error before the model is told
+# the arguments are not what is wrong. Calibrated on the recorded runs: the two
+# pathological ones reach 11 and 9, every healthy one reaches 1.
+_MAX_UNCHANGED_ERROR_ATTEMPTS = 4
 
 _PROVE_RECOVERY_HINT = (
     "This prove session requires a deliverable tool call — not a chat reply. "
@@ -116,6 +120,27 @@ _REPEAT_GUARD_TOOLS = frozenset({"glob_files", "read_file", "list_files", "statu
 _SEARCH_STREAK_TOOLS = frozenset({"lit_search", "web_search"})
 _SEARCH_STREAK_NEUTRAL = frozenset({"paper_list", "status", "memory_list"})
 _SEARCH_STREAK_WARN = 4
+
+# The streak alone measures the wrong thing. A run that goes
+# search, search, fetch, search, search, fetch … resets the counter on every fetch and
+# never trips it, while doing nothing with what it collects. Observed in a real run
+# (marcus-de-oliveira): 115 actions — 39 web_search, 33 lit_search, 31 paper_fetch, but
+# only 5 paper_read and zero proof_write. It was stopped by the no-progress window, not
+# by this guard. paper_fetch is acquisition, not processing: it puts a file on disk and
+# tells the model nothing.
+#
+# So the ratio is tracked as well: acquisition against everything substantive that is
+# not acquisition. Processing is deliberately the complement rather than a list, so a
+# newly added tool counts as work by default instead of silently inflating the ratio.
+_ACQUISITION_TOOLS = frozenset({"lit_search", "web_search", "paper_fetch", "fetch_url"})
+# Calibrated against twelve recorded runs rather than guessed. Their end-of-run ratios
+# separate cleanly: the pathological run sits at 21.2x, every healthy one between 0.2x
+# and 1.6x — so 4.0 has a wide margin on both sides. The minimum matters just as much:
+# at 12 the check also fires on three healthy runs, because early literature work is
+# legitimately acquisition-heavy before anything has been read. At 15 it fires on
+# exactly one run of the twelve, the one that collected 106 items and read 5.
+_ACQUISITION_MIN = 15
+_ACQUISITION_RATIO = 4.0
 
 
 def _tool_sig(name: str, args: dict) -> str:
@@ -196,6 +221,23 @@ class AgentLoop:
         self._pre_deliverable_gate_detail = pre_deliverable_gate_detail
         self._deliverable_complete = deliverable_complete
         self._tool_gate = tool_gate
+        # State that must be usable before (and across) run(). The streak counters
+        # below are deliberately reset per run(); these are not.
+        self.steps_run = 0
+        self._last_tool_ok = True
+        self._fail_streak = 0
+        self._fail_streak_key: str | None = None
+        self._fail_streak_tool: str | None = None
+        self._search_streak = 0
+        self._acquisition_calls = 0
+        self._processing_calls = 0
+        # (tool, error) -> the distinct argument sets that produced it. Catches a model
+        # that keeps changing the call without addressing what the error actually says.
+        self._error_signatures: dict[str, set[str]] = {}
+        # (tool, args, error) -> how often it failed, consecutive or not. Deliberately
+        # NOT reset per run(): the prove loop runs several phases against one loop, and
+        # a wall hit in the literature phase is still a wall in the proof phase.
+        self._failure_counts: dict[str, int] = {}
         # Optional caller-supplied stall detector, probed once per step like the
         # budget gate. Returning a message ends the run honestly with that text —
         # the seam that lets a phase without a deliverable yet (e.g. the prove
@@ -248,12 +290,17 @@ class AgentLoop:
         self.tools_used_this_run = []
         self._tool_sigs_ok: set[str] = set()
         self._read_fail_paths: set[str] = set()
-        # Identical-failure backstop state — see _MAX_IDENTICAL_FAILURES.
+        # Identical-failure backstop state — see _MAX_IDENTICAL_FAILURES. Declared in
+        # __init__ (so the object is usable before run()); reset here per run.
         self._fail_streak = 0
-        self._fail_streak_key: str | None = None
-        self._fail_streak_tool: str | None = None
+        self._last_tool_ok = True
+        self._fail_streak_key = None
+        self._fail_streak_tool = None
         # Consecutive lit_search/web_search calls without substantive work between.
         self._search_streak = 0
+        # Run totals behind the acquisition/processing ratio (see _ACQUISITION_RATIO).
+        self._acquisition_calls = 0
+        self._processing_calls = 0
         # Content of successful read_file calls, so a repeated read can be re-served
         # (its content may have been compacted out of context) instead of blocked.
         self._read_cache: dict[str, str] = {}
@@ -292,6 +339,12 @@ class AgentLoop:
             if budget_stop is not None:
                 self._append(SessionMessage(role="assistant", content=budget_stop))
                 result_text = budget_stop
+                break
+            wall_stop = self._wall_clock_stop(run_started)
+            if wall_stop is not None:
+                self._append(SessionMessage(role="assistant", content=wall_stop))
+                result_text = wall_stop
+                _logger.info("%s", wall_stop)
                 break
             stall_stop = self._stall_check() if self._stall_check is not None else None
             if stall_stop is not None:
@@ -456,7 +509,11 @@ class AgentLoop:
                                 SessionMessage(
                                     role="tool",
                                     content=content,
-                                    metadata={"tool_call_id": call_id, "name": name},
+                                    metadata={
+                                        "tool_call_id": call_id,
+                                        "name": name,
+                                        "ok": self._last_tool_ok,
+                                    },
                                 )
                             )
                             failure_stop = self._identical_failure_stop()
@@ -513,7 +570,7 @@ class AgentLoop:
                     SessionMessage(
                         role="tool",
                         content=content,
-                        metadata={"tool_call_id": cid, "name": nm},
+                        metadata={"tool_call_id": cid, "name": nm, "ok": self._last_tool_ok},
                     )
                 )
             failure_stop = self._identical_failure_stop()
@@ -550,17 +607,96 @@ class AgentLoop:
             self._fail_streak_key = None
             self._fail_streak_tool = None
 
+    def _note_unchanged_error(self, name: str, sig: str, content: str) -> str:
+        """Warn when new arguments keep producing the *same* error.
+
+        Both other guards key on the whole (tool, args, error) triple, so a model that
+        rewrites its arguments each time never repeats one and slips past both — while
+        making the identical mistake. Found by the run digest on two recorded runs:
+        36 proof_write failures across 26 distinct argument sets, 11 of which returned
+        one and the same "PAPER-0001 does not contain a numbered result 2.2". The model
+        was busily editing the proof body and never touched the citation that was wrong.
+
+        Threshold calibrated against the recorded runs: the two pathological ones reach
+        11 and 9 distinct argument sets per error, every healthy run reaches 1.
+        """
+        error_key = f"{name}\n{content[:2000]}"
+        seen_sigs = self._error_signatures.setdefault(error_key, set())
+        seen_sigs.add(sig)
+        if len(seen_sigs) < _MAX_UNCHANGED_ERROR_ATTEMPTS:
+            return content
+        return (
+            f"{content}\n\nYou have now called {name} {len(seen_sigs)} times with "
+            "different arguments and gotten this identical error every time. The "
+            "arguments are not the problem — the error is telling you something you "
+            "have not addressed yet. Read it literally and fix what it names, or record "
+            "the obstruction with memory_add(kind=decisions) and take another route."
+        )
+
+    def _acquisition_nudge(self, name: str) -> str | None:
+        """Tell a collecting-but-not-reading run to stop collecting.
+
+        Two patterns, one message. The *streak* catches the original failure mode —
+        consecutive searches that fetch nothing. The *ratio* catches the one the streak
+        cannot see, where a fetch between every pair of searches keeps resetting the
+        counter while nothing gets read. Only attached to an acquisition call, so a run
+        that has already turned to processing is never nagged.
+        """
+        if name not in _ACQUISITION_TOOLS:
+            return None
+        if name in _SEARCH_STREAK_TOOLS and self._search_streak >= _SEARCH_STREAK_WARN:
+            return (
+                f"\n\n[loop guard] This is consecutive search #{self._search_streak} "
+                "with nothing fetched or read in between. STOP searching: "
+                "paper_fetch the most relevant hit NOW and paper_read it, or proceed "
+                "to the deliverable — more searching adds no papers."
+            )
+        processing = self._processing_calls
+        if (
+            self._acquisition_calls >= _ACQUISITION_MIN
+            and self._acquisition_calls > _ACQUISITION_RATIO * max(processing, 1)
+        ):
+            return (
+                f"\n\n[loop guard] {self._acquisition_calls} searches/fetches so far against "
+                f"{processing} calls that did anything with the results. Collecting is not "
+                "progress: paper_read what you already have, then record what it gives you "
+                "(memory_add, claim_new) or write the deliverable. Fetching more will not "
+                "move the run forward."
+            )
+        return None
+
     def _note_tool_failure(self, name: str, sig: str, content: str) -> str:
         """Track an identical failing (tool, args, error) triple; annotate from WARN on."""
+        # Every failure path in _run_tool funnels through here, so this is the one place
+        # that has to mark the outcome. Compaction reads it to keep failed attempts
+        # verbatim instead of reducing them to a tool name in a comma list.
+        self._last_tool_ok = False
         if name in _REPEAT_GUARD_EXEMPT:
             return content
         key = f"{sig}\n{content[:2000]}"
+        # Run-lifetime memory, separate from the consecutive streak below. The streak
+        # only ever held ONE key, so a model alternating between two failing calls —
+        # A fails, B fails, A fails again — reset it every time and never tripped any
+        # guard. Counting every distinct failure for the whole run catches that, and
+        # tells the model it is circling rather than letting it rediscover the wall.
+        self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
+        seen = self._failure_counts[key]
+        revisited = seen > 1 and key != self._fail_streak_key
         if key == self._fail_streak_key:
             self._fail_streak += 1
         else:
             self._fail_streak_key = key
             self._fail_streak = 1
             self._fail_streak_tool = name
+        if revisited:
+            content = (
+                f"{content}\n\nYou already tried this exact call earlier in this run "
+                f"({seen} times now) and it failed the same way. Repeating it cannot "
+                "help. Change the arguments, use a different tool, or record the dead "
+                "end with memory_add(kind=decisions) and move on."
+            )
+        else:
+            content = self._note_unchanged_error(name, sig, content)
         if self._fail_streak < _IDENTICAL_FAILURE_WARN:
             return content
         guard = (
@@ -583,6 +719,29 @@ class AgentLoop:
             "identical arguments and an identical error — no progress is possible without "
             "changing the call. The failing call and its error are preserved in the "
             "session log; the dossier holds the current state."
+        )
+
+    def _wall_clock_stop(self, run_started: float) -> str | None:
+        """Stop once the run has spent its wall-clock budget.
+
+        Every other guard — the chat-only streak, the identical-failure cap, the
+        no-progress windows — assumes turns come back. A single model call that hangs
+        satisfies none of them, and with ``max_steps: inf`` a run can repeat that
+        indefinitely; only the provider timeout ends each individual call. This is the
+        one bound that holds regardless of what the model does, so it is checked before
+        spending on the next turn rather than in the middle of one.
+        """
+        limit = self.config.agent.max_wall_seconds
+        if limit is None or limit <= 0:
+            return None
+        elapsed = time.monotonic() - run_started
+        if elapsed < limit:
+            return None
+        return (
+            f"Stopped: this run reached its wall-clock budget of {limit:.0f}s "
+            f"(elapsed {elapsed:.0f}s) after {self.steps_run} model steps. Everything "
+            "recorded so far is preserved; re-run to continue from the artifacts, or "
+            "raise agent.max_wall_seconds."
         )
 
     def _budget_stop(self) -> str | None:
@@ -758,6 +917,7 @@ class AgentLoop:
         # exactly as stuck as one hammering a failing tool (forensics of the
         # perfect-mirsky run found blocked/empty paths invisible to all guards).
         sig = _tool_sig(name, args)
+        self._last_tool_ok = True
         tool = self.registry.get(name)
         if tool is None:
             log_action(self.ot_dir, name, ok=False, args=args, stderr_summary="unknown tool")
@@ -864,12 +1024,17 @@ class AgentLoop:
                 stderr_summary=message[:500],
             )
             return self._note_tool_failure(name, sig, message)
+        self._last_tool_ok = result.ok
         self.tool_calls_this_run += 1
         self.tools_used_this_run.append(name)
         if name in _SEARCH_STREAK_TOOLS:
             self._search_streak += 1
         elif name not in _SEARCH_STREAK_NEUTRAL:
             self._search_streak = 0
+        if name in _ACQUISITION_TOOLS:
+            self._acquisition_calls += 1
+        elif name not in _SEARCH_STREAK_NEUTRAL:
+            self._processing_calls += 1
         if result.ok and name in _REPEAT_GUARD_TOOLS and name not in _REPEAT_GUARD_EXEMPT:
             self._tool_sigs_ok.add(sig)
         if name == "read_file":
@@ -936,13 +1101,9 @@ class AgentLoop:
         )
         if result.ok:
             self._note_tool_success(sig)
-            if name in _SEARCH_STREAK_TOOLS and self._search_streak >= _SEARCH_STREAK_WARN:
-                return result.content + (
-                    f"\n\n[loop guard] This is consecutive search #{self._search_streak} "
-                    "with nothing fetched or read in between. STOP searching: "
-                    "paper_fetch the most relevant hit NOW and paper_read it, or proceed "
-                    "to the deliverable — more searching adds no papers."
-                )
+            nudge = self._acquisition_nudge(name)
+            if nudge is not None:
+                return result.content + nudge
             return result.content
         return self._note_tool_failure(name, sig, result.content)
 

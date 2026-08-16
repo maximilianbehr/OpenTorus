@@ -106,9 +106,8 @@ def _formalization_required(ot_dir: Path, problem_id: str) -> list[Overclaim]:
         return []
     if not _FORMALIZATION_DEMAND.search(statement):
         return []
-    from opentorus.research.verifiers.proofs import list_proofs as verifier_proofs
 
-    if any(p.accepted for p in verifier_proofs(ot_dir)):
+    if _machine_checked_for(ot_dir, problem_id):
         return []
     return [
         Overclaim(
@@ -258,6 +257,86 @@ def _collect_overclaims(
     return out
 
 
+def _instance_artifact_findings(
+    ot_dir: Path,
+    claims: list[ClaimRecord],
+    evidence: list[EvidenceRecord],
+) -> list[Overclaim]:
+    """Flag a quantified claim verified by a certificate about one numeric instance.
+
+    An accepted ``PROOF-*`` establishes that *something* was checked; nothing checks
+    that the something supports the claim citing it. Since an accepted proof is the one
+    artifact that can promote a claim to ``formally_verified``, that gap matters: a
+    workspace was observed (sidorenko) whose only two accepted proofs were
+    ``1/8 >= 1/16`` and ``1/32 >= 1/512`` — true, and about nothing in particular.
+
+    Full correspondence checking is not decidable here, so this is deliberately narrow:
+    it fires only when the certificate provably has no free variables *and* the claim it
+    backs quantifies over something. It raises a question for the referee to put in
+    front of a reader; it never blocks or rejects.
+    """
+    from opentorus.research.dossier.scope import classify_target
+    from opentorus.research.verifiers.base import certificate_is_constant
+    from opentorus.research.verifiers.proofs import get_proof
+
+    by_id = {c.id: c for c in claims}
+    out: list[Overclaim] = []
+    for ev in evidence:
+        if ev.direction != "supports" or not evidence_can_verify(ev.type):
+            continue
+        claim = by_id.get(ev.claim_id)
+        if claim is None or classify_target(claim.statement) != "general":
+            continue
+        for artifact in ev.source_artifacts:
+            proof = get_proof(ot_dir, artifact)
+            if proof is None or not proof.accepted:
+                continue
+            source_file = ot_dir / proof.source_path
+            if not source_file.is_file():
+                continue
+            if not certificate_is_constant(source_file.read_text(encoding="utf-8")):
+                continue
+            out.append(
+                Overclaim(
+                    location=f"{claim.id} via {ev.id}",
+                    phrase=artifact,
+                    kind="instance_artifact_for_general_claim",
+                    suggestion=(
+                        f"{artifact} verifies a comparison between constants, but "
+                        f"{claim.id} quantifies over a whole class. Checking one "
+                        "numeric instance does not establish a general statement: cite "
+                        "this as EXPERIMENT or COMPUTATION evidence for the instance, "
+                        "and either state the claim at the scope actually verified or "
+                        "record the general case as an open gap."
+                    ),
+                )
+            )
+    return out
+
+
+def _machine_checked_for(ot_dir: Path, problem_id: str) -> bool:
+    """Whether anything was machine-checked *while working on this dossier*.
+
+    Answered from ``ProofAttempt.submitted_under``, the provenance the prove loop and
+    ``proof submit --problem`` record. Note this is a different question from the one
+    ``ProofAttempt.problem_id`` answers (which claim store an id belongs to); keeping
+    them apart is the whole point, since an earlier attempt to reuse that field here
+    would have blocked the campaign gate outright — every agent submission targets a
+    workspace claim and so carries no ``problem_id``.
+
+    Records written before provenance existed carry neither. They count only in a
+    workspace holding a single dossier, where there is nothing to confuse them with;
+    in a multi-dossier workspace — the only place the ambiguity is real — they do not.
+    """
+    from opentorus.research.verifiers.proofs import list_proofs
+
+    accepted = [p for p in list_proofs(ot_dir) if p.accepted]
+    if any(p.submitted_under == problem_id for p in accepted):
+        return True
+    unscoped = [p for p in accepted if p.submitted_under is None]
+    return bool(unscoped) and len(store.list_dossiers(ot_dir)) == 1
+
+
 def referee_review(
     ot_dir: Path,
     problem_id: str,
@@ -301,6 +380,7 @@ def referee_review(
             downgrades.append(f"{c.id}: {c.type} → {rec} ({classification})")
 
     contradictions = _find_contradictions(claims, evidence)
+    instance_findings = _instance_artifact_findings(ot_dir, claims, evidence)
     # A persisted algebra rejection (e.g. a false interior optimum) is a contradiction.
     from opentorus.research.dossier.algebra_link import list_algebra_checks
 
@@ -318,6 +398,11 @@ def referee_review(
         has_supported_theorem=has_thm,
     )
     overclaims.extend(_formalization_required(ot_dir, problem_id))
+    # Deliberately not in ``hard_overclaim`` below: this is a heuristic about whether an
+    # artifact matches its claim, and a heuristic should raise the question ("revise")
+    # rather than halt a run. Blocking on it would let one misread certificate stop
+    # work that is otherwise sound.
+    overclaims.extend(instance_findings)
 
     # Optionally apply the recommended downgrades through the dossier's CRUD so the
     # change is logged in the status changelog (never a silent rewrite).

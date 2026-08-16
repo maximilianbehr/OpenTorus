@@ -625,7 +625,7 @@ def run_prove(
     obs_before = len(list_memory(ot_dir, "observations"))
     open_problem = statement_suggests_open_problem(ot_dir, pid)
     before_proofs = {p.id for p in store.list_proof_attempts(ot_dir, pid)}
-    registry = build_default_registry(root, ot_dir, config)
+    registry = build_default_registry(root, ot_dir, config, problem_id=pid)
     floor = 40 if disprove else 12
     steps = config.agent.max_steps
     if not math.isinf(steps):

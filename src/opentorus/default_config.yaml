@@ -69,6 +69,10 @@ agent:
   # one experiment or one proof_submit is recorded. Forces the attempt, never the
   # outcome — a run that starts nothing is ended honestly by the no-progress window.
   prove_require_instance_work: false
+  # Wall-clock budget for one agent run in seconds (null = no limit). Every other guard
+  # assumes turns come back; a hung model call satisfies none of them, and with
+  # max_steps: inf that repeats without bound. Checked between steps.
+  max_wall_seconds: null
 
 # --- Permissions (see also permissions.yaml) ------------------------------------
 permissions:
@@ -114,6 +118,10 @@ environment:
 context:
   retrieval_enabled: true
   top_k: 5
+  # Volatile blocks (workspace inventory, retrieval hits, recovery hint) go at the END
+  # of each request, so the stable head + history form a prefix a local server can reuse
+  # from its KV cache. Set false to restore the old ordering (state near the front).
+  stable_prefix: true
   # Recent session turns replayed verbatim into each request (less amnesia about earlier
   # papers/claims/proof steps); bounded by token_budget, which triggers compaction.
   history_turns: 50

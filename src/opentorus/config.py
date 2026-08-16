@@ -103,6 +103,12 @@ class AgentConfig(BaseModel):
     # with the artifacts. Ignored in --disprove mode. Both smoke runs of the initial
     # campaign showed that statement prose alone never starts the instance program.
     prove_require_instance_work: bool = False
+    # Wall-clock budget for a single agent run, in seconds (None = no limit).
+    # The other guards all assume turns return: a hung model call trips none of them,
+    # and with max_steps: inf that is unbounded. This is the one bound that holds no
+    # matter what the model does. Checked between steps, so it never interrupts a call
+    # in flight — the provider timeout owns that.
+    max_wall_seconds: float | None = None
     # When the model declares the sketch gap-free, give the hostile referee the final say:
     # if it blocks (unsupported result-claims, contradictions) the loop reopens the proof's
     # gap list with the referee's findings and keeps working instead of accepting an
@@ -155,6 +161,13 @@ class EnvironmentConfig(BaseModel):
 class ContextConfig(BaseModel):
     retrieval_enabled: bool = True
     top_k: int = 5
+    # Put the volatile blocks (workspace inventory, retrieval hits, recovery hint) at
+    # the END of the request instead of near the front, so the stable head + history
+    # form a prefix a local server can reuse from its KV cache across steps. Measured
+    # before this change on a real run: prompt_eval_count climbed 8k -> 30k in step
+    # with latency, i.e. the full prompt was re-evaluated every single call, and 96%
+    # of all tokens processed were re-sent prompt. Set false for the old ordering.
+    stable_prefix: bool = True
     # Recent session turns replayed verbatim into each request's context. Larger keeps
     # the model aware of earlier papers/claims/proof steps (less amnesia); it is bounded
     # by token_budget, which triggers compaction when the assembled context grows too big.

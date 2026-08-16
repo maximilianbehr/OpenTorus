@@ -28,10 +28,15 @@ def test_relevant_artifacts_injected_into_messages(tmp_path: Path) -> None:
     append_message(ot, SessionMessage(role="user", content="how do we improve latency?"))
 
     messages = build_messages(tmp_path, ot, default_config(), ["status"])
-    blocks = [m.content for m in messages if m.role == "system"]
-    relevant = next((b for b in blocks if "Relevant artifacts" in b), "")
+    # Retrieval hits are volatile, so they ride in the block placed just before the
+    # final turn rather than in the stable system head — role is not what matters here,
+    # reaching the model is.
+    relevant = next((m.content for m in messages if "Relevant artifacts" in m.content), "")
     assert "latency" in relevant.lower()
     assert "FACT-0001" in relevant  # the caching/latency fact
+    # The user's own message must stay the last thing the model sees.
+    assert messages[-1].role == "user"
+    assert "improve latency" in messages[-1].content
 
 
 def test_retrieval_can_be_disabled(tmp_path: Path) -> None:
