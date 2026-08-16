@@ -105,18 +105,32 @@ A missing, rejected, or inconclusive attempt is refused with the reason. If noth
 machine-checked, record support-only evidence (`EXPERIMENT`, `COMPUTATION`,
 `PROOF_SKETCH`) instead — that is honest, and it keeps the claim at `supported`.
 
-### The report PDF
+### The report: one design, two renderings
 
-`problem export --pdf` typesets the dossier with the bundled `preprint.cls`
-(third-party, BSD-2) plus `opentorus.sty`, the OpenTorus design layer. Both live in
-`opentorus/research/dossier/templates/` and are re-copied into the workspace on every
-compile, so template fixes reach dossiers built by an older OpenTorus. `preprint.cls`
-is vendored verbatim and must stay that way — the house style belongs in
-`opentorus.sty`.
+`problem export --pdf` typesets the dossier with the bundled `opentorus.cls`
+(`opentorus/research/dossier/templates/`), a self-contained document class re-copied
+into the workspace on every compile, so template fixes reach dossiers built by an
+older OpenTorus. When no TeX toolchain — or no model — is available, the export falls
+back to a standalone HTML report instead of failing.
 
-Every optional package in `opentorus.sty` is probed with `\IfFileExists` first, so a
+Both renderings draw from the **same design system**, so the fallback reads as the
+same document rather than as a plain-text dump:
+
+| | PDF | HTML |
+|---|---|---|
+| palette | `\definecolor` in `opentorus.cls` | CSS vars from `dossier/theme.py` |
+| status colour | `status_chip()` | `.chip-*` classes |
+| both from | `theme.STATUS_KIND` | `theme.STATUS_KIND` |
+
+`theme.py` is the single source for the palette and the status→colour rule; the class
+repeats the hex values because LaTeX cannot import Python, and
+`tests/test_html_export.py` pins the two copies together so they cannot drift.
+
+Every optional package in `opentorus.cls` is probed with `\IfFileExists` first, so a
 minimal TeX installation still produces a PDF; it just gets a plainer one (no
-Libertinus text/math fonts, no tinted boxes). What the style provides:
+Libertinus text/math fonts, no tinted boxes). The HTML inlines its stylesheet — the
+report is a local file, and MathJax is its only external fetch. What the class
+provides:
 
 | Macro / environment | Use |
 |---|---|
@@ -130,7 +144,8 @@ Libertinus text/math fonts, no tinted boxes). What the style provides:
 | `\otdossierpanel`, `\otmeta` | the metadata strip under the title |
 | `\otartifactindex{...}` | the closing artifact roll-up |
 
-Two conventions carry epistemic weight rather than being decorative:
+Two conventions carry epistemic weight rather than being decorative, and both hold in
+either rendering:
 
 - **Chip colour tracks what the artifacts license.** Green is reserved for
   `verified` / `formally_verified` / `supported` / `succeeded`; open and in-flight
@@ -138,12 +153,13 @@ Two conventions carry epistemic weight rather than being decorative:
   `unverified` — stays neutral grey. Colour must never upgrade a claim.
 - **Caveats get a box, not a buried sentence.** The "sketches are not verified
   proofs" and "a counterexample candidate is not a refutation" notes are `otcaution`
-  blocks, so a reader skimming the PDF cannot miss them.
+  blocks, so a reader skimming the report cannot miss them.
 
-`otoutput` exists because `preprint.cls` loads `lineno`, which pins the stock
-`verbatim` in a way that defeats `fvextra`'s `breaklines` — long stdout then runs off
-the page. The generator and the LaTeX sanitiser both rewrite `verbatim` blocks to
-`otoutput`, and the compose prompt tells the model to emit it directly.
+`otoutput` is a distinct environment because the retired `preprint.cls` loaded
+`lineno`, which pinned the stock `verbatim` such that `fvextra`'s `breaklines` never
+fired and long stdout ran off the page. `opentorus.cls` does not load `lineno`, so
+plain `verbatim` now wraps too; the generator, the sanitiser and the compose prompt
+still use `otoutput` as the canonical name.
 
 ## Output conventions
 

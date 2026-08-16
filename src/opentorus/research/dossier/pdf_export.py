@@ -15,6 +15,7 @@ from opentorus.actions import list_actions
 from opentorus.errors import OpenTorusError
 from opentorus.research.dossier import store
 from opentorus.research.dossier.experiments import experiment_dir, list_problem_experiments
+from opentorus.research.dossier.theme import status_kind
 from opentorus.research.memory import VALID_KINDS, list_memory
 from opentorus.research.papers import is_paper_parsed, list_papers
 
@@ -39,7 +40,7 @@ class ReportComposeHooks:
 _STDOUT_TAIL = 6000
 _LLM_MAX_CHARS = 48_000
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
-_PREPRINT_CLS = _TEMPLATE_DIR / "preprint.cls"
+_OPENTORUS_CLS = _TEMPLATE_DIR / "opentorus.cls"
 
 _COMPOSE_RULES = """\
 Write a polished **research investigation report** as a LaTeX body fragment (no preamble,
@@ -52,16 +53,54 @@ Required sections (in this order):
 1. \\section{Summary} — 2–4 sentences: problem, method, main finding, what remains open.
 2. \\section{Problem statement} — restate clearly with proper math notation.
 3. \\section{Investigation} — narrative of steps taken, tools run, artifact ids.
-4. \\section{Literature} — only PAPER-* entries from JSON; if none, say so.
-5. \\section{Results} — for each experiment: \\subsection{EXP-...} with full stdout in
-   \\begin{verbatim}...\\end{verbatim}, then interpret (e.g. submodularity violation).
-6. \\section{Claims and evidence} — use a \\begin{tabular}{llp{0.45\\linewidth}l} table.
+4. \\section{Literature} — only PAPER-* entries from JSON; if none, say so. Use the
+   paper table shown below rather than a run-on paragraph.
+5. \\section{Results} — for each experiment: \\subsection{EXP-...}, the command in
+   \\otruncmd{...}, full stdout in \\begin{otoutput}...\\end{otoutput}, then interpret.
+6. \\section{Claims and evidence} — use the claim table shown below.
 7. \\section{Proof sketches (not machine-checked)} — for each entry in ``proofs`` in JSON:
-   include \\subsection{PROOF-...}, list gaps, and the full ``body`` in verbatim.
-   Say explicitly that sketch status is NOT a verified proof.
+   include \\subsection{PROOF-...}, list gaps, and the full ``body``.
+   Open the section with an \\begin{otcaution}[Not a verified proof] ... \\end{otcaution}
+   box stating that sketch status is NOT a verified proof.
 8. \\section{Conclusions and open questions} — honest epistemic status.
-9. \\section*{References} with \\addcontentsline{toc}{section}{References} and itemize
-   of every artifact id cited.
+9. \\section*{Artifact index} with \\addcontentsline{toc}{section}{Artifact index} and
+   \\otartifactindex{...} holding a comma-separated list of every artifact id cited.
+
+The document preamble already loads opentorus.sty. Use these macros — do NOT redefine
+them and do NOT add a preamble:
+- \\artifact{EXP-0001} for any artifact id (EXP-*, CLAIM-*, PAPER-*, PROOF-*, ACTION-*).
+- \\statusok{verified} / \\statuswarn{open} / \\statusbad{refuted} / \\statusbadge{other}
+  for status chips — green ONLY for genuinely settled statuses.
+- \\gapmarker{[GAP-1]} for gap markers in proof sketches.
+- \\begin{otoutput}...\\end{otoutput} for captured program output (never `verbatim`;
+  otoutput wraps long lines instead of running off the page).
+- \\otruncmd{python experiments/foo.py} for a command line.
+- \\begin{otcaution}[Heading] ... \\end{otcaution} for epistemic caveats.
+- \\othead{...} for table headings, \\ottype{...} for a secondary label in a cell.
+
+Use the `L' column type for the one column that should absorb the leftover width
+and `P{...}' for fixed ones; both wrap and are ragged-right. Artifact ids and
+status chips are unbreakable boxes, so keep the fixed columns at least as wide as
+below or they will run into the neighbouring cell.
+
+Claim table (booktabs + tabularx, full width, type stacked under the id):
+\\begin{tabularx}{\\linewidth}{@{}P{.175\\linewidth} L P{.18\\linewidth} P{.155\\linewidth}@{}}
+\\toprule
+\\othead{Claim} & \\othead{Statement} & \\othead{Status} & \\othead{Evidence} \\\\
+\\midrule
+\\artifact{CLAIM-0001}\\newline \\ottype{CONJECTURE} & ... & \\statuswarn{open} &
+  \\artifact{EV-0001} \\\\
+\\bottomrule
+\\end{tabularx}
+
+Paper table:
+\\begin{tabularx}{\\linewidth}{@{}P{.155\\linewidth} L P{.22\\linewidth}@{}}
+\\toprule
+\\othead{Artifact} & \\othead{Title} & \\othead{DOI / arXiv} \\\\
+\\midrule
+\\artifact{PAPER-0001} & ... & \\ottype{10.1137/17m1140832} \\\\
+\\bottomrule
+\\end{tabularx}
 
 Rules:
 - Use ONLY facts from the JSON payload — never invent papers, experiments, or results.
@@ -71,7 +110,7 @@ Rules:
   without dollar signs inside \\text.
 - Escape LaTeX special characters in plain text (& % # _ { } ~ ^ \\).
 - For file paths use \\path{experiments/script.py} (not \\texttt with raw underscores).
-- Cite artifact ids inline as \\texttt{EXP-0001}; do not use \\cite (no .bib file).
+- Cite artifact ids inline as \\artifact{EXP-0001}; do not use \\cite (no .bib file).
 - Professional prose suitable for a workshop preprint or short research note.
 """
 
@@ -81,7 +120,10 @@ Convert a natural-language proof sketch from Markdown into LaTeX body fragments
 
 Use \\subsubsection{...} for ## headings, \\paragraph{...} for ### headings,
 itemize/enumerate for lists, and $...$ / \\[...\\] for mathematics.
-Preserve [GAP-n] markers verbatim. Cite PAPER-*, EXP-*, CLAIM-* as \\texttt{ID}.
+Numbered proof steps must become a real \\begin{enumerate} — never a run of
+"1. ... 2. ..." inside one paragraph.
+Wrap [GAP-n] markers as \\gapmarker{[GAP-n]}, keeping the text inside verbatim.
+Cite PAPER-*, EXP-*, CLAIM-* as \\artifact{ID}.
 Status is sketch — do NOT write QED or claim machine verification.
 Escape LaTeX specials in plain text. Output ONLY the LaTeX fragment.
 """
@@ -367,6 +409,10 @@ _TEXT_ITEXT_BBIGL_RE = re.compile(
     re.DOTALL,
 )
 _GAP_MARKER_RE = re.compile(r"(?<![\\{}\w])(\[GAP-\d+\])")
+# LLM-emitted verbatim blocks are rewritten to the styled `otoutput` environment
+# (see opentorus.sty: preprint.cls loads lineno, which pins the stock `verbatim`
+# so that fvextra's breaklines never fires and long output runs off the page).
+_VERBATIM_ENV_RE = re.compile(r"\\(begin|end)\{verbatim\}")
 _OLD_FONT_CMD_RE = re.compile(r"\{\\(tt|bf|it|rm|sl|sc|sf|mit)\s*([^}]*)\}")
 _PANDOC_INLINE_RE = re.compile(r"\\\((.*?)\\\)")
 # Segments that must not receive Unicode/markdown repair (math, verbatim, display).
@@ -374,9 +420,17 @@ _LATEX_PRESERVE_RE = re.compile(
     r"\$[^$\n]+\$|"
     r"\\\[[\s\S]*?\\\]|"
     r"\\begin\{verbatim\}[\s\S]*?\\end\{verbatim\}|"
+    r"\\begin\{otoutput\}[\s\S]*?\\end\{otoutput\}|"
     r"\\begin\{lstlisting\}[\s\S]*?\\end\{lstlisting\}"
 )
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+_MD_ORDERED_RE = re.compile(r"^(\d+)[.)]\s+(.*)$")
+# A display-math block in stored Markdown, which spans lines. It has to be lifted
+# out before any per-line or Unicode-normalising pass touches the text: a naive
+# "$...$" pairing reads the *second* dollar of an opening "$$" as an inline-math
+# opener, and every later formula in the document then pairs off by one.
+_MD_DISPLAY_MATH_RE = re.compile(r"\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]")
 
 
 def _fix_old_font_commands(body: str) -> str:
@@ -402,7 +456,12 @@ def _fix_old_font_commands(body: str) -> str:
 
 def _fix_gap_markers(body: str) -> str:
     """Wrap bare [GAP-n] markers so LaTeX does not treat ``[`` as an optional argument."""
-    return _GAP_MARKER_RE.sub(r"\\texttt{\1}", body)
+    return _GAP_MARKER_RE.sub(r"\\gapmarker{\1}", body)
+
+
+def _use_output_environment(body: str) -> str:
+    """Rewrite ``verbatim`` blocks to the styled, line-breaking ``otoutput`` env."""
+    return _VERBATIM_ENV_RE.sub(r"\\\1{otoutput}", body)
 
 
 def _fix_pandoc_inline_math(body: str) -> str:
@@ -511,10 +570,12 @@ _DOUBLE_DOLLAR_RE = re.compile(r"\$\$([^$]+)\$\$", re.DOTALL)
 def _fix_corrupted_latex(body: str) -> str:
     """Repair common PDF/OCR corruptions and display-math delimiters in LaTeX fragments."""
     body = _normalize_unicode(body)
-    # Collapse display delimiters to inline as balanced pairs ($$…$$ -> $…$). Do NOT
-    # blindly replace every "$$" with "$": that strips one delimiter from any display
-    # block the paired regex did not catch, leaving odd '$' parity that aborts pdflatex.
-    body = _DOUBLE_DOLLAR_RE.sub(lambda m: f"${m.group(1).strip()}$", body)
+    # Rewrite TeX-primitive display delimiters to the LaTeX form as balanced pairs
+    # ($$…$$ -> \[…\]), so the equation is centred on its own line instead of being
+    # crammed into the paragraph. Do NOT blindly replace every "$$" with "$": that
+    # strips one delimiter from any display block the paired regex did not catch,
+    # leaving odd '$' parity that aborts pdflatex.
+    body = _DOUBLE_DOLLAR_RE.sub(lambda m: f"\\[{m.group(1).strip()}\\]", body)
     body = _CORRUPTED_NORM.sub(r"\\|", body)
     body = body.replace(r"\$$", "$")
     return body
@@ -655,9 +716,11 @@ def _latex_safe_unicode(text: str) -> str:
     """Final guard: no bare non-ASCII reaches pdflatex (which aborts on undeclared
     Unicode, even inside math mode).
 
-    Tracks ``$`` / ``$$`` math context: a symbol in the Unicode→LaTeX map becomes its
-    bare command inside math (``\\beta``) or ``$\\beta$`` outside; anything unmapped is
-    transliterated to ASCII (NFKD) and otherwise dropped. Backslash escapes are skipped.
+    Tracks ``$`` / ``$$`` *and* ``\\[…\\]`` / ``\\(…\\)`` math context: a symbol in the
+    Unicode→LaTeX map becomes its bare command inside math (``\\beta``) or ``$\\beta$``
+    outside; anything unmapped is transliterated to ASCII (NFKD) and otherwise dropped.
+    Backslash escapes are skipped. Getting the ``\\[…\\]`` case wrong would emit
+    ``$\\beta$`` *inside* display math, which pdflatex rejects outright.
     """
     import unicodedata
 
@@ -670,6 +733,10 @@ def _latex_safe_unicode(text: str) -> str:
     while i < n:
         ch = text[i]
         if ch == "\\" and i + 1 < n:
+            if text[i + 1] in "[(":
+                in_math = True
+            elif text[i + 1] in "])":
+                in_math = False
             out.append(text[i : i + 2])
             i += 2
             continue
@@ -718,17 +785,18 @@ def sanitize_latex_body(body: str) -> str:
     # \tag is only valid inside an equation; models emit it in prose (e.g.
     # "\tag{GAP-2}"), which aborts amsmath — render it as a parenthetical instead.
     body = _TAG_RE.sub(r"(\1)", body)
+    body = _use_output_environment(body)
     # Last line of defense: never let a bare non-ASCII char reach pdflatex.
     body = _latex_safe_unicode(body)
     return body
 
 
 def _latex_verbatim(text: str) -> str:
-    """Wrap text in a verbatim environment (handles most stdout safely)."""
+    """Wrap captured output in the styled ``otoutput`` environment."""
     body = text.replace("\r\n", "\n").replace("\r", "\n")
-    if "\\end{verbatim}" in body or "\\end{lstlisting}" in body:
-        body = body.replace("\\end{verbatim}", "").replace("\\end{lstlisting}", "")
-    return f"\\begin{{verbatim}}\n{body}\n\\end{{verbatim}}"
+    for terminator in ("\\end{otoutput}", "\\end{verbatim}", "\\end{lstlisting}"):
+        body = body.replace(terminator, "")
+    return f"\\begin{{otoutput}}\n{body}\n\\end{{otoutput}}"
 
 
 def _short_title(facts: dict[str, Any]) -> str:
@@ -743,6 +811,124 @@ def _clean_proof_markdown(body: str) -> str:
     return body.replace("\ufffd", "?")
 
 
+def _looks_like_latex_line(text: str) -> bool:
+    """True when a Markdown line already carries LaTeX the escaper must not touch."""
+    return "\\[" in text or "\\begin{" in text or "\\end{" in text
+
+
+def _latex_item(text: str) -> str:
+    """An ``\\item`` whose text is safe to start with ``[``.
+
+    ``\\item [REFEREE] ...`` makes LaTeX read ``[REFEREE]`` as the item's optional
+    argument and typeset it as a hanging description label; an empty group in
+    front keeps it as ordinary text.
+    """
+    body = text.lstrip()
+    return f"\\item {{}}{body}" if body.startswith("[") else f"\\item {body}"
+
+
+def _inline_md_to_latex(text: str) -> str:
+    """Escape a Markdown prose line for LaTeX, then apply Markdown emphasis.
+
+    The order is the whole point. Converting first and escaping second turns the
+    ``\\textbf{...}`` just produced into a literal ``\\textbackslash{}textbf\\{...\\}``,
+    which is how ``\\{}textbf{[GAP-1] ...}`` used to reach the printed page.
+    Escaping first is also strictly safer than the old "line contains ``$`` so
+    skip escaping entirely" rule: ``$...$`` spans are preserved either way, but
+    now a stray ``_``/``&``/``%`` in the surrounding prose can no longer abort
+    the compile.
+    """
+    escaped = text if _looks_like_latex_line(text) else _latex_escape_preserving_math(text)
+    escaped = _MD_BOLD_RE.sub(r"\\textbf{\1}", escaped)
+    return _MD_ITALIC_RE.sub(r"\\emph{\1}", escaped)
+
+
+def _markdown_to_latex(body: str, *, proof_meta: bool = False) -> str:
+    """Deterministic Markdown → LaTeX for a stored body (no model).
+
+    With ``proof_meta`` the proof-sketch conventions are honoured too: the
+    ``# PROOF-0001`` title line is dropped (the caller already emits a heading)
+    and a ``_Status: ..._`` line becomes an italic note.
+    """
+    from opentorus.research.markdown_latex import prepare_markdown_for_pdf
+
+    body = _clean_proof_markdown(body)
+    out: list[str] = []
+    open_list: str | None = None
+
+    def close_list() -> None:
+        nonlocal open_list
+        if open_list is not None:
+            out.append(f"\\end{{{open_list}}}")
+            open_list = None
+
+    def open_as(env: str) -> None:
+        nonlocal open_list
+        if open_list != env:
+            close_list()
+            out.append(f"\\begin{{{env}}}")
+            open_list = env
+
+    def emit_prose(segment: str) -> None:
+        nonlocal open_list
+        if not segment.strip():
+            return
+        for raw in prepare_markdown_for_pdf(segment).splitlines():
+            stripped = raw.strip()
+            if not stripped:
+                close_list()
+                out.append("")
+                continue
+            if proof_meta:
+                if stripped.startswith("# ") and "PROOF-" in stripped.upper():
+                    continue
+                if stripped.lower().startswith(("_status:", "*status:")):
+                    out.append(f"\\textit{{{_latex_escape(stripped.strip('_* '))}}}")
+                    continue
+            if stripped.startswith("### "):
+                close_list()
+                out.append(f"\\paragraph{{{_latex_escape(stripped[4:].strip())}}}")
+                continue
+            if stripped.startswith("## "):
+                close_list()
+                out.append(f"\\subsubsection{{{_latex_escape(stripped[3:].strip())}}}")
+                continue
+            if stripped.startswith("# "):
+                close_list()
+                out.append(f"\\subsubsection{{{_latex_escape(stripped[2:].strip())}}}")
+                continue
+            if stripped.startswith(("- ", "* ")):
+                open_as("itemize")
+                out.append(_latex_item(_inline_md_to_latex(stripped[2:].strip())))
+                continue
+            ordered = _MD_ORDERED_RE.match(stripped)
+            if ordered:
+                # Numbered proof steps used to run together into one paragraph
+                # ("1. … 2. … 3. …"); render them as a real enumerate.
+                open_as("enumerate")
+                out.append(_latex_item(_inline_md_to_latex(ordered.group(2).strip())))
+                continue
+            if open_list is not None and raw[:1].isspace() and out:
+                # Indented continuation of the current bullet — appending it to the
+                # item keeps it inside the list instead of ending the list early and
+                # leaving an orphan line hanging under it.
+                out[-1] = f"{out[-1]} {_inline_md_to_latex(stripped)}"
+                continue
+            close_list()
+            out.append(_inline_md_to_latex(stripped))
+
+    last = 0
+    for match in _MD_DISPLAY_MATH_RE.finditer(body):
+        emit_prose(body[last : match.start()])
+        close_list()
+        # Both delimiter pairs are two characters wide ("$$"…"$$", "\["…"\]").
+        out.append(f"\\[{match.group(0)[2:-2].strip()}\\]")
+        last = match.end()
+    emit_prose(body[last:])
+    close_list()
+    return sanitize_latex_body("\n".join(out))
+
+
 def _proof_markdown_to_latex_fallback(body: str) -> str:
     """Deterministic Markdown → LaTeX for a single proof sketch (no model).
 
@@ -750,60 +936,7 @@ def _proof_markdown_to_latex_fallback(body: str) -> str:
     fails; the whole-document deterministic PDF path was removed (it could not
     render Unicode-in-prose mathematics legibly — see :func:`compose_and_render_pdf`).
     """
-    from opentorus.research.markdown_latex import prepare_markdown_for_pdf
-
-    body = _clean_proof_markdown(body)
-    body = prepare_markdown_for_pdf(body)
-    bold_re = re.compile(r"\*\*(.+?)\*\*")
-    italic_re = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
-    out: list[str] = []
-    in_itemize = False
-
-    def close_list() -> None:
-        nonlocal in_itemize
-        if in_itemize:
-            out.append("\\end{itemize}")
-            in_itemize = False
-
-    for raw in body.splitlines():
-        line = raw.rstrip()
-        stripped = line.strip()
-        if not stripped:
-            close_list()
-            out.append("")
-            continue
-        if stripped.startswith("# ") and "PROOF-" in stripped.upper():
-            continue
-        if stripped.lower().startswith("_status:") or stripped.lower().startswith("*status:"):
-            status = stripped.strip("_* ")
-            out.append(f"\\textit{{{_latex_escape(status)}}}")
-            continue
-        if stripped.startswith("## "):
-            close_list()
-            out.append(f"\\subsubsection{{{_latex_escape(stripped[3:].strip())}}}")
-            continue
-        if stripped.startswith("### "):
-            close_list()
-            out.append(f"\\paragraph{{{_latex_escape(stripped[4:].strip())}}}.")
-            continue
-        if stripped.startswith(("- ", "* ")):
-            if not in_itemize:
-                out.append("\\begin{itemize}")
-                in_itemize = True
-            content = stripped[2:].strip()
-            item = bold_re.sub(r"\\textbf{\1}", content)
-            item = italic_re.sub(r"\\emph{\1}", item)
-            out.append(f"\\item {_latex_escape_preserving_math(item)}")
-            continue
-        close_list()
-        text = bold_re.sub(r"\\textbf{\1}", stripped)
-        text = italic_re.sub(r"\\emph{\1}", text)
-        if "$" in text or "\\[" in text:
-            out.append(text)
-        else:
-            out.append(_latex_escape(text))
-    close_list()
-    return sanitize_latex_body("\n".join(out))
+    return _markdown_to_latex(body, proof_meta=True)
 
 
 def llm_convert_proof_to_latex(
@@ -902,20 +1035,33 @@ def _proofs_section_latex(
         return ""
     parts = [
         "\\section{Proof sketches (not machine-checked)}",
-        "The following natural-language arguments are stored in the dossier. "
-        "Status \\textbf{sketch} means gaps remain; they are \\emph{not} formally verified.",
+        "\\begin{otcaution}[Not a verified proof]",
+        "The natural-language arguments below are stored in the dossier as "
+        "\\emph{sketches}: gaps remain, and nothing here has been machine-checked. "
+        "They support the claims they accompany; they do not establish them.",
+        "\\end{otcaution}",
         "",
     ]
     for proof in proofs:
         parts.append(
             "\\subsection{"
             + _latex_escape(f"{proof['id']} — {proof.get('title') or 'sketch'}")
-            + f" [{_latex_escape(proof['status'])}]"
+            + " "
+            + status_chip(str(proof.get("status") or ""))
             + "}"
         )
         if proof.get("gaps"):
-            gaps = ", ".join(_latex_escape(_gap_text(g)) for g in proof["gaps"])
-            parts.append(f"\\textit{{Recorded gaps:}} {gaps}")
+            gaps = "\n".join(
+                _latex_item(_latex_escape_preserving_math(_gap_text(g))) for g in proof["gaps"]
+            )
+            parts.extend(
+                [
+                    "\\textbf{Recorded gaps.}",
+                    "\\begin{itemize}",
+                    gaps,
+                    "\\end{itemize}",
+                ]
+            )
         latex_body = proof_body_to_latex(
             proof,
             provider,
@@ -957,7 +1103,8 @@ def _append_missing_proofs(
 
 
 _VERBATIM_PROOF_RE = re.compile(
-    r"\\begin\{verbatim\}[\s\S]*?#\s*(PROOF-\d{4})[\s\S]*?\\end\{verbatim\}",
+    r"\\begin\{(?:verbatim|otoutput)\}[\s\S]*?#\s*(PROOF-\d{4})[\s\S]*?"
+    r"\\end\{(?:verbatim|otoutput)\}",
     re.IGNORECASE,
 )
 
@@ -1014,11 +1161,11 @@ def facts_to_latex(
         ),
         "",
         "\\section{Problem statement}",
-        _latex_escape(facts.get("statement") or "(no statement recorded)"),
-        "",
-        f"\\paragraph{{Status.}} "
-        f"Status: \\textbf{{{_latex_escape(str(facts.get('status', '')))}}}; "
-        f"formalization: {_latex_escape(str(facts.get('formalization', '')))}.",
+        # statement.md is Markdown with real LaTeX math; escaping it wholesale
+        # printed the source ("$W(A) = \\{}mathbb{C}...$") instead of the formula.
+        _markdown_to_latex(facts["statement"])
+        if (facts.get("statement") or "").strip()
+        else "(no statement recorded)",
         "",
     ]
 
@@ -1026,41 +1173,49 @@ def facts_to_latex(
         parts.extend(
             [
                 "\\section{Claims and evidence}",
-                "\\begin{tabular}{llp{0.45\\linewidth}l}",
-                "\\hline",
-                "Id & Type & Statement & Evidence \\\\",
-                "\\hline",
+                # The type rides under the id rather than in its own column: five
+                # columns cannot hold an artifact id, a type, a status chip and an
+                # evidence list and still leave the statement a readable width.
+                "\\begin{tabularx}{\\linewidth}"
+                "{@{}P{.175\\linewidth} L P{.18\\linewidth} P{.155\\linewidth}@{}}",
+                "\\toprule",
+                "\\othead{Claim} & \\othead{Statement} & "
+                "\\othead{Status} & \\othead{Evidence} \\\\",
+                "\\midrule",
             ]
         )
         for claim in facts["claims"]:
-            ev_ids = ", ".join(e["id"] for e in claim["evidence"]) or "(none)"
-            parts.append(
-                f"{_latex_escape(claim['id'])} & "
-                f"{_latex_escape(claim['type'])} & "
-                f"{_latex_escape(claim['statement'])} & "
-                f"{_latex_escape(ev_ids)} \\\\"
+            ev_ids = (
+                ", ".join(f"\\artifact{{{_latex_escape(e['id'])}}}" for e in claim["evidence"])
+                or "(none)"
             )
-        parts.extend(["\\hline", "\\end{tabular}", ""])
+            parts.append(
+                f"\\artifact{{{_latex_escape(claim['id'])}}}\\newline "
+                f"\\ottype{{{_breakable_type(claim['type'])}}} & "
+                f"{_latex_escape_preserving_math(claim['statement'])} & "
+                f"{status_chip(str(claim['status']))} & "
+                f"{ev_ids} \\\\"
+            )
+        parts.extend(["\\bottomrule", "\\end{tabularx}", ""])
     else:
         parts.extend(["\\section{Claims and evidence}", "(none recorded)", ""])
 
     if facts["experiments"]:
         parts.append("\\section{Experiments}")
         for exp in facts["experiments"]:
-            heading = (
-                "\\subsection{"
-                + _latex_escape(f"{exp['id']} — {exp['title']}")
-                + f" [{_latex_escape(exp['status'])}]"
-            )
             parts.extend(
                 [
-                    heading,
-                    f"\\texttt{{{_latex_escape(exp['command'])}}} "
-                    f"(seed: {_latex_escape(str(exp['random_seed']))})",
+                    "\\subsection{"
+                    + _latex_escape(f"{exp['id']} — {exp['title']}")
+                    + " "
+                    + status_chip(str(exp["status"]))
+                    + "}",
+                    f"\\otruncmd{{{_latex_escape(exp['command'])}}}",
+                    f"\\emph{{Random seed:}} {_latex_escape(str(exp['random_seed']))}.",
                 ]
             )
             if exp["result_summary"]:
-                parts.append(_latex_escape(exp["result_summary"]))
+                parts.append(_latex_escape_preserving_math(exp["result_summary"]))
             if exp["stdout_tail"]:
                 parts.append(_latex_verbatim(exp["stdout_tail"]))
             parts.append("")
@@ -1083,25 +1238,31 @@ def facts_to_latex(
         parts.extend(
             [
                 "\\section{Conclusions}",
-                "A computational counterexample candidate was recorded. "
-                "This is \\textbf{not} a formally verified refutation unless marked verified.",
+                "\\begin{otcaution}[Counterexample candidate]",
+                "A computational counterexample candidate was recorded. This is "
+                "\\textbf{not} a formally verified refutation unless the claim is "
+                "explicitly marked verified above.",
+                "\\end{otcaution}",
                 "",
             ]
         )
 
-    parts.extend(
-        [
-            "\\section*{References}",
-            "\\addcontentsline{toc}{section}{References}",
-            "\\begin{itemize}",
-        ]
-    )
+    ids: list[str] = []
     for key in ("claims", "experiments", "proofs"):
         for item in facts.get(key) or []:
             item_id = item.get("id") or item.get("experiment_id")
             if item_id:
-                parts.append(f"\\item \\texttt{{{_latex_escape(str(item_id))}}}")
-    parts.extend(["\\end{itemize}", ""])
+                ids.append(f"\\artifact{{{_latex_escape(str(item_id))}}}")
+    parts.extend(
+        [
+            "\\section*{Artifact index}",
+            "\\addcontentsline{toc}{section}{Artifact index}",
+            "Every artifact this report draws on, by local id:",
+            "",
+            "\\otartifactindex{" + (", ".join(ids) if ids else "(none recorded)") + "}",
+            "",
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -1182,19 +1343,89 @@ def llm_compose_latex(
     return sanitize_latex_body(_extract_latex_fragment(response.content))
 
 
+#: Chip kind (from the shared theme) → the LaTeX macro that draws it.
+_CHIP_MACRO = {"ok": "statusok", "warn": "statuswarn", "bad": "statusbad"}
+
+
+def status_chip(status: str) -> str:
+    """A colour-coded ``\\status*`` chip for a status string.
+
+    The status → colour mapping lives in :mod:`opentorus.research.dossier.theme`
+    so the PDF and the HTML report agree: green only for statuses the artifacts
+    really license (``verified``, ``formally_verified``, ``supported``,
+    ``succeeded``), amber for open or in-flight ones, red for negative outcomes.
+    Anything unrecognised — including ``unverified`` and ``unknown`` — stays
+    neutral grey rather than borrowing the colour of a stronger claim.
+    """
+    text = (status or "").strip()
+    if not text:
+        return ""
+    cmd = _CHIP_MACRO.get(status_kind(text), "statusbadge")
+    return f"\\{cmd}{{{_latex_escape(text)}}}"
+
+
+def _breakable_type(claim_type: str) -> str:
+    """A claim type that may wrap inside a narrow table column.
+
+    ``COUNTEREXAMPLE_CANDIDATE`` is a single unbreakable word once escaped, and it
+    is wider than any column that still leaves room for the statement; an explicit
+    break opportunity after each underscore lets it wrap instead of running into
+    the neighbouring cell.
+    """
+    return _latex_escape(claim_type).replace("\\_", "\\_\\allowbreak{}")
+
+
+def artifact_counts(facts: dict[str, Any], *, separator: str = " · ") -> str:
+    """`3 claims · 2 experiments · …`, listing only the non-empty artifact kinds.
+
+    Shared with the HTML report so both metadata strips count the same things;
+    the caller supplies the separator its markup needs.
+    """
+    pairs = (
+        ("claim", "claims"),
+        ("experiment", "experiments"),
+        ("proof sketch", "proofs"),
+        ("failed attempt", "failed_attempts"),
+        ("paper", "literature"),
+    )
+    parts = []
+    for label, key in pairs:
+        count = len(facts.get(key) or [])
+        if count:
+            parts.append(f"{count} {label}{'' if count == 1 else 's'}")
+    return separator.join(parts) if parts else "none recorded"
+
+
+def _dossier_panel(facts: dict[str, Any]) -> str:
+    """The metadata strip printed under the title."""
+    status = status_chip(str(facts.get("status") or "")) or _latex_escape(
+        str(facts.get("status") or "unknown")
+    )
+    formalization = _latex_escape(str(facts.get("formalization") or "informal"))
+    counts = artifact_counts(facts, separator=" \\textperiodcentered{} ")
+    return (
+        "\\otdossierpanel{%\n"
+        f"  \\otmeta{{Dossier}}{{\\artifact{{{_latex_escape(facts['problem_id'])}}}}} &\n"
+        f"  \\otmeta{{Status}}{{{status}}} &\n"
+        f"  \\otmeta{{Formalization}}{{{formalization}}} &\n"
+        f"  \\otmeta{{Artifacts}}{{{counts}}}%\n"
+        "}"
+    )
+
+
 def wrap_preprint_document(facts: dict[str, Any], body: str) -> str:
     """Wrap a LaTeX body fragment in the preprint document class."""
     title = _latex_escape(f"{facts['problem_id']} — {facts['title']}")
     short = _latex_escape(_short_title(facts))
     return f"""\
-\\documentclass[a4paper,colorlinks]{{preprint}}
+% opentorus.cls carries the whole design system: page geometry, fonts, headings,
+% booktabs/tabularx tables and the OpenTorus macros (\\artifact, \\statusok,
+% otoutput, otcaution, …). Nothing else needs loading here.
+\\documentclass[a4paper]{{opentorus}}
 
 \\usepackage[T1]{{fontenc}}
 \\usepackage[utf8]{{inputenc}}
 \\usepackage[english]{{babel}}
-\\usepackage{{graphicx}}
-\\usepackage{{amsmath,amssymb,amsthm}}
-\\usepackage{{booktabs}}
 
 \\title{{{title}}}
 
@@ -1210,25 +1441,34 @@ def wrap_preprint_document(facts: dict[str, Any], body: str) -> str:
 
 \\maketitle
 
+{_dossier_panel(facts)}
+
 {body.rstrip()}
 
 \\end{{document}}
 """
 
 
-def preprint_cls_source() -> Path:
-    """Path to the bundled preprint.cls (ninsteve/preprint-template, BSD-2)."""
-    if not _PREPRINT_CLS.is_file():
+def opentorus_cls_source() -> Path:
+    """Path to the bundled opentorus.cls (the report document class)."""
+    if not _OPENTORUS_CLS.is_file():
         raise OpenTorusError(
-            "Bundled preprint.cls is missing from the OpenTorus install. "
-            "Reinstall the package or restore opentorus/research/dossier/templates/preprint.cls."
+            "Bundled opentorus.cls is missing from the OpenTorus install. "
+            "Reinstall the package or restore opentorus/research/dossier/templates/opentorus.cls."
         )
-    return _PREPRINT_CLS
+    return _OPENTORUS_CLS
 
 
-def _install_preprint_cls(work_dir: Path) -> None:
-    """Install or refresh bundled preprint.cls (template fixes must reach old workspaces)."""
-    shutil.copy2(preprint_cls_source(), work_dir / "preprint.cls")
+def _install_templates(work_dir: Path) -> None:
+    """Install or refresh the bundled LaTeX class.
+
+    Copied on every compile rather than only when absent: template fixes have to
+    reach workspaces that were built by an older OpenTorus (which also cleans up
+    the preprint.cls/opentorus.sty pair those workspaces were built with).
+    """
+    shutil.copy2(opentorus_cls_source(), work_dir / "opentorus.cls")
+    for stale in ("preprint.cls", "opentorus.sty"):
+        (work_dir / stale).unlink(missing_ok=True)
 
 
 def tex_available() -> bool:
@@ -1343,7 +1583,7 @@ def compile_latex_report(tex_path: Path, *, pdf_path: Path | None = None) -> Pat
 
     work_dir = tex_path.parent
     main_stem = tex_path.stem
-    _install_preprint_cls(work_dir)
+    _install_templates(work_dir)
     result = compile_latex_project(work_dir, main_stem)
     built = Path(result.pdf_path)
     if pdf_path is not None and built.resolve() != pdf_path.resolve():

@@ -7,15 +7,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **One report design, two renderings.** The HTML report — what an export falls
+  back to when there is no TeX toolchain or no model — was four CSS rules on
+  system-ui, so the same dossier looked like a different document depending on
+  which path produced it. Both now draw from
+  `opentorus/research/dossier/theme.py`: the same palette, the same accent sans
+  headings with a hairline rule, the same tinted output panels with an accent
+  left rule, the same artifact ids, gap markers, status chips, booktabs-style
+  tables and metadata strip under the title. The status→colour rule lives in
+  `theme.STATUS_KIND` and is now the *only* copy, used by both the LaTeX
+  `status_chip()` and the HTML `.chip-*` classes — so "colour never upgrades a
+  claim" is one rule, not two that can drift. The LaTeX class repeats the hex
+  values because it cannot import Python; a test pins the two copies together.
+  The HTML keeps its stylesheet inlined (the report is a local file) and adds no
+  new external fetch — MathJax remains the only one.
+- **`preprint.cls` is gone; `opentorus.cls` replaces it.** The vendored
+  third-party class (and the `opentorus.sty` layer written on top of it) are
+  retired in favour of one self-contained class. Besides dropping the unused
+  machinery — two-column mode, abstract/keywords/MSC/novelty front matter,
+  cleveref equation formats, the BSD-2 license file — it drops `lineno`, the
+  package whose patching of `verbatim` was the reason captured output could not
+  wrap in the first place. Plain `\begin{verbatim}` now wraps too; `otoutput`
+  stays the canonical name. Compiles are unchanged visually, and
+  `_install_templates` deletes the retired `preprint.cls`/`opentorus.sty` pair
+  from workspaces built by an older OpenTorus.
 - **The exported report PDF has a house style.** The dossier PDF was the stock
-  `preprint.cls` with Computer Modern, `\hline` tables and raw `verbatim` dumps.
-  A new bundled `opentorus.sty` (installed next to `preprint.cls` on every
-  compile, so it reaches dossiers built by an older OpenTorus) adds Libertinus
+  third-party preprint class with Computer Modern, `\hline` tables and raw
+  `verbatim` dumps. The bundled `opentorus.cls` (re-installed on every compile,
+  so it reaches dossiers built by an older OpenTorus) adds Libertinus
   text/math with `microtype`, accent-coloured headings with a hairline rule, a
   metadata strip under the title (dossier id, status, formalization, artifact
   counts), booktabs/tabularx tables, tinted output panels, status chips and
-  callout boxes. `preprint.cls` itself is vendored third-party code and stays
-  byte-for-byte unchanged. Every optional package is probed with `\IfFileExists`,
+  callout boxes. Every optional package is probed with `\IfFileExists`,
   so a minimal TeX installation still compiles — it just gets a plainer document.
   Two of the conventions carry epistemic weight rather than being decorative:
   chip colour never upgrades a claim (green is reserved for
@@ -31,8 +54,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   typeset in a `verbatim` block that cannot break, so anything past the margin
   was simply lost from the PDF. Output now goes in an `otoutput` environment that
   wraps with a continuation marker. It has to be a *new* environment name:
-  `preprint.cls` loads `lineno`, which pins the stock `verbatim` such that
-  `fvextra`'s `breaklines` silently never fires, and wrapping it in a
+  the then-vendored `preprint.cls` loaded `lineno`, which pinned the stock
+  `verbatim` such that `fvextra`'s `breaklines` silently never fired (the class
+  that replaced it does not load `lineno`), and wrapping it in a
   `\tcolorboxenvironment` defeats the breaking too (the body is captured as an
   argument and typeset at its natural width). The generator, the LaTeX sanitiser
   and the compose prompt all emit `otoutput`.
@@ -66,7 +90,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now four columns with the type stacked under the id, sized against the widest
   real status and type values, with break opportunities after underscores and a
   `\strut` so a short cell aligns with the statement it belongs to.
-
+- **The HTML report lost structure the Markdown had.** Its converter emitted one
+  `<p>` per source line, so soft-wrapped prose read as a column of fragments;
+  numbered proof steps became paragraphs instead of an `<ol>` (the same defect
+  fixed on the LaTeX side); a `$$…$$` block split across paragraphs so MathJax
+  never matched the delimiters and the reader saw raw `\lVert p(A)…` source; and
+  `_emphasis_` printed its underscores. All four are fixed, with `_` emphasis
+  guarded against intra-word matches so `HEURISTIC_ONLY` and `experiment_proof`
+  stay literal. Pipe tables render as tables. `tests/test_html_export.py` is new —
+  the HTML export had no tests at all.
 - **An unchecked hole in EVAL-002.** `FORMAL_PROOF` / `VALIDATED_NUMERICAL`
   evidence counted as verification-grade as soon as its *type field* said so —
   the artifact was checked only for `EXPERIMENT`, i.e. for the one type that may

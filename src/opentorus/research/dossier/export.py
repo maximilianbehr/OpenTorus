@@ -44,6 +44,33 @@ def assemble_export_markdown(ot_dir: Path, problem_id: str, *, refresh_report: b
     return report_path.read_text(encoding="utf-8").rstrip() + "\n"
 
 
+def html_report_meta(ot_dir: Path, problem_id: str) -> list[tuple[str, str]]:
+    """The metadata strip for the HTML report — the twin of ``\\otdossierpanel``.
+
+    Same four fields, same counts and the same status-colour rule as the PDF, so
+    the two renderings open with the same header rather than one of them starting
+    cold on the first heading.
+    """
+    import html as _html
+
+    from opentorus.research.dossier.pdf_export import artifact_counts, gather_dossier_facts
+    from opentorus.research.dossier.theme import status_kind
+
+    try:
+        facts = gather_dossier_facts(ot_dir, problem_id)
+    except OpenTorusError:  # a partial dossier still gets an (unadorned) report
+        return []
+
+    status = str(facts.get("status") or "unknown")
+    counts = artifact_counts(facts)
+    return [
+        ("Dossier", f'<span class="artifact">{_html.escape(facts["problem_id"])}</span>'),
+        ("Status", f'<span class="chip chip-{status_kind(status)}">{_html.escape(status)}</span>'),
+        ("Formalization", _html.escape(str(facts.get("formalization") or "informal"))),
+        ("Artifacts", _html.escape(counts)),
+    ]
+
+
 def export_problem(
     ot_dir: Path,
     problem_id: str,
@@ -87,19 +114,30 @@ def export_problem(
     written_tex: Path | None = None
     written_html: Path | None = None
     html_reason: str | None = None
+
+    def _write_html() -> Path:
+        """The HTML twin of the PDF: same design system, same metadata strip."""
+        from opentorus.research.dossier.html_export import markdown_to_html
+
+        path = md_path.with_suffix(".html")
+        path.write_text(
+            markdown_to_html(
+                markdown,
+                title=f"{pid} — OpenTorus report",
+                meta=html_report_meta(ot_dir, pid),
+                footer="OpenTorus investigation report",
+            ),
+            encoding="utf-8",
+        )
+        return path
+
     if pdf:
         from opentorus.research.dossier.pdf_export import compose_and_render_pdf, tex_available
 
         if not tex_available():
             # Graceful degradation: no LaTeX toolchain → emit a standalone HTML
             # rendering of the honest report instead of failing.
-            from opentorus.research.dossier.html_export import markdown_to_html
-
-            written_html = md_path.with_suffix(".html")
-            written_html.write_text(
-                markdown_to_html(markdown, title=f"{pid} — OpenTorus report"),
-                encoding="utf-8",
-            )
+            written_html = _write_html()
             html_reason = "no-engine"
             if hooks and hooks.on_progress:
                 hooks.on_progress(
@@ -126,13 +164,7 @@ def export_problem(
                 # Even the deterministic template LaTeX failed to compile → emit an
                 # HTML rendering so the report is always produced, rather than
                 # failing the export with no output.
-                from opentorus.research.dossier.html_export import markdown_to_html
-
-                written_html = md_path.with_suffix(".html")
-                written_html.write_text(
-                    markdown_to_html(markdown, title=f"{pid} — OpenTorus report"),
-                    encoding="utf-8",
-                )
+                written_html = _write_html()
                 html_reason = str(exc)
                 if tex_target.exists():
                     written_tex = tex_target

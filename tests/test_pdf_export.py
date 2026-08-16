@@ -1,4 +1,4 @@
-"""Tests for LaTeX preprint PDF export."""
+"""Tests for the LaTeX PDF report export."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from opentorus.research.dossier.pdf_export import (
     facts_to_latex,
     gather_dossier_facts,
     llm_compose_latex,
-    preprint_cls_source,
     sanitize_latex_body,
     wrap_preprint_document,
 )
@@ -22,7 +21,8 @@ from opentorus.workspace import init_workspace, workspace_dir
 def test_sanitize_latex_body_wraps_bare_gap_markers() -> None:
     raw = "Some text.\\\\\n[GAP-2] Missing link to lower bound."
     fixed = sanitize_latex_body(raw)
-    assert r"\texttt{[GAP-2]}" in fixed
+    # \gapmarker also guards the leading '[' from being read as an optional argument.
+    assert r"\gapmarker{[GAP-2]}" in fixed
 
 
 def test_sanitize_latex_body_fixes_pandoc_inline_math() -> None:
@@ -174,10 +174,171 @@ def test_sanitize_latex_body_preserves_math_blocks() -> None:
     assert r"$\kappa$" in fixed.split(r"$\kappa(A)$")[1]
 
 
-def test_preprint_cls_is_bundled() -> None:
-    path = preprint_cls_source()
+def test_opentorus_cls_is_bundled() -> None:
+    from opentorus.research.dossier.pdf_export import opentorus_cls_source
+
+    path = opentorus_cls_source()
     assert path.is_file()
-    assert path.name == "preprint.cls"
+    assert path.name == "opentorus.cls"
+    text = path.read_text(encoding="utf-8")
+    # The macros the generator and the compose prompt both emit.
+    for macro in (
+        r"\newcommand{\artifact}",
+        r"\newcommand{\gapmarker}",
+        r"\newcommand{\otruncmd}",
+        r"\newcommand{\otartifactindex}",
+        r"\newcommand{\otdossierpanel}",
+        r"\newenvironment{otcaution}",
+        "otoutput",
+    ):
+        assert macro in text, macro
+
+
+def test_install_templates_refreshes_class_and_clears_the_old_pair(tmp_path: Path) -> None:
+    from opentorus.research.dossier.pdf_export import _install_templates
+
+    # A workspace built by an older OpenTorus, carrying the retired template pair.
+    (tmp_path / "preprint.cls").write_text("stale", encoding="utf-8")
+    (tmp_path / "opentorus.sty").write_text("stale", encoding="utf-8")
+
+    _install_templates(tmp_path)
+
+    assert (tmp_path / "opentorus.cls").is_file()
+    assert not (tmp_path / "preprint.cls").exists()
+    assert not (tmp_path / "opentorus.sty").exists()
+
+
+def test_wrap_preprint_loads_style_and_metadata_panel() -> None:
+    facts = {
+        "problem_id": "PROBLEM-0001",
+        "title": "T",
+        "status": "open",
+        "formalization": "informal",
+        "tags": [],
+        "claims": [{"id": "CLAIM-0001"}],
+        "experiments": [],
+        "proofs": [{"id": "PROOF-0001"}],
+    }
+    doc = wrap_preprint_document(facts, "\\section{Summary}\nTest.")
+    assert "\\documentclass[a4paper]{opentorus}" in doc
+    assert "\\otdossierpanel{" in doc
+    # Counts come from the artifacts actually present, and skip the empty kinds.
+    assert "1 claim" in doc
+    assert "1 proof sketch" in doc
+    assert "experiment" not in doc.split("\\otdossierpanel{")[1].split("}\n")[0]
+    # amssymb is deliberately NOT loaded here — opentorus.sty picks either it or
+    # the Libertinus math font, and loading both clashes.
+    loads = [ln for ln in doc.splitlines() if ln.startswith("\\usepackage")]
+    assert not any("amssymb" in ln for ln in loads), loads
+
+
+def test_status_chip_keeps_green_for_settled_statuses_only() -> None:
+    """Colour must not upgrade an unverified claim into a settled-looking one."""
+    from opentorus.research.dossier.pdf_export import status_chip
+
+    assert status_chip("verified") == "\\statusok{verified}"
+    assert status_chip("formally_verified") == "\\statusok{formally\\_verified}"
+    assert status_chip("supported") == "\\statusok{supported}"
+    assert status_chip("open") == "\\statuswarn{open}"
+    assert status_chip("sketch") == "\\statuswarn{sketch}"
+    assert status_chip("refuted") == "\\statusbad{refuted}"
+    assert status_chip("contradicted") == "\\statusbad{contradicted}"
+    # Neutral grey, never green.
+    assert status_chip("unverified") == "\\statusbadge{unverified}"
+    assert status_chip("unknown") == "\\statusbadge{unknown}"
+    assert status_chip("") == ""
+
+
+def test_latex_verbatim_uses_breaking_output_environment() -> None:
+    from opentorus.research.dossier.pdf_export import _latex_verbatim
+
+    block = _latex_verbatim("line one\nline two")
+    assert block.startswith("\\begin{otoutput}")
+    assert block.endswith("\\end{otoutput}")
+    assert "verbatim" not in block
+
+
+def test_sanitize_rewrites_verbatim_to_output_environment() -> None:
+    raw = "\\begin{verbatim}\nstdout tail\n\\end{verbatim}"
+    fixed = sanitize_latex_body(raw)
+    # The old preprint.cls loaded lineno, which pinned the stock verbatim so
+    # breaklines never fires and long output runs off the page.
+    assert "\\begin{otoutput}" in fixed
+    assert "\\end{otoutput}" in fixed
+    assert "verbatim" not in fixed
+
+
+def test_proof_fallback_does_not_double_escape_markdown_bold() -> None:
+    """``**x**`` must become ``\\textbf{x}``, not a literal ``\\{}textbf{x}``."""
+    from opentorus.research.dossier.pdf_export import _proof_markdown_to_latex_fallback
+
+    md = "## Gaps\n- **[GAP-1] Quasi-polynomial transition**: no known mechanism for $\\log d$.\n"
+    latex = _proof_markdown_to_latex_fallback(md)
+    assert "\\textbackslash" not in latex
+    assert "\\textbf{" in latex
+    assert "$\\log d$" in latex
+
+
+def test_proof_fallback_renders_numbered_steps_as_enumerate() -> None:
+    from opentorus.research.dossier.pdf_export import _proof_markdown_to_latex_fallback
+
+    md = "## Main proof\n1. Sample rows.\n2. Apply the bound.\n3. Conclude.\n"
+    latex = _proof_markdown_to_latex_fallback(md)
+    assert "\\begin{enumerate}" in latex
+    assert latex.count("\\item") == 3
+    assert "\\end{enumerate}" in latex
+
+
+def test_markdown_display_math_does_not_corrupt_later_inline_math() -> None:
+    """A multi-line ``$$…$$`` block used to shift ``$`` pairing for the whole body."""
+    from opentorus.research.dossier.pdf_export import _markdown_to_latex
+
+    md = (
+        "Crouzeix's conjecture states that\n"
+        "$$\n"
+        "\\lVert p(A) \\rVert_2 \\le 2 \\max_{z \\in W(A)} |p(z)|,\n"
+        "$$\n"
+        "for every polynomial $p$.\n\n"
+        "- Crouzeix-Palencia (2017): constant $1 + \\sqrt{2}$.\n"
+    )
+    latex = _markdown_to_latex(md)
+    assert "\\[" in latex and "\\]" in latex
+    assert "\\lVert p(A) \\rVert_2" in latex
+    # The formula after the display block must survive intact.
+    assert "$1 + \\sqrt{2}$" in latex
+    assert "\\textbackslash" not in latex
+
+
+def test_latex_item_guards_a_leading_bracket() -> None:
+    """``\\item [REFEREE] …`` would otherwise be read as an optional argument."""
+    from opentorus.research.dossier.pdf_export import _latex_item
+
+    assert _latex_item("[REFEREE] unsupported claim") == "\\item {}[REFEREE] unsupported claim"
+    assert _latex_item("ordinary gap") == "\\item ordinary gap"
+
+
+def test_facts_to_latex_uses_booktabs_claim_table(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    store.create_dossier(ot, "Submodularity question.", title="Test problem")
+    from opentorus.research.dossier.claims import add_claim
+
+    add_claim(
+        ot,
+        "PROBLEM-0001",
+        claim_type="COUNTEREXAMPLE_CANDIDATE",
+        statement="Error is not submodular for SDDM.",
+    )
+    body = facts_to_latex(gather_dossier_facts(ot, "PROBLEM-0001"))
+    assert "\\begin{tabularx}" in body
+    assert "\\toprule" in body and "\\midrule" in body and "\\bottomrule" in body
+    assert "\\hline" not in body
+    assert "\\artifact{CLAIM-0001}" in body
+    # Long claim types must be able to wrap inside the narrow claim column.
+    assert "COUNTEREXAMPLE\\_\\allowbreak{}CANDIDATE" in body
+    # A counterexample candidate is flagged as not-a-refutation in a callout.
+    assert "\\begin{otcaution}" in body
+    assert "\\otartifactindex{" in body
 
 
 def test_fix_corrupted_latex_norm_and_display_math() -> None:
@@ -192,6 +353,9 @@ def test_fix_corrupted_latex_norm_and_display_math() -> None:
     assert r"\|" in fixed
     assert "$$" not in fixed
     assert r"\$$" not in fixed
+    # Display math becomes \[...\] so the equation is centred on its own line.
+    assert fixed.count(r"\[") == 1
+    assert fixed.count(r"\]") == 1
 
 
 def test_replace_verbatim_proof_blocks() -> None:
@@ -285,8 +449,7 @@ def test_facts_to_latex_includes_claims(tmp_path: Path) -> None:
     assert "CLAIM-0001" in body
     assert "Submodularity" in body
     doc = wrap_preprint_document(facts, body)
-    assert "\\documentclass" in doc
-    assert "preprint" in doc
+    assert "\\documentclass[a4paper]{opentorus}" in doc
     assert "\\maketitle" in doc
 
 
@@ -333,7 +496,8 @@ def test_wrap_preprint_includes_booktabs_for_llm_tables() -> None:
         "\\end{tabular}\n"
     )
     doc = wrap_preprint_document(facts, body)
-    assert "\\usepackage{booktabs}" in doc
+    # booktabs/tabularx now come from the class rather than a \usepackage line.
+    assert "\\documentclass[a4paper]{opentorus}" in doc
     assert "\\toprule" in doc
 
 
