@@ -402,3 +402,59 @@ def test_a_missing_citation_is_still_flagged() -> None:
     from opentorus.research.dossier.honesty import lint_report
 
     assert lint_report("Barajas and Serra prove the conjecture for degree 6.") != []
+
+
+# --- a paper that cannot be parsed at all --------------------------------------
+
+
+def test_an_unfetchable_paper_is_not_sent_back_to_paper_fetch(tmp_path: Path) -> None:
+    """ "call paper_fetch and ensure [parsed]" is impossible for a withdrawn record.
+
+    A metadata-only paper is kept deliberately, with the reason in ``access_note`` — a
+    404'd arXiv PDF, a source-only or paywalled record. A Sendov run lost four
+    proof_write attempts to that instruction while the workspace already knew why the
+    text was missing.
+    """
+    from opentorus.research.paper_citations import validate_proof_citations
+    from opentorus.research.papers import Paper, _save_meta
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    ot_dir = workspace_dir(tmp_path)
+    _save_meta(
+        ot_dir,
+        Paper(
+            id="PAPER-0001",
+            source="2210.08720v2",
+            source_type="arxiv",
+            title="arXiv:2210.08720v2",
+            full_text_accessible=False,
+            access_note="full text not retrievable (HTTP 404 from arxiv.org); metadata only",
+        ),
+    )
+
+    errors, _warnings = validate_proof_citations(ot_dir, "By PAPER-0001 Theorem 1, done.")
+
+    assert len(errors) == 1
+    message = errors[0]
+    assert "cannot be parsed" in message
+    assert "HTTP 404" in message
+    assert "Re-fetching will not change this" in message
+    assert "[GAP-n]" in message
+
+
+def test_a_merely_unfetched_paper_is_still_sent_to_paper_fetch(tmp_path: Path) -> None:
+    """The old advice stays right when fetching *would* help."""
+    from opentorus.research.paper_citations import validate_proof_citations
+    from opentorus.research.papers import Paper, _save_meta
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    init_workspace(tmp_path)
+    ot_dir = workspace_dir(tmp_path)
+    _save_meta(ot_dir, Paper(id="PAPER-0001", source="2210.08720", source_type="arxiv"))
+
+    errors, _warnings = validate_proof_citations(ot_dir, "By PAPER-0001 Theorem 1, done.")
+
+    assert len(errors) == 1
+    assert "call paper_fetch and ensure [parsed]" in errors[0]
+    assert "cannot be parsed" not in errors[0]

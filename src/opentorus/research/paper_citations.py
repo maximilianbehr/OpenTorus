@@ -269,6 +269,28 @@ def cited_theorems_for_paper(body: str, paper_id: str) -> set[str]:
     return found
 
 
+def _unparsed_advice(ot_dir: Path, paper_id: str) -> str:
+    """Say whether re-fetching this paper can possibly help.
+
+    A record whose PDF is genuinely unavailable (withdrawn, source-only, paywalled) is
+    kept as metadata-only *on purpose*, with the reason written into ``access_note``.
+    Telling the model to "call paper_fetch and ensure [parsed]" then asks for something
+    that cannot happen: a Sendov run lost four proof_write attempts to a 404'd arXiv
+    record while the workspace already knew why the text was missing.
+    """
+    from opentorus.research.papers import get_paper
+
+    paper = get_paper(ot_dir, paper_id)
+    if paper is not None and paper.full_text_accessible is False:
+        reason = (paper.access_note or "no fetchable full text").rstrip(". ")
+        return (
+            f"and it cannot be parsed: {reason}. Re-fetching will not change this. "
+            "Cite a paper you have parsed instead, attribute the statement to the "
+            "abstract/metadata explicitly, or record the step as a [GAP-n]."
+        )
+    return "call paper_fetch and ensure [parsed]."
+
+
 def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[str]]:
     """Return ``(blocking_errors, warnings)`` for proof text citing PAPER-* artifacts."""
     errors: list[str] = []
@@ -286,8 +308,7 @@ def validate_proof_citations(ot_dir: Path, body: str) -> tuple[list[str], list[s
         corpus = _paper_corpus(ot_dir, pid)
         if corpus is None:
             errors.append(
-                f"{pid} is cited but has no parsed full text — "
-                "call paper_fetch and ensure [parsed]."
+                f"{pid} is cited but has no parsed full text — {_unparsed_advice(ot_dir, pid)}"
             )
             continue
 
