@@ -506,7 +506,22 @@ class WebSearchTool(Tool):
         try:
             results = web_search(query, limit=limit)
         except SourceError as exc:
-            return self.fail(call, str(exc))
+            # A bare transport error reads as "the web is broken" or "my query was bad",
+            # and the model can act on neither. The search backend throttles hard: 43 of
+            # 130 web_search calls across ten recorded runs came back "Connection reset
+            # by peer", and retrying the same query immediately just spends another turn.
+            # Say what it is, and name the tool that queries the paper indexes directly —
+            # which is the better instrument for literature anyway.
+            detail = str(exc)
+            if any(s in detail.lower() for s in ("reset by peer", "timed out", "temporarily")):
+                detail += (
+                    "\n\nThis is the web-search backend throttling, not a fault in your "
+                    "query and not a statement about the literature. Repeating it now "
+                    "will very likely fail the same way. Use lit_search for papers — it "
+                    "queries arXiv/OpenAlex/Crossref directly and is not rate-limited "
+                    "here — and come back to web_search only for non-paper sources."
+                )
+            return self.fail(call, detail)
         if not results:
             return self.ok(call, "No web results found.")
         lines = [f"{i}. {title}\n   {url}" for i, (title, url) in enumerate(results, start=1)]

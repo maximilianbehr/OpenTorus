@@ -589,3 +589,43 @@ def test_a_genuinely_unknown_tool_still_misses(tmp_path: Path) -> None:
     tool, resolved = registry.resolve("find_file")
     assert tool is None
     assert resolved == "find_file"
+
+
+def test_a_throttled_web_search_says_so_and_names_the_alternative() -> None:
+    """A bare transport error reads as "the web is broken" or "my query was bad".
+
+    The search backend throttles hard: 43 of 130 web_search calls across ten recorded
+    runs came back "Connection reset by peer", and retrying the same query immediately
+    just spends another turn.
+    """
+    from unittest.mock import patch
+
+    from opentorus.research.sources.base import SourceError
+    from opentorus.tools.base import ToolCall
+    from opentorus.tools.builtin import WebSearchTool
+
+    error = SourceError(
+        "Could not reach https://html.duckduckgo.com/html/?q=x: "
+        "[Errno 104] Connection reset by peer"
+    )
+    with patch("opentorus.tools.web.web_search", side_effect=error):
+        result = WebSearchTool().run(ToolCall(id="c1", name="web_search", args={"query": "x"}))
+
+    assert not result.ok
+    assert "Connection reset by peer" in result.content  # the real error survives
+    assert "throttling" in result.content
+    assert "lit_search" in result.content
+
+
+def test_a_genuine_http_error_gets_no_throttling_advice() -> None:
+    from unittest.mock import patch
+
+    from opentorus.research.sources.base import SourceError
+    from opentorus.tools.base import ToolCall
+    from opentorus.tools.builtin import WebSearchTool
+
+    with patch("opentorus.tools.web.web_search", side_effect=SourceError("HTTP 404 from u: gone")):
+        result = WebSearchTool().run(ToolCall(id="c1", name="web_search", args={"query": "x"}))
+
+    assert not result.ok
+    assert "throttling" not in result.content
