@@ -239,12 +239,32 @@ def _eval_interval(node: ast.AST, env: dict, iv):  # noqa: ANN001
             return iv.e
         raise _UnsafeExpression(f"unknown name '{node.id}'")
     if isinstance(node, ast.Call):
-        if not isinstance(node.func, ast.Name) or node.func.id not in _ALLOWED_FUNCS:
-            raise _UnsafeExpression("only sqrt/exp/log/sin/cos/tan/abs calls are allowed")
+        name = node.func.id if isinstance(node.func, ast.Name) else None
+        # min/max over intervals are exact and unambiguous — [a,b] and [c,d] give
+        # [min(a,c), min(b,d)] — and "the smallest of these is at most X" is the natural
+        # way to state the problems this backend is for. A Balan-Wang run reached for
+        # min twice in one session, once here and once in sympy (where an order relation
+        # on a Min never has a constant-sign difference), was refused both times, and
+        # ended by submitting `0.5**2 - 2*0.5 + 0.75 = 0` instead.
+        if name in ("min", "max") and len(node.args) >= 2 and not node.keywords:
+            values = [_eval_interval(a, env, iv) for a in node.args]
+            pick = min if name == "min" else max
+            return iv.mpf(
+                [
+                    pick(float(v.a) for v in values),
+                    pick(float(v.b) for v in values),
+                ]
+            )
+        if name is None or name not in _ALLOWED_FUNCS:
+            # Name the offender: with three nested calls in one expression, "only
+            # sqrt/exp/log/… are allowed" leaves the model guessing which one is wrong.
+            offender = f"'{name}'" if name else "that call"
+            allowed = "/".join(sorted(_ALLOWED_FUNCS)) + "/min/max"
+            raise _UnsafeExpression(f"{offender} is not available here; allowed: {allowed}")
         if len(node.args) != 1 or node.keywords:
-            raise _UnsafeExpression("functions take exactly one positional argument")
+            raise _UnsafeExpression(f"'{name}' takes exactly one positional argument")
         arg = _eval_interval(node.args[0], env, iv)
-        if node.func.id == "abs":
+        if name == "abs":
             return abs(arg)
-        return getattr(iv, node.func.id)(arg)
+        return getattr(iv, name)(arg)
     raise _UnsafeExpression(type(node).__name__)

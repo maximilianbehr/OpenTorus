@@ -378,3 +378,36 @@ def test_a_well_formed_certificate_is_unaffected() -> None:
 
     result = SymPyVerifier().verify('{"lhs": "2*n", "rhs": "n+n", "relation": "eq", "vars": ["n"]}')
     assert result.accepted
+
+
+def test_min_and_max_are_available_to_the_interval_backend() -> None:
+    """ "the smallest of these is at most X" is the natural shape for this backend.
+
+    A Balan-Wang run submitted min(1-abs(cos(t1)), 1-abs(cos(t2)), 1-abs(cos(t2-t1)))
+    and was refused as unparseable; it had already been refused the same shape in sympy,
+    where an order relation on a Min never has a constant-sign difference. It then gave
+    up and submitted `0.5**2 - 2*0.5 + 0.75 = 0`. min/max over intervals are exact.
+    """
+    from opentorus.research.verifiers.interval import IntervalVerifier
+
+    result = IntervalVerifier().verify(
+        '{"variables": {"x": [0, 1]}, "expression": "min(x, 1-x)", "relation": "<=", "bound": 1.5}'
+    )
+    # It parses and yields a rigorous enclosure instead of a format refusal. The
+    # enclosure is sound, not tight: interval arithmetic treats x and 1-x as
+    # independent, so min encloses to [0, 1] rather than the true range [0, 0.5].
+    assert "not available here" not in result.output
+    assert "enclosure" in result.output
+    assert result.accepted, result.output
+
+
+def test_an_unavailable_function_is_named() -> None:
+    """With three nested calls, "only sqrt/exp/log/… are allowed" leaves it guessing."""
+    from opentorus.research.verifiers.interval import IntervalVerifier
+
+    result = IntervalVerifier().verify(
+        '{"variables": {"x": [0, 1]}, "expression": "gamma(x)", "relation": "<=", "bound": 1}'
+    )
+    assert not result.accepted
+    assert "'gamma' is not available here" in result.output
+    assert "min/max" in result.output
