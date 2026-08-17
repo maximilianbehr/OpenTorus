@@ -6,6 +6,33 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.10] — 2026-08-17
+
+Fourteen new problems for the example collection, and eight more inside an existing
+one. The point of this release is not the count but the process that produced it:
+every one of the ten new campaign dossiers carries a status audit taken fresh on the
+day, and every audit was handed to a second, independent session with the instruction
+to find what is wrong with it. That second pass earned its place again. It caught a
+Williamson nonexistence result attributed to the wrong paper, a dual-conjecture
+constant quoted without its factor 1/d, a degree-5 case described as "publication
+status unclear" that has been in print since 2006, Schinzel's m/n threshold cited as
+a theorem when it is a conjecture, and a claimed proof of Erdős–Straus from February
+2026 that the first audit had not seen at all. None of these would have been a
+computation error; every one would have been a wrong sentence in a report that a
+model then cites as fact.
+
+The audits also had a way of catching the world mid-motion. The Hadamard dossier was
+audited five days after an unrefereed announcement of matrices for all twelve unknown
+orders below 2000 — third-party integer-verified, no paper — and carries it as exactly
+that. The hot spots dossier had to be scoped to the plane because the high-dimensional
+convex case was refuted in a still-unpublished 2024 preprint. The Ryser–Brualdi–Stein
+dossier is a mixed frontier by construction: one half proved for all large n in an
+unpublished preprint, the other half open. Three of the four new calibrations exist to
+test labels harder than "open" or "solved": a refutation whose counterexample lives
+only in a paper's figures and must be reconstructed and certified; a published proof
+that the community does not accept and a Lean effort that offers no verdict; a
+conjecture that is true through dimension seven and false from eight.
+
 ### Added
 - **Ten new campaign dossiers and four new calibration examples** under
   `examples/`, all built from `CAMPAIGN_TEMPLATE.md` with fresh status audits
