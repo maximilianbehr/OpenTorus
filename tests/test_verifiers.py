@@ -305,7 +305,7 @@ def test_a_wrong_matrix_identity_is_still_rejected() -> None:
 
 
 def test_an_order_relation_between_matrices_is_inconclusive_not_decided() -> None:
-    """"<=" between matrices has no single meaning; picking one would be a guess."""
+    """ "<=" between matrices has no single meaning; picking one would be a guess."""
     from opentorus.research.verifiers.sympy_backend import SymPyVerifier
 
     result = SymPyVerifier().verify(
