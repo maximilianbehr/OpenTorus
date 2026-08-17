@@ -353,3 +353,28 @@ def test_a_legal_symbol_name_is_untouched() -> None:
         ' "relation": "eq", "vars": ["lam"]}'
     )
     assert result.accepted
+
+
+def test_a_malformed_certificate_shows_the_offending_text() -> None:
+    """ "column 3553 (char 3552)" is unusable for a 3.5 KB single-line certificate.
+
+    Seen on a Hadamard submission that spelled out sixteen orthogonality conditions
+    inline: the model was told where the error was in characters, which it cannot count.
+    """
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    source = '{"lhs": "' + "x+1+" * 400 + 'x", "rhs" "0", "relation": "eq"}'
+    result = SymPyVerifier().verify(source)
+
+    assert result.inconclusive
+    assert "not valid JSON" in result.output
+    # The neighbourhood of the fault is quoted, with a caret under it.
+    assert '"rhs" "0"' in result.output
+    assert "^" in result.output
+
+
+def test_a_well_formed_certificate_is_unaffected() -> None:
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify('{"lhs": "2*n", "rhs": "n+n", "relation": "eq", "vars": ["n"]}')
+    assert result.accepted

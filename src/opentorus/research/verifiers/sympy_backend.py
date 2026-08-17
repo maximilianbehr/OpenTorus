@@ -105,7 +105,19 @@ class SymPyVerifier:
         try:
             cert = json.loads(source)
         except json.JSONDecodeError as exc:
-            return self._inconclusive(f"certificate is not valid JSON: {exc}")
+            # "column 3553 (char 3552)" is unusable advice for a certificate written as
+            # one 3.5 KB line — no model counts that far. Quote the neighbourhood so the
+            # offending text is visible. Seen once, on a Hadamard submission that spelled
+            # out sixteen orthogonality conditions inline.
+            start, end = max(0, exc.pos - 60), exc.pos + 60
+            excerpt = source[start:end].replace("\n", " ")
+            marker = " " * (exc.pos - start) + "^"
+            return self._inconclusive(
+                f"certificate is not valid JSON: {exc}\n"
+                f"…{excerpt}…\n {marker}\n"
+                "The certificate is a small JSON object — keep lhs/rhs as strings and "
+                "let sympy do the expansion, rather than writing the expanded form out."
+            )
         if not isinstance(cert, dict) or "lhs" not in cert or "rhs" not in cert:
             return self._inconclusive("certificate must be an object with 'lhs' and 'rhs'.")
         relation = str(cert.get("relation", "eq")).lower()
