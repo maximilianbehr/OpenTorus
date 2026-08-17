@@ -485,7 +485,11 @@ def prove(
     disprove: bool = typer.Option(
         False,
         "--disprove",
-        help="Prioritize counterexample / refutation instead of a proof sketch.",
+        help=(
+            "Prioritize refutation: counterexample search first, refutation sketch as "
+            "the deliverable. The default session is already neutral (prove OR refute); "
+            "this flag only changes the priority."
+        ),
     ),
     literature: bool = typer.Option(
         True,

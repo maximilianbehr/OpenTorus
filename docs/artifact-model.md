@@ -200,6 +200,21 @@ language is never blocked). Attempts recorded before the snapshot field existed
 are never challenged. This enforces invariant 5 at the artifact boundary:
 deleting gap markers is not closing gaps.
 
+## Failed attempts as steering, not just record
+
+`failed_attempts.jsonl` (`FailedAttempt`, with `reusable_obstruction`),
+`problem.yaml:known_obstructions`, and workspace `failed_attempts` memory are
+first-class artifacts (invariant 5) — and the prove loop reads them back. Every
+proof prompt and every gap-recovery hint carries a "Known dead ends for this
+dossier — do NOT retry these unchanged" block built from them (obstructions first,
+reusable failed attempts before plain ones, at most twelve lines). Workspace
+memory is attributed to a dossier only when the entry names its id, or when the
+workspace holds a single dossier; the prompt therefore asks the model to log
+routes that failed as `memory_add(kind=failed_attempts, text='PROBLEM-XXXX: <method>
+— fails because <reason>')`. The block is a constraint, not a verdict — the model
+may contest a recorded dead end if it says what changed and cites the artifact —
+and it never touches any status.
+
 ## Experiment-citation integrity
 
 An experiment citation must point at a real `EXP-*` manifest: citing an id that

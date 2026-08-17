@@ -132,7 +132,8 @@ def build_proof_gap_recovery_hint(
             "proof. Relabelling an unresolved step as an 'Open Problem' in prose does not "
             "close its gap."
         )
-    return _append_known_bad_citations(ot_dir, pid, hint)
+    hint = _append_known_bad_citations(ot_dir, pid, hint)
+    return _append_known_dead_ends(ot_dir, pid, hint)
 
 
 # Referee-reopened gaps carry this marker so the loop can tell them from the model's own
@@ -242,6 +243,60 @@ def _append_known_bad_citations(ot_dir: Path, problem_id: str, text: str) -> str
         text
         + "\n\nDo NOT cite these (already shown nonexistent in the parsed sources):\n- "
         + "\n- ".join(bad[:12])
+    )
+
+
+def known_dead_ends(ot_dir: Path, problem_id: str, *, limit: int = 12) -> list[str]:
+    """Routes already shown not to work for this dossier, most reusable first.
+
+    Gathers ``problem.yaml:known_obstructions``, the dossier's ``FailedAttempt``
+    ledger (``reusable_obstruction`` entries first), and workspace
+    ``failed_attempts`` memory that names the dossier (or any entry when the
+    workspace holds a single dossier, where the attribution is unambiguous). The
+    result feeds the proof prompt as a negative constraint — invariant 5 keeps
+    failed attempts as first-class artifacts, but until they reach the model's
+    context they only document the circling instead of preventing it.
+    """
+    from opentorus.research.dossier import store
+    from opentorus.research.memory import list_memory
+
+    pid = problem_id.strip().upper()
+    dossier = store.get_dossier(ot_dir, pid)
+    if dossier is None:
+        return []
+    lines: list[str] = []
+    seen: set[str] = set()
+
+    def _add(text: str) -> None:
+        norm = " ".join(text.split())
+        key = norm.lower()
+        if norm and key not in seen:
+            seen.add(key)
+            lines.append(norm)
+
+    for obstruction in dossier.known_obstructions:
+        _add(f"obstruction: {obstruction}")
+    failed = store.list_failed_attempts(ot_dir, pid)
+    for rec in sorted(failed, key=lambda r: not r.reusable_obstruction):
+        why = rec.reason_failed or rec.summary
+        tag = " [reusable obstruction]" if rec.reusable_obstruction else ""
+        _add(f"{rec.id} {rec.attempted_method}{tag}" + (f": {why}" if why else ""))
+    single = len(store.list_dossiers(ot_dir)) == 1
+    for entry in list_memory(ot_dir, "failed_attempts"):
+        if single or pid in entry.text.upper():
+            _add(f"{entry.id}: {entry.text}")
+    return lines[:limit]
+
+
+def _append_known_dead_ends(ot_dir: Path, problem_id: str, text: str) -> str:
+    """Re-inject recorded dead ends as a negative constraint (survives compaction)."""
+    dead = known_dead_ends(ot_dir, problem_id)
+    if not dead:
+        return text
+    return (
+        text + "\n\nKnown dead ends for this dossier (recorded, not undone) — do NOT retry "
+        "these unchanged; reflect on why each fails and pick a different route. If you "
+        "believe one is wrong, say what changed and cite the artifact:\n- " + "\n- ".join(dead)
     )
 
 
@@ -457,17 +512,29 @@ def build_prove_prompt(
             else optional_lit
         )
     else:
+        # Neutral framing on purpose. A prompt that only asks for a proof biases the
+        # model toward the stated conclusion — it bridges gaps with hand-wavy steps
+        # rather than notice the statement is false (confirmation bias; the "prove
+        # or refute" phrasing measurably reduces it). Both verdicts are admissible
+        # deliverables here; --disprove only changes the *priority*, not the set of
+        # allowed outcomes.
         if open_problem:
             goal = (
                 "Produce an honest **status sketch** for an **open** problem: summarize "
                 "known bounds, counterexamples, and obstructions from parsed PAPER-* "
-                "artifacts. Do NOT claim the conjecture is proved or disproved unless you "
-                "have a complete argument without [GAP-n]."
+                "artifacts. Attempt **both directions** (a proof route and a refutation "
+                "route) and name the crux that blocks each. Do NOT claim the conjecture "
+                "is proved or disproved unless you have a complete argument without "
+                "[GAP-n]."
             )
         else:
             goal = (
-                "Produce the strongest **natural-language proof or proof sketch** "
-                "you can, with explicit gaps where the argument is incomplete."
+                "**Prove or refute** the statement — do not assume it is true. Produce "
+                "the strongest **natural-language proof sketch OR refutation** "
+                "(counterexample / obstruction) you can, with explicit gaps where the "
+                "argument is incomplete. If small cases or a bounded search contradict "
+                "the statement, switch to the refutation; never bridge a gap with a "
+                "hand-wavy step to reach the stated conclusion."
             )
         if literature_first and min_papers > 0:
             lit_block = (
@@ -522,12 +589,17 @@ def build_prove_prompt(
             "otherwise cite by content/section or mark [GAP-n] — a wrong number rejects "
             "the whole proof_write.\n"
             "   • Mark every unjustified step [GAP-1], [GAP-2], …\n"
-            "6. memory_add(kind=decisions): refuted / open + gap count + papers read\n"
+            "6. memory_add(kind=decisions): refuted / open + gap count + papers read; "
+            f"memory_add(kind=failed_attempts, text='{pid}: <method> — fails because "
+            "<reason>') for every route that did not work\n"
         )
     else:
         numerics = (
-            "5. Optional numerics/special cases only under proof_write evidence_notes "
-            "(corroboration, not proof).\n"
+            "5. Sanity-check the statement before committing to a direction: small cases "
+            "or a bounded counterexample search (scripts + exp_new/exp_run). A "
+            "counterexample → claim_new COUNTEREXAMPLE_CANDIDATE and write a "
+            "**refutation** sketch instead of a proof; a pass is corroboration only "
+            "(record under proof_write evidence_notes, not as proof).\n"
         )
         formal_block = (
             (
@@ -545,11 +617,14 @@ def build_prove_prompt(
             f"{step1}"
             "2. status + paper_list — note existing PAPER-*, EXP-*, CLAIM-*\n"
             f"{lit_block}"
-            "4. Synthesize: which cited results support, constrain, or obstruct a proof?\n"
+            "4. Synthesize: which cited results support, constrain, or obstruct a proof — "
+            "and which suggest the statement could be false?\n"
             f"{numerics}"
             "6. proof_write(problem_id, title, theorem, definitions, lemmas, main_proof, "
-            "gaps_markdown, evidence_notes, gaps=[…]) — **mandatory** NL proof artifact\n"
-            "   • scope=primary (default): `theorem` restates the dossier problem below\n"
+            "gaps_markdown, evidence_notes, gaps=[…]) — **mandatory** NL proof or "
+            "refutation artifact\n"
+            "   • scope=primary (default): `theorem` restates the dossier problem below "
+            "(or its negation, for a refutation)\n"
             "   • scope=exploration: side thread + connection_to_dossier (≥60 chars); "
             "does not finish the run alone\n"
             "   • Cite PAPER-* ids in evidence_notes and lemmas where literature applies\n"
@@ -562,7 +637,10 @@ def build_prove_prompt(
             "7. After the first PROOF-*, keep working while gaps remain: read the sketch, "
             "fetch evidence, run numerics, and call proof_write again to close [GAP-n].\n"
             f"{formal_block}"
-            "8. memory_add(kind=decisions): proved / refuted / open + gap count + papers read\n"
+            "8. memory_add(kind=decisions): proved / refuted / open + gap count + papers "
+            f"read; memory_add(kind=failed_attempts, text='{pid}: <method> — fails "
+            "because <reason>') for every route that did not work, so the next run "
+            "does not retry it\n"
         )
 
     return (
@@ -1057,6 +1135,9 @@ def run_prove(
     )
     # On a resumed run, re-feed citations a prior run already proved nonexistent.
     proof_prompt = _append_known_bad_citations(ot_dir, pid, proof_prompt)
+    # …and the routes it already found not to work, so this run steers around them
+    # instead of rediscovering them (recorded FailedAttempts / known_obstructions).
+    proof_prompt = _append_known_dead_ends(ot_dir, pid, proof_prompt)
     proof_answer = proof_loop.run(proof_prompt)
     answer = proof_answer if not answer else f"{answer}\n\n---\n\n{proof_answer}"
     total_tool_calls += proof_loop.tool_calls_this_run

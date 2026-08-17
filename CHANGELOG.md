@@ -6,7 +6,47 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **`opentorus prove` is framed neutrally — prove *or* refute.** The default goal
+  used to ask for "the strongest proof or proof sketch you can", which
+  presupposes the statement is true; refutation existed only behind
+  `--disprove`. The default now says "prove or refute — do not assume it is
+  true", the workflow asks which cited results suggest the statement could be
+  false, runs a bounded sanity check (small cases / counterexample search)
+  before committing to a direction, and names the artifact a refutation ends in
+  (`COUNTEREXAMPLE_CANDIDATE` + refutation sketch as the primary answer). The
+  open-problem status sketch asks for both routes and the crux blocking each.
+  `--disprove` only changes the priority (counterexample search first). A
+  proof-only framing measurably biases a model toward the stated conclusion —
+  it bridges gaps with hand-wavy steps instead of noticing a false statement —
+  so the neutral wording is pinned by
+  `test_build_prove_prompt_default_is_neutral_prove_or_refute`.
+- `komlos-conjecture` had gone stale: the best upper bound is Bansal–Jiang's
+  Õ(log^{1/4} n) (arXiv:2508.03961, Aug 2025), not Banaszczyk's O(√log n), and the
+  lower bound K ≥ 1+√2 (Kunisky) was missing — driver, README and the examples table
+  now carry them and register the papers. `matrix-spencer` records the June-2026
+  structured special cases (Akbas–Sra's C*-algebra theorem; the group case) as
+  claimed, with a pointer to the new calibration.
+
+- **Recorded dead ends steer the next prove run.** `FailedAttempt` records,
+  `problem.yaml:known_obstructions`, and dossier-attributed
+  `failed_attempts` memory were first-class artifacts that only ever reached
+  the report; a fresh run rediscovered them. `known_dead_ends()` now feeds
+  them into the proof prompt and every gap-recovery hint as "Known dead ends
+  for this dossier — do NOT retry these unchanged" (obstructions first,
+  reusable failed attempts before plain ones, ≤12 lines, contestable with a
+  cited artifact), and the workflow asks the model to log failed routes as
+  `memory_add(kind=failed_attempts, text='PROBLEM-XXXX: <method> — fails
+  because <reason>')` so the attribution survives a second dossier. No status
+  is touched.
+
 ### Added
+- `docs/design-adversarial-verification.md`: design note for a multi-round LLM
+  referee (findings only, never status changes), branch-and-score symbolic
+  candidates with numeric ground truth, feeding recorded obstructions back into
+  prompts as negative constraints, dependency enumeration, and context
+  de-identification — the harness-side techniques from arXiv:2602.03837 mapped
+  onto the existing loops.
 - **Ten new examples drawn from the Randomstrasse101 open-problems blog** (ETH Zürich;
   38 numbered problems in 17 posts, all extracted and status-checked, ten selected for
   small-machine explorability and certifiability; every audit counter-checked by an
@@ -63,14 +103,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   all ≥ .98" table entry false for complete graphs, a covering-radius list, a
   hypothesis "n ≥ 3k−1" that is "n ≥ 3k", and an Ehrhart-positivity threshold of 21
   that is 14.
-
-### Changed
-- `komlos-conjecture` had gone stale: the best upper bound is Bansal–Jiang's
-  Õ(log^{1/4} n) (arXiv:2508.03961, Aug 2025), not Banaszczyk's O(√log n), and the
-  lower bound K ≥ 1+√2 (Kunisky) was missing — driver, README and the examples table
-  now carry them and register the papers. `matrix-spencer` records the June-2026
-  structured special cases (Akbas–Sra's C*-algebra theorem; the group case) as
-  claimed, with a pointer to the new calibration.
 
 ## [0.0.10] — 2026-08-17
 

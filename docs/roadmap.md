@@ -21,7 +21,8 @@ all present in v0.0.3:
 The flagship surface is the **credible math dossier** (`opentorus problem …` and
 `opentorus prove`): one open problem, an auditable artifact graph, and an honest
 report that never upgrades evidence into proof. The live design notes are in
-[design-problem-model.md](design-problem-model.md).
+[design-problem-model.md](design-problem-model.md) and
+[design-adversarial-verification.md](design-adversarial-verification.md).
 
 Each milestone is a small, reviewable step: run the tests, show the diff,
 summarize the changes, stop. Post-v0.0.3 work continues in that style.

@@ -119,6 +119,148 @@ def test_build_prove_prompt_disprove_mode() -> None:
     assert "PROBLEM-0002" in text
 
 
+def test_build_prove_prompt_default_is_neutral_prove_or_refute() -> None:
+    """The default goal must not presuppose the statement is true.
+
+    A proof-only framing biases the model toward the stated conclusion (it bridges
+    gaps with hand-wavy steps instead of noticing a false statement); "prove or
+    refute" keeps both verdicts admissible. Pinned so a later prompt edit cannot
+    quietly reintroduce the one-sided framing.
+    """
+    text = build_prove_prompt("PROBLEM-0001")
+    goal = text.split("Primary goal:", 1)[1].split("\n\n", 1)[0]
+    assert "prove or refute" in goal.lower()
+    assert "do not assume it is true" in goal.lower()
+    assert "refutation" in goal.lower()
+    # The workflow tells the model to test the statement before choosing a direction
+    # and names the artifact a refutation ends in.
+    assert "COUNTEREXAMPLE_CANDIDATE" in text
+    assert "before committing to a direction" in text.lower()
+    assert "or its negation, for a refutation" in text
+    # Still evidence-grade: a passing sanity check is corroboration, never proof.
+    assert "corroboration only" in text
+
+
+def test_build_prove_prompt_open_problem_attempts_both_directions() -> None:
+    text = build_prove_prompt("PROBLEM-0001", open_problem=True)
+    goal = text.split("Primary goal:", 1)[1].split("\n\n", 1)[0]
+    assert "both directions" in goal.lower()
+    assert "Do NOT claim" in goal
+
+
+def test_build_prove_prompt_asks_to_record_dead_ends_with_dossier_id() -> None:
+    """Both modes tell the model to log routes that failed, tagged with the dossier id.
+
+    The recording is what makes the next run's negative constraint possible: the
+    memory ledger is workspace-scoped, so without the id the entry cannot be
+    attributed to this dossier once a second one exists.
+    """
+    for kwargs in ({}, {"disprove": True}):
+        text = build_prove_prompt("PROBLEM-0007", **kwargs)
+        assert "memory_add(kind=failed_attempts, text='PROBLEM-0007:" in text
+        assert "fails because" in text
+
+
+def test_known_dead_ends_gathers_obstructions_failed_attempts_and_memory(
+    tmp_path: Path,
+) -> None:
+    from opentorus.agent.prove_loop import known_dead_ends
+    from opentorus.research.memory import add_memory
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    d1 = store.create_dossier(ot, "Is every widget a gadget?", title="Widgets")
+    d1.known_obstructions = ["induction on n fails at the base case"]
+    store.save_dossier(ot, d1)
+    store.add_failed_attempt(
+        ot, d1.id, attempted_method="probabilistic method", reason_failed="union bound too weak"
+    )
+    store.add_failed_attempt(
+        ot,
+        d1.id,
+        attempted_method="spectral bound",
+        reason_failed="eigenvalue gap vanishes",
+        reusable_obstruction=True,
+    )
+    add_memory(ot, "failed_attempts", f"{d1.id}: greedy pairing — fails because parity")
+
+    dead = known_dead_ends(ot, d1.id)
+    assert dead[0] == "obstruction: induction on n fails at the base case"
+    # Reusable obstruction is listed before the plain failed attempt.
+    assert "spectral bound [reusable obstruction]: eigenvalue gap vanishes" in dead[1]
+    assert "probabilistic method: union bound too weak" in dead[2]
+    assert any("greedy pairing" in line for line in dead)
+
+
+def test_known_dead_ends_memory_attribution(tmp_path: Path) -> None:
+    from opentorus.agent.prove_loop import known_dead_ends
+    from opentorus.research.memory import add_memory
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    d1 = store.create_dossier(ot, "First problem", title="First")
+    add_memory(ot, "failed_attempts", "untagged: brute force — fails because too slow")
+    # Single dossier: an untagged workspace entry is unambiguously this dossier's.
+    assert any("brute force" in line for line in known_dead_ends(ot, d1.id))
+
+    d2 = store.create_dossier(ot, "Second problem", title="Second")
+    add_memory(ot, "failed_attempts", f"{d2.id}: sieve — fails because density")
+    # Two dossiers: only entries naming the dossier are attributed to it.
+    dead1 = known_dead_ends(ot, d1.id)
+    assert not any("brute force" in line for line in dead1)
+    assert not any("sieve" in line for line in dead1)
+    dead2 = known_dead_ends(ot, d2.id)
+    assert any("sieve" in line for line in dead2)
+    assert not any("brute force" in line for line in dead2)
+
+
+def test_known_dead_ends_dedups_and_limits(tmp_path: Path) -> None:
+    from opentorus.agent.prove_loop import known_dead_ends
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    d = store.create_dossier(ot, "Some problem", title="Some")
+    d.known_obstructions = ["Induction  fails", "induction fails"]
+    store.save_dossier(ot, d)
+    for i in range(20):
+        store.add_failed_attempt(ot, d.id, attempted_method=f"method {i}", reason_failed="no")
+    dead = known_dead_ends(ot, d.id, limit=5)
+    assert len(dead) == 5
+    assert sum(1 for line in dead if "induction" in line.lower()) == 1
+    assert known_dead_ends(ot, "PROBLEM-9999") == []
+
+
+def test_dead_ends_reach_the_prompt_and_gap_hint(tmp_path: Path) -> None:
+    """Recorded dead ends are injected as a negative constraint; none → no block."""
+    from opentorus.agent.prove_loop import (
+        _append_known_dead_ends,
+        build_proof_gap_recovery_hint,
+    )
+    from opentorus.research.dossier import claims as claim_ops
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    d = store.create_dossier(ot, "Is P equal to Q?", title="PQ")
+    base = build_prove_prompt(d.id, statement_focus="Is P equal to Q?")
+    assert _append_known_dead_ends(ot, d.id, base) == base
+
+    store.add_failed_attempt(
+        ot, d.id, attempted_method="direct computation", reason_failed="blows up at n=7"
+    )
+    text = _append_known_dead_ends(ot, d.id, base)
+    assert "Known dead ends for this dossier" in text
+    assert "do NOT retry these unchanged" in text
+    assert "direct computation: blows up at n=7" in text
+    # It is a constraint, not a verdict: the model may contest a recorded dead end.
+    assert "If you believe one is wrong" in text
+
+    claim_ops.add_proof_attempt(
+        ot, d.id, title="Sketch", body="Step. [GAP-1]", gaps=["[GAP-1] missing"]
+    )
+    hint = build_proof_gap_recovery_hint(ot, d.id)
+    assert "direct computation: blows up at n=7" in hint
+
+
 def test_prove_cli_missing_dossier(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     init_workspace(tmp_path)

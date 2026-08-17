@@ -80,9 +80,11 @@ same models — the difference is everything wrapped around them:
 
 - **`opentorus prove PROBLEM-XXXX`** runs a focused, budgeted agent session —
   literature survey → proof draft → gap-fill — and writes a natural-language
-  `PROOF-*` sketch with explicit `[GAP-n]` markers for every unproven step.
-  `--disprove` prioritizes counterexample/refutation. It records evidence and
-  open gaps; it never reports a QED it cannot back.
+  `PROOF-*` sketch with explicit `[GAP-n]` markers for every unproven step. The
+  session is framed neutrally — *prove or refute* — so a statement that turns out
+  false ends in a refutation sketch, not a hand-waved proof; `--disprove` puts
+  counterexample search first. It records evidence and open gaps; it never
+  reports a QED it cannot back.
 - **Eight attack strategies** — `literature_map`, `special_cases`,
   `counterexample_search`, `symbolic_simplification`, `numerical_experiment`,
   `formalization_attempt`, `proof_sketch`, `obstruction_search` — each scaffolds a
