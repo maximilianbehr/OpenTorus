@@ -411,3 +411,57 @@ def test_an_unavailable_function_is_named() -> None:
     assert not result.accepted
     assert "'gamma' is not available here" in result.output
     assert "min/max" in result.output
+
+
+def test_a_symbolic_inequality_with_a_determinate_sign_is_decided() -> None:
+    """Checking only `is_number` refused every provable symbolic inequality.
+
+    An sos-coloring run submitted `x**2 >= 0` and was told this backend "decides
+    identities and constant comparisons, not universally quantified inequalities" — but
+    once the variable is real, sympy settles it outright, along with exp(x) > 0,
+    -x**2 <= 0 and |x| >= 0, which are exactly what a lemma step reduces to.
+    """
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    v = SymPyVerifier()
+    for lhs, rel in (("x**2", "ge"), ("exp(x)", "gt"), ("-x**2", "le"), ("Abs(x)", "ge")):
+        result = v.verify(
+            f'{{"lhs": "{lhs}", "rhs": "0", "relation": "{rel}", "vars": {{"x": "real"}}}}'
+        )
+        assert result.accepted, (lhs, rel, result.output)
+        assert result.general is True
+
+
+def test_a_false_symbolic_inequality_is_rejected_not_accepted() -> None:
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify(
+        '{"lhs": "-x**2", "rhs": "0", "relation": "gt", "vars": {"x": "real"}}'
+    )
+    assert not result.accepted and not result.inconclusive
+    assert "never satisfies" in result.output
+
+
+def test_an_undeclared_symbol_is_told_to_declare_its_domain() -> None:
+    """The run that hit this declared `vars: ["x"]`, which leaves x complex.
+
+    Refusing was formally right — x**2 >= 0 is not a statement about complex x — but the
+    message said the backend cannot do quantified inequalities at all, which is wrong and
+    sent the model away from the one repair that works.
+    """
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify('{"lhs": "x**2", "rhs": "0", "relation": "ge", "vars": ["x"]}')
+    assert result.inconclusive
+    assert "carries no domain" in result.output
+    assert '"real"' in result.output
+
+
+def test_a_genuinely_undecidable_inequality_keeps_the_routes_message() -> None:
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify(
+        '{"lhs": "cos(x)", "rhs": "0", "relation": "ge", "vars": {"x": "real"}}'
+    )
+    assert result.inconclusive
+    assert "Routes that do work" in result.output

@@ -58,14 +58,30 @@ def test_sympy_verifier_constant_inequality() -> None:
     assert SymPyVerifier().verify('{"lhs": "5", "rhs": "3", "relation": "le"}').accepted is False
 
 
-def test_sympy_verifier_inconclusive_on_nonconstant_inequality() -> None:
+def test_sympy_verifier_decides_what_it_can_and_declines_the_rest() -> None:
+    """The backend must decline what it cannot settle — and settle what it can.
+
+    This test used to assert that `x**2 >= 0` with a real `x` is inconclusive, on the
+    premise that it is "true but not via a constant-sign difference". That premise is
+    wrong: for real x the difference is non-negative everywhere and sympy proves it. The
+    old behaviour checked only ``is_number`` and so declined every provable symbolic
+    inequality, which an sos-coloring run walked straight into. Declining a statement one
+    can prove is not honesty, it is a missing capability — the honesty property is that
+    an *undecidable* one stays inconclusive, which the second half pins.
+    """
     from opentorus.research.verifiers.sympy_backend import SymPyVerifier
 
-    # x**2 >= 0 is true but not via a constant-sign difference: honestly inconclusive.
-    res = SymPyVerifier().verify(
+    provable = SymPyVerifier().verify(
         '{"lhs": "x**2", "rhs": "0", "relation": "ge", "vars": {"x": "real"}}'
     )
-    assert res.inconclusive is True
+    assert provable.accepted is True
+    assert provable.inconclusive is False
+
+    undecidable = SymPyVerifier().verify(
+        '{"lhs": "cos(x)", "rhs": "0", "relation": "ge", "vars": {"x": "real"}}'
+    )
+    assert undecidable.accepted is False
+    assert undecidable.inconclusive is True
 
 
 def test_sympy_registered_when_enabled() -> None:

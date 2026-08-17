@@ -209,10 +209,49 @@ class SymPyVerifier:
         # statement and no route — observed live on a power-mean inequality. Name the
         # routes that do exist for this shape.
         if not getattr(diff, "is_number", False):
+            # Ask sympy's assumption system before giving up. A symbolic difference can
+            # still have a determinate sign — x**2 >= 0, exp(x) > 0, -x**2 <= 0, |x| >= 0
+            # are all decided outright once the variables are real, and those are exactly
+            # the shapes a lemma step reduces to. Checking only ``is_number`` refused all
+            # of them: an sos-coloring run submitted "x**2 >= 0" and was told the backend
+            # does not do universally quantified inequalities.
+            determinate = {
+                "le": diff.is_nonpositive,
+                "lt": diff.is_negative,
+                "ge": diff.is_nonnegative,
+                "gt": diff.is_positive,
+            }.get(relation)
+            if determinate is True:
+                return self._accepted(
+                    f"lhs - rhs = {diff} has a determinate sign satisfying '{relation}' "
+                    "for every value the declared assumptions allow."
+                )
+            if determinate is False:
+                return self._rejected(
+                    f"lhs - rhs = {diff} never satisfies '{relation}' under the declared "
+                    "assumptions."
+                )
             free = sorted(str(s) for s in getattr(diff, "free_symbols", set()))
             names = ", ".join(free[:6]) or "the free variables"
+            unconstrained = sorted(
+                str(s) for s in getattr(diff, "free_symbols", set()) if s.is_real is None
+            )
+            # An undeclared symbol is the cheapest repair there is, so name it first —
+            # but keep the routes below, which are what a genuinely undecidable shape
+            # needs. Replacing them cost the model the only advice that still applied.
+            domain_note = ""
+            if unconstrained:
+                listed = ", ".join(f"'{n}'" for n in unconstrained[:6])
+                domain_note = (
+                    f"{listed} carries no domain, and an unconstrained symbol may be "
+                    "complex, where the relation has no meaning. Declare it first — "
+                    f'vars={{"{unconstrained[0]}": "real"}} — since many shapes '
+                    "(x**2 >= 0, exp(x) > 0) then decide outright. If it is already "
+                    "real and still undecided: "
+                )
             return self._inconclusive(
-                f"order relation needs a constant-sign difference; lhs - rhs = {diff} "
+                domain_note
+                + f"order relation needs a constant-sign difference; lhs - rhs = {diff} "
                 f"still depends on {names}. This backend decides identities and "
                 "constant comparisons, not universally quantified inequalities. Routes "
                 "that do work: (a) prove it on a bounded box with "
