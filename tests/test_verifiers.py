@@ -322,3 +322,34 @@ def test_generality_is_reported_for_scalars_and_matrices() -> None:
     v = SymPyVerifier()
     assert v.verify('{"lhs": "1+2", "rhs": "3", "relation": "eq", "vars": []}').general is False
     assert v.verify('{"lhs": "2*n", "rhs": "n+n", "relation": "eq", "vars": ["n"]}').general is True
+
+
+def test_lambda_is_named_as_the_problem_and_a_substitute_is_offered() -> None:
+    """sympify parses through Python, so `lambda` cannot be a symbol — and λ is *the*
+    name for an eigenvalue.
+
+    A Balan-Wang run submitted `{"lhs": "(3 - sqrt(5))/2", "rhs": "lambda"}` and got
+    "Sympify of expression 'could not parse 'lambda'' failed, because of exception being
+    raised: SyntaxError", which names neither the offending word nor a way around it.
+    The model abandoned the symbolic statement and submitted a closed arithmetic one.
+    """
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify(
+        '{"lhs": "(3 - sqrt(5))/2", "rhs": "lambda", "relation": "eq", "vars": ["lambda"]}'
+    )
+    assert result.inconclusive  # a naming problem is not a mathematical rejection
+    assert not result.accepted
+    assert "'lambda' cannot be a symbol name" in result.output
+    assert "reserved word" in result.output
+    assert "'lambda' -> 'lam'" in result.output
+
+
+def test_a_legal_symbol_name_is_untouched() -> None:
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify(
+        '{"lhs": "lam**2 - 3*lam + 1", "rhs": "lam**2 - 3*lam + 1",'
+        ' "relation": "eq", "vars": ["lam"]}'
+    )
+    assert result.accepted

@@ -17,10 +17,60 @@ dependency, so the backend is always available.
 from __future__ import annotations
 
 import json
+import keyword
+import re
 
 from opentorus.research.verifiers.base import VerificationResult
 
 _RELATIONS = {"eq", "ne", "le", "lt", "ge", "gt"}
+
+# sympify parses through Python, so a Python keyword cannot be a symbol name — and
+# ``lambda`` is the standard name for an eigenvalue. A Balan-Wang run wrote
+# ``{"lhs": "(3 - sqrt(5))/2", "rhs": "lambda"}`` and got back "Sympify of expression
+# 'could not parse 'lambda'' failed, because of exception being raised: SyntaxError",
+# which names neither the offending word nor a way around it. The model then abandoned
+# the symbolic statement and submitted a closed arithmetic one instead — the same
+# degradation the Hadamard matrix bug produced. Suggest the conventional stand-ins.
+_KEYWORD_SUBSTITUTES = {
+    "lambda": "lam",
+    "in": "in_",
+    "is": "is_",
+    "not": "not_",
+    "or": "or_",
+    "and": "and_",
+    "if": "if_",
+    "as": "as_",
+    "del": "del_",
+    "from": "from_",
+    "import": "import_",
+    "class": "class_",
+    "def": "def_",
+    "return": "return_",
+    "None": "none_",
+    "True": "true_",
+    "False": "false_",
+}
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+
+
+def _reserved_identifiers(expression_text: str, spec: object) -> list[str]:
+    """Python keywords used as symbol names, in the expressions or the variable spec."""
+    names = set(_IDENTIFIER.findall(expression_text))
+    if isinstance(spec, dict):
+        names |= {str(k) for k in spec}
+    elif isinstance(spec, (list, tuple, set)):
+        names |= {str(v) for v in spec}
+    return sorted(n for n in names if keyword.iskeyword(n))
+
+
+def _reserved_message(reserved: list[str]) -> str:
+    pairs = ", ".join(f"'{n}' -> '{_KEYWORD_SUBSTITUTES.get(n, n + '_')}'" for n in reserved)
+    listed = ", ".join(f"'{n}'" for n in reserved)
+    return (
+        f"{listed} cannot be a symbol name: this backend parses expressions through "
+        f"Python, where it is a reserved word. Rename and resubmit — {pairs} — keeping "
+        "the same mathematics; the name is arbitrary to the check."
+    )
 
 
 class SymPyVerifier:
@@ -69,6 +119,10 @@ class SymPyVerifier:
         spec = cert.get("vars")
         if spec is None:
             spec = cert.get("variables")
+        reserved = _reserved_identifiers(f"{cert['lhs']} {cert['rhs']}", spec)
+        if reserved:
+            return self._inconclusive(_reserved_message(reserved))
+
         symbols = self._symbols(sp, spec or {})
         try:
             lhs = sp.sympify(cert["lhs"], locals=symbols)
