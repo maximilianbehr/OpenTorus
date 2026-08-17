@@ -8,8 +8,8 @@ authors:
 repository-code: "https://github.com/maximilianbehr/OpenTorus"
 url: "https://github.com/maximilianbehr/OpenTorus"
 license: Apache-2.0
-version: 0.0.8
-date-released: "2026-08-16"
+version: 0.0.9
+date-released: "2026-08-17"
 keywords:
   - mathematics
   - open problems

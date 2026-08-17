@@ -6,6 +6,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.9] — 2026-08-17
+
+Nineteen fixes, every one of them found by running the example collection against ten
+model families the project had never been used with — and not one of them a computation
+error or a crash. They are all the same defect wearing different clothes: the system
+says something true that the model cannot act on, or a guard looks past a formatting
+detail no test ever produced. That is why the suite stayed green through all of it.
+
+The guards against circling were themselves the worst offenders. The one that catches
+"same mistake, new arguments" keyed on raw error text, so a verifier stamping each
+rejection with a fresh proof id and temp path split one recurring failure into 29
+unique ones and the threshold of 4 was unreachable by construction. Its sibling ladder
+only ever warned and never stopped, so a run rewrote one blocked command twenty times.
+A cached re-read was logged as a success, so two runs re-read the same file 24 and 25
+times invisibly. And a single observation was written 364 times — 365 of that run's 390
+actions — because writing a duplicate note also succeeded. Each is now bounded, with
+every threshold calibrated against the recorded runs rather than guessed.
+
+Two defects made a capable model unusable outright: a system message the stable-prefix
+ordering deliberately places mid-conversation, which strict local chat templates reject
+with an HTTP 500 ninety seconds into a run, and a response deadline that bounded the
+wait for the next chunk rather than the reply, letting a degenerate model hold a turn
+for half an hour. Two more were failures of honesty rather than mechanics: a typographic
+hyphen turned correctly cited lines into uncited ones at three separate sites, and the
+literature gate's own placeholder citation was pasted back 364 times as a real
+observation, naming a theorem that does not exist.
+
+The rest are the ordinary work of making a refusal usable: naming what arrived, showing
+the shape to send, re-reading a value the model encoded once too often, resolving a tool
+name a corrupted output split with a space, and never sending a model to fetch a paper
+that cannot be fetched.
+
 ### Fixed
 - **A verifier stamping each rejection no longer blinds the unchanged-error guard.**
   The guard that catches "same mistake, new arguments" keyed on the raw error text,
@@ -83,6 +115,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   channel was described as having produced "0 characters so far" — the opposite
   diagnosis for a run that had emitted six thousand characters of reasoning and simply
   never finished. Caught by the deadline itself firing on qwen3-vl:32b in a real run.
+- **A tool name with a stray space resolves to the tool that was meant.** No registered
+  tool has whitespace in its name — not the builtins, not the `mcp__server__tool` form —
+  so `read_ file` can only mean `read_file`, and answering "unknown tool" to it is a
+  true statement about a name the model never meant to write. Observed 39 times across
+  four runs, one spending 25 of its 76 actions on it while every reply already listed
+  the available tools: explaining could not help, because the model was not choosing the
+  name, its output was corrupted. A name still unknown after the whitespace is removed
+  still misses.
+- **A note written twice is one note.** A run wrote one and the same observation 364
+  times — 365 of its 390 actions — and every call succeeded, so nothing saw it: the
+  chat-only streak reset on each, and neither failure tracker looks at successes.
+  `add_memory` now returns the existing entry for identical text and the tool says so
+  instead of reporting a write that did not happen.
+- **The literature gate's example is no longer a usable observation.** The text that run
+  repeated was the gate's own placeholder, "PAPER-0001 Theorem 2.1, p.5: asymptotic
+  error bound …", pasted back verbatim — and PAPER-0001 contains no Theorem 2.1. An
+  illustration a model can send straight back is an invitation to invent authority, so
+  the example is written as a shape to fill in from the paper actually read.
+- **A missing argument names the one that was sent instead.** Across the recorded runs
+  this failure is a renaming, not an omission: `memory_add` wanted `text` and got `note`
+  or `content`, `claim_new` wanted `statement` and got `claim`,
+  `dossier_known_result_add` wanted `source_artifacts` and got `paper_id`. Nothing is
+  renamed automatically — only the model knows whether its `note` was the entry text or
+  a side remark, and guessing would put words into an artifact.
+- **An unknown dossier id names the ones that exist.** A typo is the usual cause (runs
+  asked for `PROPROBLEM-0001` and for a `PROBLEM-0003` that was never created) and a
+  workspace almost always holds exactly one dossier.
+- **Refusing to read a workspace file points at the right tool.** A recorded proof
+  pointed at `paper_fetch`, sending the model to the literature when it asked for its
+  own draft; a paper's reading note under `summaries/` got a generic hint that named no
+  way to read a paper at all, while the same paper's bytes under `papers/` were
+  recognised.
 - **A rejected argument says what arrived and what shape to send.** "Argument 'gaps'
   must be a array." is ungrammatical, silent about what was sent, and shows nothing to
   correct against; a Sendov run passed its whole gap list as one newline-separated
