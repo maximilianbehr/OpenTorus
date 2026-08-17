@@ -63,6 +63,27 @@ def resolve_cli_workspace_root(start: Path | None = None) -> Path | None:
     return found if found != cwd else cwd
 
 
+def _strip_component_whitespace(user_path: str) -> str:
+    """Trim whitespace around each path component and drop the ones left empty.
+
+    A path component that begins or ends with a space, or contains a newline, is not a
+    filename anybody meant to write — it is the same output corruption that turns
+    ``read_file`` into ``read_ file``. Left alone it succeeds silently and litters the
+    project: a run wrote ``" \\nscripts/verify_6. py"`` and created a real directory
+    named two-spaces-newline-scripts, outside ``.opentorus/`` so no re-run cleans it up,
+    with the script unreachable from every sane path the model tried afterwards.
+
+    Only the component boundaries are touched. A space *inside* a name is legitimate
+    ("my notes.md") and is left exactly as written.
+    """
+    separator = "\\" if "\\" in user_path and "/" not in user_path else "/"
+    parts = [part.strip() for part in user_path.split(separator)]
+    # An empty first part is a leading separator (absolute path) and must survive.
+    kept = [part for index, part in enumerate(parts) if part or index == 0]
+    cleaned = separator.join(kept)
+    return cleaned if cleaned.strip() else user_path
+
+
 def resolve_workspace_path(workspace_root: Path | str, user_path: Path | str) -> Path:
     """Resolve ``user_path`` against ``workspace_root`` without allowing escape.
 
@@ -71,7 +92,7 @@ def resolve_workspace_path(workspace_root: Path | str, user_path: Path | str) ->
     elsewhere).
     """
     root = Path(workspace_root).resolve()
-    candidate = Path(user_path)
+    candidate = Path(_strip_component_whitespace(str(user_path)))
 
     # Anchor relative paths to the workspace root; absolute paths are taken as-is
     # and validated below so that e.g. ``/etc/passwd`` is rejected.

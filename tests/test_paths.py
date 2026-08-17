@@ -88,3 +88,42 @@ def test_resolve_cli_workspace_root_rejects_home_from_subdir(tmp_path: Path, mon
     child.mkdir()
     assert resolve_cli_workspace_root(home) == home.resolve()
     assert resolve_cli_workspace_root(child) is None
+
+
+# --- a path a corrupted output split with whitespace ----------------------------
+
+
+def test_whitespace_around_a_path_component_is_trimmed(tmp_path: Path) -> None:
+    """A component that starts or ends with a space is not a name anybody meant.
+
+    It is the same output corruption that turns read_file into "read_ file", and left
+    alone it succeeds silently: a run wrote " \\nscripts/verify_6. py" and created a real
+    directory named two-spaces-newline-scripts, outside .opentorus/ so no re-run cleans
+    it up, with the script unreachable from every sane path it tried afterwards.
+    """
+    from opentorus.paths import resolve_workspace_path
+
+    root = tmp_path.resolve()
+    assert resolve_workspace_path(root, " \nscripts/verify_6. py") == root / "scripts/verify_6. py"
+    assert resolve_workspace_path(root, "scripts /sweep.py") == root / "scripts/sweep.py"
+    assert resolve_workspace_path(root, " analysis.md ") == root / "analysis.md"
+
+
+def test_a_legitimate_space_inside_a_name_survives(tmp_path: Path) -> None:
+    """Only the component boundaries are touched — "my notes.md" is a real filename."""
+    from opentorus.paths import resolve_workspace_path
+
+    root = tmp_path.resolve()
+    assert resolve_workspace_path(root, "notes/my notes.md") == root / "notes/my notes.md"
+
+
+def test_trimming_does_not_open_an_escape(tmp_path: Path) -> None:
+    """Whitespace must not be a way to smuggle a traversal past the root check."""
+    import pytest
+
+    from opentorus.paths import PathTraversalError, resolve_workspace_path
+
+    with pytest.raises(PathTraversalError):
+        resolve_workspace_path(tmp_path, " .. /../etc/passwd")
+    with pytest.raises(PathTraversalError):
+        resolve_workspace_path(tmp_path, "../outside.txt")
