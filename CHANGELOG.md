@@ -103,6 +103,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   all ≥ .98" table entry false for complete graphs, a covering-radius list, a
   hypothesis "n ≥ 3k−1" that is "n ≥ 3k", and an Ehrhart-positivity threshold of 21
   that is 14.
+- **Six more AIM Problem List examples — the runners-up of the previous round, taken
+  up on request** (same pipeline: fresh dated audit with the auditor's own computations,
+  independent counter-audit that re-ran them). Five campaigns: real-rootedness of the
+  Durfee polynomials (polypartition 1.2, Canfield–Corteel–Savage; exact Sturm
+  certificates to n = 800, twice; the Rogers–Ramanujan relative fails at n = 75),
+  Bukh's nonlinear Roth pattern x, y, y+P(x)−P(y) (highdimdiscrete 2.1; nothing beyond
+  P = 2x is known — the pattern is not translation-invariant, so no Peluse-type bound
+  applies; exact maximum pattern-free sets for p ≤ 59), the distance antimagic
+  conjecture (graphstructureapp 1.45, Kamatchi–Arumugam; exhaustive verification
+  extended from order 8 to order 9 at creation, 205 914 graphs; the counter-audit fixed
+  a too-strong printed product condition — K₃□K₂ is distance antimagic), Lovett's
+  hypercube set system with random neighbourhood subsets (hereddiscrep 1.25; no paper
+  treats it — Õ(√n) via Bansal–Jiang 2025, Ω(√n) from a first-moment +
+  Littlewood–Offord argument derived and independently re-checked at creation, the
+  campaign target being Θ(√n) with no polylog), and the Chung–Graham sum conjecture
+  Σ_v t(v) ≥ |E| for increasing paths in edge orderings (graphramsey 1.38; both it and
+  Graham's f(K_n) ≥ cn open, n^{1−o(1)} ≤ f(K_n) ≤ (1/2+o(1))n; f(K₃..K₆) = 2, 2, 3,
+  4 by exhaustion / branch-and-bound, twice). One fixed-instance dossier (not a
+  campaign): the two small Boltzmann-machine questions (boltzmann 1.1/1.2 — is
+  RBM_{4,3} a universal approximator, and what is the maximum divergence of
+  RBM_{3,1}?), where the audit's own maximum-likelihood fits found soft-parity targets
+  that stall at a positive residual (≈ 0.077 bits at a = 0.8, reproduced by the
+  counter-audit's independent implementation) — numerical evidence *against* the
+  fullness the AIM page's simulations suggested — and reproduced the conjectured
+  −(3/4)log₂(2√3−3) ≈ 0.8306 bits for RBM_{3,1} to seven digits without finding
+  anything larger. Also fixed an unescaped table pipe in the examples README.
 
 ## [0.0.10] — 2026-08-17
 
