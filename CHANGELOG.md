@@ -6,6 +6,59 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.11] — 2026-08-17
+
+Four defects the verifier had been carrying, all four found by running the example
+collection rather than by reading the code, and two of them the same failure twice: a
+mechanical obstacle blocks a correct mathematical intent, the model gives up on it, and
+submits something trivial that is accepted without complaint. The loss never appears as
+an error — it appears as a green check.
+
+On the Hadamard dossier the agent submitted `H·Hᵀ = 4I` and was told "the identity does
+not hold", with the zero matrix printed inside the rejection: a sympy Matrix is never
+equal to the integer 0. It then submitted "1+1 = 2" instead. On Balan-Wang it wrote
+`lambda` for an eigenvalue — the standard name — and got a three-deep SyntaxError that
+named neither the offending word nor a substitute, and likewise fell back to closed
+arithmetic. Telling a model its correct proof is wrong is the worst thing a verifier can
+do, and both paths did exactly that.
+
+The third defect was in what the graph recorded rather than in what the checker decided:
+seven of eleven accepted proofs in one sweep were closed arithmetic filed against
+universally quantified claims, each linked as *validating* them. Claim status was never
+promoted, so that invariant held — but a reader of the graph saw a proof link that the
+artifact does not carry. The sympy backend now reports whether the checked statement
+quantified over anything, and a closed one earns a `supports` edge that says why.
+
+
+### Fixed
+- **A correct matrix identity is no longer reported as false.** A sympy Matrix never
+  equals the integer 0, so the zero test was False even when every entry was zero. On
+  the Hadamard dossier `H·Hᵀ = 4I` was rejected twice as "the identity does not hold" —
+  with the zero matrix printed inside the rejection. The run shows the cost: the model
+  abandoned the real identity and submitted "1+1 = 2", which was accepted. Order
+  relations between matrices are now inconclusive rather than decided, since entrywise
+  and positive-semidefinite orders disagree.
+- **`lambda` is a reserved word, and the rejection now says so.** sympify parses through
+  Python, so a Python keyword cannot be a symbol name — and `lambda` is *the* name for an
+  eigenvalue. A Balan-Wang run got back "Sympify of expression 'could not parse
+  'lambda'' failed, because of exception being raised: SyntaxError", which names neither
+  the offending word nor a way around it, and then fell back to a closed arithmetic
+  statement. The check now runs before parsing, names every reserved identifier, and
+  gives the conventional substitute; it stays inconclusive, because a naming collision
+  says nothing about the mathematics.
+- **A closed arithmetic fact supports a claim, it does not validate it.** Accepting
+  "1+2 = 3" says nothing about "for n=3, any set with distinct subset sums satisfies
+  max A >= 4", but the graph recorded it as validating that claim. Seven of eleven
+  accepted proofs in one sweep were closed arithmetic — `2**(4-2) + 1 = 5` filed against
+  the Happy Ending conjecture, `1/3 >= (5 - sqrt(5))/10` against one-third-two-thirds —
+  while the four with free variables were genuinely general. Claim *status* was never
+  promoted, so that invariant held; the edge was what overstated.
+- **A throttled web search says so, and names the tool that is not throttled.** 43 of 130
+  `web_search` calls across ten recorded runs failed with "Connection reset by peer" —
+  the search backend rate-limiting, reported as a bare transport error a model reads as
+  either "the web is broken" or "my query was bad". The rejection now names the
+  throttling and points at `lit_search`, which queries the paper indexes directly.
+
 ### Changed
 - **`opentorus prove` is framed neutrally — prove *or* refute.** The default goal
   used to ask for "the strongest proof or proof sketch you can", which
