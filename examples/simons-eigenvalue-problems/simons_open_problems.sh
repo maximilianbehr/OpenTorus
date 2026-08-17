@@ -12,7 +12,7 @@
 #   2. configure the model + agent (edit the model.* lines for your setup)
 #   3. build the python-sci container for the matrix experiments
 #   4. register the source paper as a local PAPER-* artifact
-#   5. create the five dossiers from notes.md (deterministic, one per heading)
+#   5. create the thirteen dossiers from notes.md (deterministic, one per heading)
 #   6. run `opentorus prove` on the target (literature -> draft -> gap-fill)
 #   7. build an honesty-linted report and export a PDF
 #
@@ -20,7 +20,7 @@
 #   - `opentorus` on PATH (activate the env where you installed it)
 #   - Docker, for the python-sci container
 #   - a tool-calling model; this script targets a local Ollama server on :11434 (override with OPENTORUS_MODEL / OPENTORUS_BASE_URL)
-#   - the bundled notes.md (five problems) and scripts/ (seed experiments)
+#   - the bundled notes.md (thirteen problems) and scripts/ (seed experiments)
 #
 # WARNING: step 1 runs `rm -rf .opentorus` in this directory.
 # Usage: ./simons_open_problems.sh [PROBLEM-ID]   (defaults to PROBLEM-0001)
@@ -63,8 +63,9 @@ opentorus env prepare python-sci --file docker/Dockerfile
 opentorus paper add https://arxiv.org/abs/2602.05394
 
 # --- 5. Create the dossiers -------------------------------------------------
-# notes.md holds five problems, one per top-level '# ' heading; `--structured`
-# maps each heading to one dossier deterministically (PROBLEM-0001..0005).
+# notes.md holds thirteen problems, one per top-level '# ' heading; `--structured`
+# maps each heading to one dossier deterministically (PROBLEM-0001..0013; 0001..0005
+# are the original five, 0006..0013 the second-pass extraction).
 opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 

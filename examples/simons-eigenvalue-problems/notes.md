@@ -1,7 +1,11 @@
-**Simons workshop open problems (arXiv:2602.05394).** Five small-dimensional, numerically
+**Simons workshop open problems (arXiv:2602.05394).** Thirteen small-dimensional, numerically
 explorable open problems from "Linear Systems and Eigenvalue Problems: Open Questions from a
-Simons Workshop". Each `# ` heading below becomes one dossier via
-`opentorus problem new --from-markdown notes.md --structured`.
+Simons Workshop" (41 numbered problems in the paper; these are the ones probeable with
+matrix experiments at small dimension). Each `# ` heading below becomes one dossier via
+`opentorus problem new --from-markdown notes.md --structured`; the first five (dossiers
+PROBLEM-0001..0005) are the original set and keep their ids, the remaining eight
+(PROBLEM-0006..0013) were extracted in a second pass. Two more workshop problems have
+standalone examples: 4.6 (nystrom-submodularity) and 6.3 (matrix-sign-approximation).
 
 # Conditioning of Ritz values from random Krylov subspaces (Problem 3.5)
 
@@ -130,3 +134,233 @@ For Hermitian tridiagonal families (free Jacobi, discrete Laplacian, random trid
 \(n\) and \(\delta\). For each candidate deterministic diagonal pattern, compute
 \(\operatorname{gap}(A+\delta E)\) and fit it against \((\delta/n)^c\); record the smallest gap found
 (worst case) and whether a fixed \((C,c)\) explains the data.
+
+# The Forsythe conjecture for restarted CG (Problem 2.20)
+
+Apply CG to \(f(x)=\tfrac12 x^TAx - x^Tb\) with SPD \(A\), restarted every \(s\) steps: from
+\(x_k\) take \(x_{k+1}\in x_k+\mathcal{K}_s(A,y_k)\) with \(x_\star-x_{k+1}\perp_A \mathcal{K}_s(A,y_k)\),
+where \(y_k=r_k/\lVert r_k\rVert\) is the normalized residual. Forsythe's conjecture: for
+\(2\le s< d(A)\) (degree of the minimal polynomial, with \(d(A,r_0)\ge s+1\)), each of the two
+subsequences \(\{y_{2k}\}\) and \(\{y_{2k+1}\}\) has a single limit vector.
+
+## Question
+
+Do the even and odd normalized-residual subsequences of \(s\)-step restarted CG each converge
+to a single limit vector, for every SPD \(A\) and every \(s\ge 2\)?
+
+## Working hypothesis to test
+
+Known: proved for \(s=1\) (steepest descent); \(\lim_k\lVert y_{2k+2}-y_{2k}\rVert=0\) holds in
+general but does not imply convergence of the subsequence. Numerical evidence in the
+literature suggests the conjecture is true; a sequence with several accumulation points
+would refute it.
+
+## Suggested experiments
+
+WLOG \(A\) diagonal (orthogonal invariance): small \(n\) (6–30), adversarial spectra
+(equispaced, geometric, clustered pairs, Chebyshev points), several \(s\). The differences
+decay geometrically, so run the recurrence in mpmath (200+ digits) as well as float64:
+track \(\lVert y_{2k+2}-y_{2k}\rVert\), Cauchy-ness of both subsequences, and angles to
+candidate limit vectors; search over random \(x_0\) and spectra (optimization) for slow or
+oscillating cases — any run whose even subsequence visits two well-separated accumulation
+points repeatedly is a counterexample candidate to re-verify at higher precision.
+
+# Updated CG residuals below machine precision (Problem 2.15)
+
+CG and steepest descent update \(x_k=x_{k-1}+a_{k-1}p_{k-1}\) and
+\(r_k=r_{k-1}-a_{k-1}Ap_{k-1}\); in floating point the updated \(r_k\) is not the true
+residual \(b-Ax_k\). Analyses of the attainable accuracy assume — but do not prove — that
+the updated residual norms shrink well below machine precision.
+
+## Question
+
+Determine conditions on \(A\) that ensure the updated residual norms \(\lVert r_k\rVert\) drop
+below machine precision in finite-precision arithmetic — or exhibit examples where they
+do not.
+
+## Target (two-sided)
+
+(i) Empirical sufficient conditions (spectrum shape, conditioning) under which the floor
+\(\min_k\lVert r_k\rVert\) reliably falls below unit roundoff; (ii) explicit SPD matrices
+where the updated residual stagnates above machine precision — an exactly checkable,
+counterexample-shaped deliverable.
+
+## Suggested experiments
+
+Textbook CG and steepest descent in float32 and float64, small \(n\) (20–100), thousands of
+iterations past stagnation: geometric spectra with \(\kappa\) up to \(10^{16}\), clustered
+spectra with tiny outliers, random Wishart. Record updated vs true residual norms and the
+floor \(\min_k\lVert r_k\rVert/u\); then maximize that floor over spectra/eigenvector coupling
+with black-box optimization. Cross-check float32 candidates in float64 to separate genuine
+structure from precision artifacts.
+
+# Precision needed for n-step CG convergence (Problem 2.17)
+
+In exact arithmetic CG terminates in \(n\) steps; in finite precision, loss of orthogonality
+delays convergence, and existing analyses demand precision far above the ideal
+\(\log(1/\epsilon)+c\log n\) bits.
+
+## Question
+
+How many bits of precision are necessary to guarantee that CG applied to an \(n\times n\) SPD
+system \(Ax=b\) obtains an approximate solution with normwise backward error at most
+\(\epsilon\) in \(n\) (or fewer) steps?
+
+## Target
+
+An empirical scaling law for the minimal mantissa length \(p(n,\kappa,\epsilon)\): does it
+grow like \(\log\kappa+\log n+\log(1/\epsilon)\), or does some spectrum family force much more?
+Identify the worst spectra.
+
+## Suggested experiments
+
+Implement CG with adjustable mantissa (mpmath, \(p=10\dots200\) bits). For each
+\((n,\text{spectrum},\epsilon)\), bisect on \(p\) for the property "normwise backward error
+\(\le\epsilon\) within \(n\) steps"; use spectra known to break Lanczos orthogonality (tight
+clusters plus outliers, Strakoš matrices); \(n=10\dots100\) suffices since the phenomenon is
+spectral. Fit \(p\) against \(\log\kappa\), \(n\), and \(\log(1/\epsilon)\).
+
+# Distribution of Ritz values across the numerical range (Problem 3.6)
+
+For non-Hermitian \(A\) and \(Q\in\mathbb{C}^{n\times k}\) with orthonormal columns, the Ritz
+values (eigenvalues of \(Q^*AQ\)) lie in the numerical range \(W(A)\). The Hermitian case is
+answered by Cauchy interlacing; \(k=1\) and \(k=n\) are understood, and \(k=n-1\) is known for
+normal \(A\).
+
+## Question
+
+What can be said — deterministically or probabilistically — about the distribution of the
+Ritz values across \(W(A)\) for \(1<k<n\)? What changes when \(Q\) is restricted to a Krylov
+basis, or drawn as a random subspace?
+
+## Target
+
+Empirical laws: the density of Ritz values relative to \(W(A)\) (boundary vs interior mass)
+as a function of \(k/n\) and non-normality, for Haar-random vs Krylov \(Q\); plus small-scale
+attainability tests (which prescribed Ritz configurations are reachable by some \(Q\)) to
+seed conjectures.
+
+## Suggested experiments
+
+\(n=8\dots50\); \(A\in\{\)Jordan block, Grcar, Ginibre, perturbed circulant shift, normal with
+prescribed spectrum\(\}\). Sample Haar \(Q\) (QR of Ginibre) and Krylov \(Q\) with random start;
+compute Ritz values; estimate the boundary of \(W(A)\) via eigenvalues of the Hermitian part
+of \(e^{i\theta}A\) and record the distance-to-boundary distribution. For tiny \(n,k\), attempt
+prescribed target configurations by optimization over the Stiefel manifold. (Reuses the
+Arnoldi tooling of the Problem 3.5 dossier.)
+
+# An O(kn) bidiagonal SVD in the MR3 family (Problem 3.8)
+
+For upper bidiagonal \(B\in\mathbb{R}^{n\times n}\), one wants \(k\) singular triples
+\((\sigma_i,u_i,v_i)\) in \(O(kn)\) time with coupling residual
+\(\lVert Bv_i-\sigma_i u_i\rVert_2=O(\epsilon n\lVert B\rVert_2)\) and orthogonality
+\(|v_i^Hv_j|,|u_i^Hu_j|=O(\epsilon n)\). MR3 applied to \(B^HB\) and \(BB^H\) separately loses
+the coupling; the Golub–Kahan form often loses orthogonality; two implementations were
+ultimately ruled unreliable for LAPACK.
+
+## Question
+
+Is there an \(O(kn)\) bidiagonal SVD with both guarantees — and are the known failures of
+the MR3-based attempts a bug or a genuine gap in the theory?
+
+## Target
+
+A failure-mode map: which singular-value distributions (glued clusters, relative-gap
+patterns) break which route (\(B^HB\), \(BB^H\), Golub–Kahan), measured by the residual and
+orthogonality criteria above — extracting the features of problematic bidiagonals that a
+repaired algorithm or theory would have to handle.
+
+## Suggested experiments
+
+Small \(n\) (50–500) bidiagonals: glued clusters, geometric decay, Wilkinson-glued patterns.
+Compute singular triples via the three routes (LAPACK MRRR through
+`scipy.linalg.eigh_tridiagonal(driver='stemr')` on the associated tridiagonals, plus the
+Golub–Kahan permuted form); measure coupling residuals and orthogonality against cluster
+gap and relative-gap statistics; map the empirical failure boundary.
+
+# GECP on the fermionic kernel (Problem 4.2)
+
+The discrete Lehmann representation of imaginary-time Green's functions rests on low-rank
+approximation of \(K(t,\omega)=e^{-t\omega}/(1+e^{-\omega})\) on
+\([0,1]\times[-\Lambda,\Lambda]\). Gaussian elimination with complete pivoting (greedy cross
+approximation) provably reaches \(\varepsilon\) at rank \(k=O(\Lambda+\log(1/\varepsilon))\),
+but a rank-\(k\) approximation with \(k=O(\log\Lambda\,\log(1/\varepsilon))\) exists — and
+empirically GECP tracks the better rate. Applications run \(\Lambda=10^5\)–\(10^6\), so the
+gap matters.
+
+## Question
+
+Prove stronger theoretical bounds for GECP applied to \(K\), exploiting the structure of the
+kernel.
+
+## Target
+
+A precise empirical law \(k(\varepsilon,\Lambda)\) for GECP on \(K\), fitted against both
+candidate rates across decades of \(\Lambda\), plus structural observations that could seed a
+proof: where the pivots land (near-log-uniform in \(\omega\)?), how cross-matrix volumes
+grow, connections to sum-of-exponentials approximation.
+
+## Suggested experiments
+
+Discretize \(K\) on fine grids (Chebyshev in \(t\), log-symmetric in \(\omega\); overflow-safe
+evaluation), \(\Lambda\in\{10,10^2,\dots,10^5\}\); run greedy complete-pivoted cross
+approximation; record sup-norm error vs \(k\); fit against \(O(\Lambda+\log 1/\varepsilon)\) and
+\(O(\log\Lambda\log 1/\varepsilon)\); log pivot locations and analyze their distribution.
+(The gecp-growth-factor example probes GECP's growth factor in general; here the question
+is the approximation rate on one structured kernel.)
+
+# Row selection by QRCP on orthonormal columns (Problem 4.3)
+
+For \(Q\in\mathbb{R}^{n\times k}\) with orthonormal columns there is always a row subset
+\(\mathcal{I}\) with \(\lVert Q(\mathcal{I},:)^{-1}\rVert_2\le\sqrt{k(n-k+1)}\), computable in
+\(O(nk^2)\). Practical column-pivoted QR (QRCP) has exponential-in-\(k\) worst-case bounds —
+but the known worst cases do not have orthonormal columns.
+
+## Question
+
+Does the QRCP algorithm used in practice satisfy the \(\sqrt{k(n-k+1)}\) bound, or a similar
+polynomial bound, on orthonormal-column inputs?
+
+## Working hypothesis to test
+
+Prove-or-disprove shaped: either QRCP-selected rows keep
+\(\lVert Q(\mathcal{I},:)^{-1}\rVert_2\) polynomially bounded on orthonormal inputs, or some
+orthonormal family drives it super-polynomially — a counterexample is a single explicit
+matrix, exactly checkable.
+
+## Suggested experiments
+
+\(\mathcal{I}\) = first \(k\) pivots of `scipy.linalg.qr(Q.T, pivoting=True)`; measure
+\(\rho(Q)=\lVert Q(\mathcal{I},:)^{-1}\rVert_2/\sqrt{k(n-k+1)}\) for (i) Haar-random \(Q\)
+across \((n,k)\), (ii) structured \(Q\) (orthonormal factors of Kahan matrices, eigenvector
+blocks of graph Laplacians, subsampled DFT/Hadamard columns), (iii) adversarial
+maximization of \(\rho\) over the Stiefel manifold at small \(n\) (\(\le 60\)), tracking the
+growth of the maximized \(\rho\) with \(k\).
+
+# Volume sampling versus optimal column subset selection (Problem 4.7)
+
+For a positive vector \(\lambda\), let
+\(x_k(\lambda)=\max_{V\in SO(n)}\min_{|\mathcal{I}|=k}\operatorname{Tr}[K-K_{:,\mathcal{I}}K_{\mathcal{I},\mathcal{I}}^{-1}K_{\mathcal{I},:}]\)
+with \(K=V^\top\operatorname{diag}(\lambda)V\) — the worst case over rotations of the optimal
+subset trace error — and let \(y_k(\lambda)=(k+1)\,e_{k+1}(\lambda)/e_k(\lambda)\) be the
+volume-sampling value (elementary symmetric polynomials). For \(k=n-1\) the two are equal.
+
+## Question
+
+Prove a tightness bound between \(x_k(\lambda)\) and \(y_k(\lambda)\) for general \(k\); limited
+empirical investigation indicates the two are usually quite close.
+
+## Target
+
+The empirical worst-case ratio \(x_k/y_k\) over \((n,k)\) and \(\lambda\)-profiles, the
+structure of the extremal rotations \(V\), and either a conjectured universal bound or a
+\(\lambda\) pushing the ratio far from 1.
+
+## Suggested experiments
+
+\(n=4\dots8\), \(k=1\dots n-1\): \(y_k\) exactly via symmetric polynomials (sympy);
+\(x_k\) by maximizing over \(V\) (exponential map of skew-symmetric matrices, multi-start
+`scipy.optimize`), inner minimum by brute force over all \(\binom{n}{k}\) subsets. Scan
+\(\lambda\) families (geometric, flat-plus-outliers, two-cluster, \(1/i\)); tabulate the
+maximal ratio and the extremal structure; validate the \(k=n-1\) identity as a correctness
+check.

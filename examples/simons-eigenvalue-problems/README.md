@@ -2,11 +2,16 @@
 
 ## Open problem
 
-Five small-dimensional, numerically explorable open problems from "Linear Systems and
-Eigenvalue Problems: Open Questions from a Simons Workshop" (arXiv:2602.05394). The agent sets
+Thirteen small-dimensional, numerically explorable open problems from "Linear Systems and
+Eigenvalue Problems: Open Questions from a Simons Workshop" (arXiv:2602.05394 — 41 numbered
+problems in total; these are the ones probeable with small matrix experiments). The agent sets
 up one dossier per problem, then attacks a chosen target by reading the local paper, writing
 and running its own matrix experiments, and recording claims, evidence, and failed attempts.
 None of these problems is claimed solved here; the example demonstrates the workflow.
+
+Two further workshop problems are covered by standalone examples: 4.6 by
+[nystrom-submodularity](../nystrom-submodularity/) and 6.3 (with its neighbors 6.4/6.5) by
+[matrix-sign-approximation](../matrix-sign-approximation/).
 
 | Dossier seed | Workshop problem | Topic | Related scripts |
 |---|---|---|---|
@@ -15,6 +20,14 @@ None of these problems is claimed solved here; the example demonstrates the work
 | 2.13 | Eigenvalue clustering vs GMRES iteration counts | construct example + non-normal counterexample | (agent-written) |
 | 3.4  | When do Ritz values approximate invariant-subspace eigenvalues | empirical sufficient conditions | (agent-written) |
 | 3.2  | Deterministic diagonal perturbation giving an eigenvalue gap | constructive search over diagonal patterns | `gap_experiment.py`, `test_gap.py`, `test_gap_patterns.py`, `test_ramp_gap.py`, `compare_patterns.py` |
+| 2.20 | Forsythe conjecture for restarted CG | even/odd residual subsequences: single limits? (high-precision tracking + counterexample search) | (agent-written) |
+| 2.15 | Updated CG residuals below machine precision | conditions vs stagnating examples (two-sided) | (agent-written) |
+| 2.17 | Bits of precision for n-step CG backward error | empirical scaling law $p(n,\kappa,\epsilon)$ via variable-mantissa CG | (agent-written) |
+| 3.6  | Ritz-value distribution across the numerical range | Haar vs Krylov subspaces, boundary/interior mass, attainability | (agent-written; reuses the 3.5 Arnoldi tooling) |
+| 3.8  | O(kn) bidiagonal SVD in the MR3 family | failure-mode map for the three MRRR routes | (agent-written) |
+| 4.2  | GECP on the fermionic kernel $e^{-t\omega}/(1+e^{-\omega})$ | empirical rate $k(\varepsilon,\Lambda)$ vs the two candidate bounds; pivot structure | (agent-written) |
+| 4.3  | QRCP row selection on orthonormal columns | $\lVert Q(\mathcal{I},:)^{-1}\rVert_2$ poly-bounded? (adversarial Stiefel search) | (agent-written) |
+| 4.7  | Volume sampling vs optimal column subset selection | worst-case ratio $x_k/y_k$ over rotations and spectra | (agent-written) |
 
 The `scripts/` directory holds seed numerical experiments (NumPy/SciPy); the agent may write
 and run more via `exp_run` during the prove loop.
@@ -27,7 +40,7 @@ The driver `simons_open_problems.sh` runs an end-to-end OpenTorus workflow:
 2. **Configure** — model provider/name/base URL/timeout, `agent.style autonomous`, `agent.max_steps inf`, `agent.prove_gap_fill_max_steps inf`, `permissions.mode trusted`.
 3. **Prepare environment** — write `docker/Dockerfile` (numpy, scipy, mpmath, sympy) and register the `python-sci` container via `opentorus env prepare`.
 4. **Add the source paper** — `opentorus paper add https://arxiv.org/abs/2602.05394`.
-5. **Create the dossiers** — `opentorus problem new --from-markdown notes.md` (five dossiers), then `opentorus problem list`.
+5. **Create the dossiers** — `opentorus problem new --from-markdown notes.md` (thirteen dossiers; 0001..0005 are the original five, 0006..0013 the second-pass extraction), then `opentorus problem list`.
 6. **Prove** — `opentorus prove ${TARGET}` (literature → proof draft → gap-fill); the target defaults to `PROBLEM-0001`.
 7. **Report and export** — `opentorus problem report --lint` and `opentorus problem export --pdf`.
 

@@ -6,6 +6,60 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Ten new campaign dossiers and four new calibration examples** under
+  `examples/`, all built from `CAMPAIGN_TEMPLATE.md` with fresh status audits
+  dated 2026-08-17, each audit counter-checked by a second independent
+  session (non-negotiable #7; the counter-audits again earned their keep —
+  among the findings: a misattributed Williamson nonexistence result, a
+  dual-conjecture constant off by a factor 1/d, a "still unclear" d=5 proof
+  that has in fact been published since 2006, a conjecture cited as a
+  theorem, and a claimed proof of Erdős–Straus from February 2026 the first
+  audit had missed entirely). Campaigns: the Hadamard conjecture (audited
+  five days after the unrefereed August 2026 announcement of matrices for
+  all twelve unknown orders below 2000 — the dossier carries it as claimed,
+  machine-checkable, unrefereed), Erdős–Straus, Erdős' distinct subset sums
+  (Erdős problem #1), the Erdős–Szekeres happy-ending conjecture, the
+  1/3–2/3 conjecture (verified through n = 14 by a July 2026
+  trillion-poset census), Erdős–Gyárfás power-of-2 cycles, Seymour's second
+  neighborhood conjecture, Ryser–Brualdi–Stein (a mixed frontier: the n−1
+  statement is proved for all large n in a still-unpublished preprint, the
+  odd-order statement is open), the hot spots conjecture (planar convex case
+  open; the high-dimensional convex case refuted in a still-unpublished 2024
+  preprint), and Smale's mean value conjecture. Calibrations: Steinberg's
+  conjecture (refuted 2016 — the `prove --disprove` run must reconstruct the
+  gadget counterexample from the paper and machine-verify planarity,
+  C4/C5-freeness, and 3-coloring UNSAT with a DRAT certificate; the
+  reconstruction was smoke-tested during audit, including the one edge
+  visible only in the paper's final figure), the Erdős discrepancy problem
+  (solved — Tao 2015/16 must be reported as solved with Polymath5 credited
+  for the reduction, C=1 certified exactly, and the C=3 exact maximum kept
+  open), the abc conjecture (a published but contested claimed proof —
+  the hardest status label in the collection: neither "proved" nor bare
+  "open"; primary IUT sources are deliberately not on arXiv), and Keller's
+  conjecture (resolved with a dimension split — true through n = 7, false
+  from n = 8 — where blanket labels fail calibration and Mackey's 256-clique
+  counterexample is reconstructed and pairwise-verified; the clique check
+  was smoke-tested during audit, all 32,640 pairs). Two new
+  container environments enter the examples: Debian **nauty**
+  (geng/directg/gentourng/genposetg, symlinked from the distribution's
+  nauty-prefixed binaries — smoke-tested) for exhaustive graph and poset
+  generation, and CP-SAT + python-sat for exact-cover and
+  proof-logging workloads.
+- **The Simons-workshop example grew from five to thirteen dossiers.** A full
+  second pass over arXiv:2602.05394 (41 numbered problems) extracted the eight
+  further problems that are numerically explorable at small dimension: the
+  Forsythe conjecture for restarted CG (2.20), updated CG residuals below
+  machine precision (2.15, explicitly counterexample-shaped), bits of
+  precision for n-step CG backward error (2.17), the distribution of Ritz
+  values across the numerical range (3.6), MR3-family bidiagonal SVD failure
+  modes (3.8), GECP's empirical rate on the fermionic kernel (4.2), QRCP row
+  selection on orthonormal-column matrices (4.3), and volume sampling versus
+  optimal column subset selection (4.7). Existing dossier ids stay stable
+  (0001–0005 unchanged; the new problems are 0006–0013 — smoke-tested).
+  Cross-references recorded: workshop problems 4.6 and 6.3 already have
+  standalone examples (nystrom-submodularity, matrix-sign-approximation).
+
 ## [0.0.9] — 2026-08-17
 
 Nineteen fixes, every one of them found by running the example collection against ten
