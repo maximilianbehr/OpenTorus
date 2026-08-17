@@ -34,6 +34,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that must stay apart). Cross-references recorded: #1 and #16 already had examples
   (matrix-spencer, tensor-concentration); #4 and #9 are resolved (McRae 2025;
   Kothari–Xu 2025) and appear as settled neighbors.
+- **Eight new examples from the AIM Problem Lists** (aimpl.org — 160 lists, ~3,700
+  problems, all inventoried; the site serves http only, and its pages carry no edit
+  dates, so every chosen problem got a fresh dated audit and an independent
+  counter-audit that this time re-ran the first auditor's computations). Three from
+  the block-model list the user pointed at (sections "Hardness at the KS threshold"
+  and "Random matrix theory"): random signings of Ramanujan graphs (partially resolved
+  by Mohanty–O'Donnell–Paredes for large girth, open for short-cycle-rich bases;
+  exact enumeration over signings of small Ramanujan graphs), Alon–Boppana for the
+  non-backtracking Ramanujan notion (open for connected graphs with exactly fixed ρ —
+  and shown false for two literal readings by a certified gadget family found at
+  creation: an 8-vertex minimiser with a long cycle attached keeps
+  |λ₂(B)|/√ρ = 0.94705 while n → ∞), and constant-degree SoS refutation of
+  k-colorability below Kesten–Stigum (open above degree 2). Four from other lists:
+  Peres's Potts censoring question (markovmixing; exact tensor computations, zero
+  violations, controls reproduce Holroyd), the Kahn–Saks order-polynomial
+  monotonicity conjecture (ehrhartineq; complete exact certificates for all posets on
+  ≤ 8 elements plus a stronger coefficient-positivity pattern), Fisk's 3×3
+  Toeplitz-minor conjecture (totalpos/hyperbolicpoly; degree ≤ 4 proved by a
+  discriminant argument at creation), and Meunier's s-stable Kneser conjecture
+  (albertson; twelve open s = 3 instances SAT-certified — the counter-audit added
+  χ(KG₃(19,5)) = 7 — and a July 2026 preprint settling s = 3, k = 3). One calibration:
+  the square-energy questions (spectralhypergraph 1.4), where the counter-audit caught
+  a four-week-old claimed proof of the main conjecture (Liu–Tang–Zhang,
+  arXiv:2607.18031) that the first pass had missed — moving the example from campaign
+  to calibration, with the refuted monotonicity questions and their exact
+  counterexamples as the second label. Other counter-audit catches: an "ε = 0.25 ⇒
+  all ≥ .98" table entry false for complete graphs, a covering-radius list, a
+  hypothesis "n ≥ 3k−1" that is "n ≥ 3k", and an Ehrhart-positivity threshold of 21
+  that is 14.
 
 ### Changed
 - `komlos-conjecture` had gone stale: the best upper bound is Bansal–Jiang's
