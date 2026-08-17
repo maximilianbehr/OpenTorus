@@ -93,6 +93,18 @@ Krylov-type method whose iterates satisfy $\mathrm{berr}_{A,b}(x_k) \le f(k)$ fo
 $A$ and all $b$, with $f(k) \to 0$ and $f$ depending neither on $\kappa(A)$ nor on $n$? If
 impossible, prove a lower bound (e.g. $\Omega(\log(\kappa(A))/k)$) for any deterministic
 matrix-vector algorithm.
+
+**Machine-checkable pieces.** The central question is a lower bound over all
+deterministic methods, and no certificate settles that. The steps toward it are exact and
+small, and those belong in the verifier:
+- the Rigal-Gaches closed form $\mathrm{berr}_{A,b}(x) = \|Ax-b\|_2/(\|A\|_2\|x\|_2)$,
+  verified symbolically for a fixed small $n$ via `proof_submit(backend="sympy")`;
+- for one concrete hard instance, the exact backward error at each iterate and the claimed
+  inequality against $f(k)$, as a closed arithmetic check;
+- any algebraic identity a lemma reduces to.
+
+Only an ACCEPTED `proof_submit` is machine-checked; `exp_run` results are evidence, not
+proof. Do NOT manufacture a certificate for the main question — record it as a `[GAP-n]`.
 NOTES
 # `--structured` maps the single top-level '# ' heading to one dossier (PROBLEM-0001).
 opentorus problem new --from-markdown notes.md --structured

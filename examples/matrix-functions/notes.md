@@ -1,3 +1,12 @@
+**Machine-checkable pieces (all five problems).** The convergence questions below are
+asymptotic and no certificate settles them, but each rests on exact algebra that does belong
+in the verifier. Identify the finite core of whatever lemma you are using and submit it via
+`proof_submit(backend="sympy")` — for example the Arnoldi relation $AV_m = V_mH_m + h_{m+1,m}v_{m+1}e_m^T$
+written out for a fixed small $m$, or $f(A)b$ evaluated exactly for a named diagonalizable $A$
+and a named $f$. Only an ACCEPTED `proof_submit` is machine-checked; `exp_run` results are
+evidence, not proof. Do NOT manufacture a certificate for the asymptotic question — record it
+as a `[GAP-n]` instead.
+
 # Problem: Optimal restart length for restarted Arnoldi methods for f(A)b
 
 Restarted Arnoldi / limited-memory polynomial methods approximate $f(A)\,b$ for a large matrix

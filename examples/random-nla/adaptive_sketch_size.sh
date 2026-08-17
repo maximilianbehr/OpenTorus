@@ -92,6 +92,17 @@ polynomial, exponential).
 **Numerically explorable.** For synthetic matrices with controlled spectra, sweep $\ell$ against
 the true error and measure the estimator's reliability — its failure probability and tightness
 (the ratio of the estimate to the true error).
+
+**Machine-checkable pieces.** The oversampling law is not a certificate question; the
+expectation algebra behind it is:
+- an exact expectation identity for a sketch of *fixed* size — e.g. $\mathbb{E}\|G x\|_2^2 =
+  \ell \|x\|_2^2$ for a Gaussian $G \in \mathbb{R}^{\ell \times n}$ — submitted symbolically
+  via `proof_submit(backend="sympy")`;
+- for one concrete small matrix with a named spectrum, the exact error and the claimed bound
+  as a closed arithmetic check.
+
+Only an ACCEPTED `proof_submit` is machine-checked; `exp_run` results are evidence, not
+proof. Do NOT manufacture a certificate for the general law — record it as `[GAP-n]`.
 NOTES
 # `--structured` maps the single top-level '# ' heading to one dossier (PROBLEM-0001).
 opentorus problem new --from-markdown notes.md --structured

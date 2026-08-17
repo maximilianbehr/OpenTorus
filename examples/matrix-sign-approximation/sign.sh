@@ -83,6 +83,18 @@ $$
 $$
 
 What is the asymptotic error $\varepsilon_m^*$ as a function of $m$ and $\delta$?
+
+**Machine-checkable pieces.** The asymptotic rate itself is not a certificate question, but
+the algebra underneath it is exact and belongs in the verifier:
+- one Newton or Halley step written out as an identity in the iterate — e.g.
+  $x_{k+1} = \tfrac12(x_k + x_k^{-1})$ satisfies $x_{k+1}^2 - 1 = \tfrac{(x_k^2-1)^2}{4x_k^2}$ —
+  submitted symbolically via `proof_submit(backend="sympy")`;
+- the exact error of a *specific* small-degree minimax polynomial on a named interval, as a
+  closed arithmetic check or an `interval` enclosure;
+- any identity a lemma reduces to.
+
+Only an ACCEPTED `proof_submit` is machine-checked; `exp_run` results are evidence, not
+proof. Do NOT manufacture a certificate for the asymptotic question — record it as `[GAP-n]`.
 NOTES
 # `--structured` maps the single top-level '# ' heading to one dossier (PROBLEM-0001).
 opentorus problem new --from-markdown notes.md --structured

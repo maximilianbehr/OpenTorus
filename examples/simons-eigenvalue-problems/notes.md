@@ -7,6 +7,14 @@ PROBLEM-0001..0005) are the original set and keep their ids, the remaining eight
 (PROBLEM-0006..0013) were extracted in a second pass. Two more workshop problems have
 standalone examples: 4.6 (nystrom-submodularity) and 6.3 (matrix-sign-approximation).
 
+**Machine-checkable pieces (all thirteen problems).** These are small-dimensional questions,
+so most lemmas reduce to exact algebra at a fixed size — a characteristic polynomial factored
+for a named matrix, a Ritz-value identity for a fixed $m$, an exact eigenvalue of a named
+small example. Submit that core via `proof_submit(backend="sympy")`, or as an enclosure via
+`proof_submit(backend="interval")` when the quantity is real but not rational. Only an
+ACCEPTED `proof_submit` is machine-checked; `exp_run` results are evidence, not proof. Do NOT
+manufacture a certificate for the general statement — record it as a `[GAP-n]` instead.
+
 # Conditioning of Ritz values from random Krylov subspaces (Problem 3.5)
 
 Let \(A\in\mathbb{C}^{n\times n}\) be arbitrary (not necessarily normal), let \(b\) be a random

@@ -93,6 +93,17 @@ in contrast to the above, to be
 
 1. **SDDM and positive-definite**, or
 2. **SDD and positive-definite**.
+
+**Machine-checkable pieces.** Submodularity over all ground sets is not a certificate
+question; a single instance of it is, exactly:
+- for one concrete small $L$ and one concrete pair $S \subset T$ with $v \notin T$, the
+  diminishing-returns inequality $f(S \cup \{v\}) - f(S) \ge f(T \cup \{v\}) - f(T)$ as an
+  exact rational check via `proof_submit(backend="sympy")` — a *violating* instance settles
+  the disproof outright;
+- any algebraic identity for the nuclear Nyström error at fixed small size.
+
+Only an ACCEPTED `proof_submit` is machine-checked; `exp_run` results are evidence, not
+proof. A passing instance supports, it does not prove — record the general case as `[GAP-n]`.
 NOTES
 # `--structured` maps the single top-level '# ' heading to one dossier (PROBLEM-0001).
 opentorus problem new --from-markdown notes.md --structured
