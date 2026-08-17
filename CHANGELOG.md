@@ -6,6 +6,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.12] — 2026-08-17
+
+Two more from the same stress run, and one of them is the clearest recording yet of the
+failure this release series keeps circling: a model boxed in by the tooling gives up on
+real mathematics and submits something trivial, which is accepted without complaint.
+
+A Balan-Wang run wanted to state "the smallest of these is at most X" — the natural
+shape for a stability threshold. It reached for `min` twice. sympy refused, because an
+order relation on a `Min` never has a constant-sign difference. The interval backend
+refused too, as an unparseable expression, and named no offender, so with three nested
+calls in one line there was nothing to correct. The run then submitted
+`0.5**2 - 2*0.5 + 0.75 = 0`, which passed. Four genuine attempts at an inequality, four
+unusable answers, one trivial acceptance — and one of the four was the previous attempt
+with its variables renamed, the model trying the only repair the messages suggested.
+
+`min`/`max` over intervals are exact — `[a,b]` and `[c,d]` give `[min(a,c), min(b,d)]` —
+so the interval backend now evaluates them, and the certificate that was refused yields
+a rigorous enclosure instead. A refused call is named. And a malformed certificate quotes
+the text around the fault rather than reporting a character offset into a 3.5 KB line,
+which no model can count.
+
+### Fixed
+- **`min`/`max` are available to the interval backend, and a refused call is named.**
+  "The smallest of these is at most X" is the natural statement for the problems this
+  backend exists for, and interval minima are exact rather than approximate.
+- **A malformed certificate shows the offending text.** "Expecting ',' delimiter: line 1
+  column 3553 (char 3552)" is unusable advice for a certificate written as one long
+  line; the message now quotes sixty characters either side with a caret under the
+  fault, and reminds the model that lhs/rhs are strings sympy expands for it.
+
+
 ## [0.0.11] — 2026-08-17
 
 Four defects the verifier had been carrying, all four found by running the example
