@@ -985,9 +985,11 @@ class AgentLoop:
         # the identical-failure tracker: a model hammering the same blocked call is
         # exactly as stuck as one hammering a failing tool (forensics of the
         # perfect-mirsky run found blocked/empty paths invisible to all guards).
+        # A model that writes "read_ file" meant read_file — no registered tool has
+        # whitespace in its name — so resolve before anything else keys on the name.
+        tool, name = self.registry.resolve(name)
         sig = _tool_sig(name, args)
         self._last_tool_ok = True
-        tool = self.registry.get(name)
         if tool is None:
             log_action(self.ot_dir, name, ok=False, args=args, stderr_summary="unknown tool")
             available = ", ".join(sorted(self.registry.names()))

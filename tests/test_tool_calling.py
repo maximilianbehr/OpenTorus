@@ -560,3 +560,32 @@ def test_a_recorded_proof_is_not_pointed_at_the_literature() -> None:
     assert message is not None
     assert "paper_fetch" not in message
     assert "proof_write" in message
+
+
+def test_a_tool_name_with_a_stray_space_still_resolves(tmp_path: Path) -> None:
+    """No registered tool has whitespace in its name, so "read_ file" is unambiguous.
+
+    Observed 39 times across four runs — read_ file, paper_ fetch, list_ files,
+    write_ file, glob_ files, exp_ new, exp_ run — with one run spending 25 of its 76
+    actions on it while every reply listed the available tools. Explaining did not help;
+    the model was not choosing the name, its output was corrupted.
+    """
+    registry = build_default_registry(tmp_path, tmp_path / ".opentorus")
+
+    for written, meant in (
+        ("read_ file", "read_file"),
+        ("glob_ files", "glob_files"),
+        (" status ", "status"),
+    ):
+        tool, resolved = registry.resolve(written)
+        assert tool is not None, written
+        assert resolved == meant
+
+
+def test_a_genuinely_unknown_tool_still_misses(tmp_path: Path) -> None:
+    """Recovering a corrupted name must not invent a tool that does not exist."""
+    registry = build_default_registry(tmp_path, tmp_path / ".opentorus")
+
+    tool, resolved = registry.resolve("find_file")
+    assert tool is None
+    assert resolved == "find_file"

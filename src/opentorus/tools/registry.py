@@ -21,6 +21,27 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
+    def resolve(self, name: str) -> tuple[Tool | None, str]:
+        """Look up a tool, tolerating whitespace a model dropped inside the name.
+
+        Returns the tool and the name it was found under. No registered tool contains
+        whitespace — not the builtins and not the ``mcp__server__tool`` form — so
+        ``"read_ file"`` can only mean ``read_file``, and answering "unknown tool" to it
+        is a true statement about a name the model never meant to write. Observed 39
+        times across four runs (``read_ file``, ``paper_ fetch``, ``list_ files``,
+        ``write_ file``, ``glob_ files``, ``exp_ new``, ``exp_ run``), one run spending
+        25 of its 76 actions on it while the reply listed every available tool.
+        """
+        tool = self._tools.get(name)
+        if tool is not None:
+            return tool, name
+        compact = "".join(name.split())
+        if compact != name:
+            recovered = self._tools.get(compact)
+            if recovered is not None:
+                return recovered, compact
+        return None, name
+
     def tools(self) -> list[Tool]:
         return list(self._tools.values())
 
