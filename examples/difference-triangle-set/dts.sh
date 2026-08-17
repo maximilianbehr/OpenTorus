@@ -110,6 +110,17 @@ runs with reproducible seeds, and partitioning by canonical first-row classes.
   certificate; quantify how much of the search space was eliminated; never describe an
   incomplete search as evidence of nonexistence.
 
+**Compute budget — read this before your first search.** `exp_run` defaults to a 120
+second timeout, which is nothing for this problem: a CP-SAT model over seven rows with
+105 all-different constraints needs *hours*, not seconds, before its answer means
+anything. Pass the timeout explicitly — `exp_run(exp_id=…, timeout=10800)` for a three
+hour solve — and inside the script give the solver every core
+(`solver.parameters.num_search_workers = 16`) and its own limit
+(`max_time_in_seconds`), and print progress so a partial run is still informative. A
+solver that stops at 120 seconds tells you nothing about scope 111; do not record such a
+run as evidence of anything. Both terminal answers count as a resolution: a construction,
+or a certified UNSAT for scope ≤ 111. Prefer few long solves over many short ones.
+
 **Claim policy.** Classify every conclusion as exactly one of: verified construction;
 machine-checked theorem; exhaustive certified result; numerical or computational
 evidence; conjecture; failed or inconclusive attempt. A passing heuristic test is not a
