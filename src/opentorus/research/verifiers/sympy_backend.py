@@ -105,15 +105,38 @@ class SymPyVerifier:
 
     def _decide(self, sp, relation: str, diff) -> VerificationResult:  # noqa: ANN001
         """Map (relation, simplified lhs-rhs) onto an honest verdict."""
-        is_zero = diff == 0 or sp.simplify(diff) == 0
+        # A sympy Matrix never equals the integer 0, so ``diff == 0`` is False even when
+        # every entry is zero. That turned a *correct* matrix identity into "the identity
+        # does not hold" — observed on the Hadamard dossier, where H·Hᵀ = 4I was rejected
+        # twice with the zero matrix printed in the rejection itself. Telling a model its
+        # correct proof is wrong is the worst thing this backend can do, and the run shows
+        # the cost: it abandoned the real identity and submitted "1+1 = 2" instead.
+        is_matrix = isinstance(diff, sp.MatrixBase)
+        if is_matrix:
+            is_zero = bool(getattr(sp.simplify(diff), "is_zero_matrix", False))
+        else:
+            is_zero = diff == 0 or sp.simplify(diff) == 0
         if relation == "eq":
             if is_zero:
-                return self._accepted("lhs - rhs simplifies to 0 (identity).")
+                return self._accepted(
+                    "lhs - rhs simplifies to the zero matrix (identity)."
+                    if is_matrix
+                    else "lhs - rhs simplifies to 0 (identity)."
+                )
             return self._rejected(f"lhs - rhs = {diff} != 0; the identity does not hold.")
         if relation == "ne":
             if is_zero:
                 return self._rejected("lhs - rhs simplifies to 0, contradicting lhs != rhs.")
             return self._inconclusive("inequation of expressions is not settled symbolically.")
+        if is_matrix:
+            # "<=" between matrices has no single meaning (entrywise? Loewner order?), so
+            # deciding one silently would be a guess about what was asked.
+            return self._inconclusive(
+                "an order relation between matrices is ambiguous here (entrywise? "
+                "positive-semidefinite order?). Compare a scalar instead — a norm, a "
+                "determinant, an eigenvalue, or a single entry — or submit the "
+                "entrywise statements separately."
+            )
         # Order relations need a provably constant sign of the difference. A genuine
         # inequality in free variables ("for all x1, x2: …") is not decided by
         # simplification, and saying only that leaves the model stuck with a correct

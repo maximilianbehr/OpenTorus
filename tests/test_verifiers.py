@@ -272,3 +272,53 @@ def test_a_certificate_with_free_variables_still_validates(tmp_path: Path) -> No
     assert proof.accepted
     edges = [e for e in related(ot, proof.id) if e.target_id == claim.id]
     assert [e.relation for e in edges] == ["validates"]
+
+
+_H4 = "Matrix([[1, 1, 1, 1], [1, -1, 1, -1], [1, 1, -1, -1], [1, -1, -1, 1]])"
+
+
+def test_a_correct_matrix_identity_is_not_called_false() -> None:
+    """A sympy Matrix never equals the integer 0, so `diff == 0` was False for a zero matrix.
+
+    Observed on the Hadamard dossier: H·Hᵀ = 4I was rejected twice as "the identity does
+    not hold", with the zero matrix printed inside the rejection. The run shows what that
+    costs — the model abandoned the real identity and submitted "1+1 = 2" instead, which
+    the backend happily accepted.
+    """
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify(
+        f'{{"lhs": "{_H4} * {_H4}.T", "rhs": "4 * eye(4)", "relation": "eq", "vars": []}}'
+    )
+    assert result.accepted, result.output
+    assert "zero matrix" in result.output
+
+
+def test_a_wrong_matrix_identity_is_still_rejected() -> None:
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify(
+        f'{{"lhs": "{_H4} * {_H4}.T", "rhs": "5 * eye(4)", "relation": "eq", "vars": []}}'
+    )
+    assert not result.accepted
+    assert not result.inconclusive
+
+
+def test_an_order_relation_between_matrices_is_inconclusive_not_decided() -> None:
+    """"<=" between matrices has no single meaning; picking one would be a guess."""
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    result = SymPyVerifier().verify(
+        f'{{"lhs": "{_H4}", "rhs": "eye(4)", "relation": "le", "vars": []}}'
+    )
+    assert result.inconclusive
+    assert not result.accepted
+    assert "ambiguous" in result.output
+
+
+def test_generality_is_reported_for_scalars_and_matrices() -> None:
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    v = SymPyVerifier()
+    assert v.verify('{"lhs": "1+2", "rhs": "3", "relation": "eq", "vars": []}').general is False
+    assert v.verify('{"lhs": "2*n", "rhs": "n+n", "relation": "eq", "vars": ["n"]}').general is True
