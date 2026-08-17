@@ -224,3 +224,51 @@ def test_sympy_inequality_in_free_variables_names_the_routes_that_work() -> None
     # A constant comparison is still decided, not deflected into the advice branch.
     decided = SymPyVerifier().verify(json.dumps({"lhs": "2**10", "rhs": "1000", "relation": "gt"}))
     assert decided.accepted is True
+
+
+def test_a_closed_arithmetic_certificate_supports_rather_than_validates(tmp_path: Path) -> None:
+    """Verifying "1+2 = 3" does not validate a claim that quantifies over anything.
+
+    Real runs submitted exactly that against "for n=3, max A >= 4", and
+    "2**(4-2) + 1 = 5" against the Happy Ending conjecture; seven of eleven accepted
+    proofs in one sweep were closed arithmetic. Claim *status* was never promoted — that
+    invariant held — but the graph asserted a relationship the artifact does not carry.
+    """
+    ot = _ot(tmp_path)
+    from opentorus.research.claims import new_claim
+
+    claim = new_claim(ot, "For n=3, any set with distinct subset sums satisfies max A >= 4.")
+    proof = submit_proof(
+        ot,
+        default_config(),
+        "sympy",
+        '{"lhs": "1+2", "rhs": "3", "relation": "eq", "vars": []}',
+        claim_id=claim.id,
+    )
+
+    assert proof.accepted
+    edges = [e for e in related(ot, proof.id) if e.target_id == claim.id]
+    assert len(edges) == 1
+    assert edges[0].relation == "supports"
+    assert "closed arithmetic statement" in edges[0].rationale
+    assert "not the claim in general" in edges[0].rationale
+
+
+def test_a_certificate_with_free_variables_still_validates(tmp_path: Path) -> None:
+    """The Erdős–Straus identities a run produced are general, and must keep their edge."""
+    ot = _ot(tmp_path)
+    from opentorus.research.claims import new_claim
+
+    claim = new_claim(ot, "For even n >= 2 the Erdős–Straus conjecture holds.")
+    proof = submit_proof(
+        ot,
+        default_config(),
+        "sympy",
+        '{"lhs": "4/n", "rhs": "1/(n/2) + 1/(n/2 + 1) + 1/((n/2)*(n/2 + 1))",'
+        ' "relation": "eq", "vars": ["n"]}',
+        claim_id=claim.id,
+    )
+
+    assert proof.accepted
+    edges = [e for e in related(ot, proof.id) if e.target_id == claim.id]
+    assert [e.relation for e in edges] == ["validates"]

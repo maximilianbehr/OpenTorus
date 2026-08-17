@@ -81,7 +81,12 @@ class SymPyVerifier:
         except (TypeError, ValueError) as exc:
             return self._inconclusive(f"could not simplify lhs - rhs: {exc}")
 
-        return self._decide(sp, relation, diff)
+        # Does accepting this say anything general? A certificate whose two sides are
+        # closed arithmetic checks one instance, however true it is.
+        general = bool(getattr(lhs, "free_symbols", set()) | getattr(rhs, "free_symbols", set()))
+        result = self._decide(sp, relation, diff)
+        result.general = general
+        return result
 
     def _symbols(self, sp, vars_spec) -> dict:  # noqa: ANN001
         out: dict = {}

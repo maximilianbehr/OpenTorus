@@ -27,6 +27,13 @@ class VerificationResult(BaseModel):
     inconclusive: bool = False
     outcome: str | None = None  # SMT: "unsat" | "sat" | "unknown"
     model: str | None = None  # SMT "sat": the counterexample model
+    # Whether the checked statement quantified over anything, i.e. whether accepting it
+    # says something general. ``False`` marks a closed arithmetic fact — "1+2 = 3",
+    # "2**(4-2) + 1 = 5", "1/3 >= (5 - sqrt(5))/10" — all of which real runs submitted
+    # against universally quantified claims and had recorded as *validating* them. Seven
+    # of eleven accepted proofs in one sweep were of that kind. ``None`` means the
+    # backend cannot tell, and nothing downstream may assume either way.
+    general: bool | None = None
 
     def status_line(self) -> str:
         if not self.available:

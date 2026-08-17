@@ -218,14 +218,34 @@ def submit_proof(
     if attempt.accepted and claim_id:
         from opentorus.research.graph import add_edge
 
-        add_edge(
-            ot_dir,
-            proof_id,
-            claim_id,
-            "validates",
-            rationale=f"Formally accepted by {result.backend}"
-            + (f" {result.backend_version}" if result.backend_version else ""),
-        )
+        version = f" {result.backend_version}" if result.backend_version else ""
+        if result.general is False:
+            # A closed arithmetic fact checks one instance, so it *supports* the claim
+            # it is filed under — it does not validate it. Real runs submitted "1+2 = 3"
+            # against "for n=3, max A >= 4", and "2**(4-2) + 1 = 5" against the Happy
+            # Ending conjecture, and each was recorded as validating the claim. Seven of
+            # eleven accepted proofs in one sweep were of that shape. Claim *status* was
+            # never promoted — that invariant held — but the graph asserted a
+            # relationship the artifact does not carry.
+            add_edge(
+                ot_dir,
+                proof_id,
+                claim_id,
+                "supports",
+                rationale=(
+                    f"Accepted by {result.backend}{version}, but the certificate is a "
+                    "closed arithmetic statement: it verifies this instance, not the "
+                    "claim in general."
+                ),
+            )
+        else:
+            add_edge(
+                ot_dir,
+                proof_id,
+                claim_id,
+                "validates",
+                rationale=f"Formally accepted by {result.backend}{version}",
+            )
 
     # An SMT ``sat`` verdict is a *candidate* refutation: the model may be spurious
     # if the goal was mis-encoded. Until it is round-trip-validated against the
