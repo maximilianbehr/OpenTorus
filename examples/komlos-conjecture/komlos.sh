@@ -7,8 +7,11 @@
 # Conjecture (Komlós). There is a universal constant K such that for every d,
 # every n, and all v_1..v_n in R^d with ||v_i||_2 <= 1 there exist signs
 # eps_i in {+-1} with || sum_i eps_i v_i ||_inf <= K.
-# Best known: O(sqrt(log n)) (Banaszczyk 1998). Implies the Beck-Fiala
-# conjecture. OPEN — no universal constant is known, and no counterexample.
+# Best known upper bound: O~(log^{1/4} n) (Bansal-Jiang, arXiv:2508.03961,
+# Aug 2025 - improving Banaszczyk's O(sqrt(log n)) of 1998); best lower bound
+# K >= 1 + sqrt(2) (Kunisky, arXiv:2111.02974). Implies the Beck-Fiala
+# conjecture. OPEN (re-checked 2026-08-17) - no universal constant, no
+# counterexample.
 #
 # Small cases are exactly decidable: for fixed (n, d) and rational vectors the
 # sign minimum is exhaustive or SMT-encodable — certificates, not anecdotes.
@@ -55,6 +58,8 @@ opentorus env prepare python-sci --file docker/Dockerfile
 
 # --- 4. Source paper --------------------------------------------------------
 opentorus paper add https://arxiv.org/abs/1612.04304
+opentorus paper add https://arxiv.org/abs/2508.03961
+opentorus paper add https://arxiv.org/abs/2111.02974
 
 # --- 5. Problem statement & dossier -----------------------------------------
 cat > notes.md << 'NOTES'
@@ -72,12 +77,15 @@ $$
 $$
 
 **Known.**
-- Banaszczyk (1998): $K = O(\sqrt{\log n})$ — still the best bound; made constructive by
-  Dadush–Garg–Lovett–Nikolov and follow-ups.
+- Banaszczyk (1998): $K = O(\sqrt{\log n})$, made constructive by Dadush–Garg–Lovett–Nikolov
+  and follow-ups; improved to $\tilde O(\log^{1/4} n)$ by Bansal–Jiang
+  ([arXiv:2508.03961](https://arxiv.org/abs/2508.03961), Aug 2025 — the current best
+  upper bound, which also settles Beck–Fiala for $t \ge \log^2 n$).
 - The conjecture implies the Beck–Fiala conjecture ($O(\sqrt{t})$ discrepancy for
   $t$-sparse set systems) via scaling columns of incidence matrices.
-- Lower bounds: instances are known that force the sign minimum above 1, so $K > 1$; no
-  sequence of instances with unbounded sign minimum is known.
+- Lower bounds: $K \ge 1 + \sqrt 2$ (Kunisky, [arXiv:2111.02974](https://arxiv.org/abs/2111.02974),
+  via scaled clause–variable matrices of unsatisfiable formulas — a limit of a family, not a
+  single small matrix); no sequence of instances with unbounded sign minimum is known.
 
 **Open.** Prove a universal $K$, or exhibit instances with sign minimum $\to \infty$
 (refutation).

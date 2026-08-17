@@ -76,8 +76,11 @@ $$
   the conjecture asks to remove the $\sqrt{\log n}$ via *chosen* signs.
 - **True when every $A_i$ has rank at most $n/\log^3 n$** (Bansal–Jiang–Meka 2023), via
   partial coloring and sharp matrix concentration.
-- Average-case variants and group-representation variants are active (see the
-  Randomstrasse101 status entry).
+- Structured special cases (June 2026, unrefereed preprints): contractions in a
+  finite-dimensional C*-algebra of dimension $\lesssim n$ plus low-rank perturbations
+  (Akbas–Sra, arXiv:2606.16005) and the regular representations of finite groups (also
+  Bandeira–Bölcskei, arXiv:2606.12181) — record these as CLAIMED, not established.
+- Average-case variants remain active (see the Randomstrasse101 status entry).
 
 **Open.** The general (full-rank) case. Either prove the $C\sqrt{n}$ bound for all inputs,
 or exhibit matrices $A_1,\dots,A_n$ for which every sign choice has

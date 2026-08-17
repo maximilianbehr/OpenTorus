@@ -8,10 +8,16 @@ $\varepsilon_i \in \{\pm 1\}$ with $\lVert \sum_i \varepsilon_i A_i \rVert \le C
 This is the matrix analogue of Spencer's six-standard-deviations theorem. Random signs lose
 a $\sqrt{\log n}$ factor; the conjecture asks chosen signs to remove it.
 
-Status (August 2026): **open**. The strongest result proves it whenever every $A_i$ has rank
-at most $n/\log^3 n$ ([Bansal–Jiang–Meka, STOC 2023, arXiv:2208.11286](https://arxiv.org/abs/2208.11286));
-the general case appears in the
-[Randomstrasse101 open-problems collection (arXiv:2504.20539)](https://arxiv.org/abs/2504.20539).
+Status (August 2026, re-checked 2026-08-17): **open**. The strongest results prove it whenever
+every $A_i$ has rank at most $n/\log^3 n$
+([Bansal–Jiang–Meka, STOC 2023, arXiv:2208.11286](https://arxiv.org/abs/2208.11286)) and — new
+in June 2026, unrefereed — for families of contractions inside a finite-dimensional
+C*-algebra of dimension $\lesssim n$ plus low-rank perturbations (Akbas–Sra,
+[arXiv:2606.16005](https://arxiv.org/abs/2606.16005)), which contains the *group Spencer*
+special case (regular representations of finite groups) also claimed independently by
+Bandeira–Bölcskei ([arXiv:2606.12181](https://arxiv.org/abs/2606.12181)); the general case
+appears in the [Randomstrasse101 open-problems collection (arXiv:2504.20539)](https://arxiv.org/abs/2504.20539)
+and its group variant is the subject of [calibration-group-spencer](../calibration-group-spencer/).
 
 ## What this runs
 

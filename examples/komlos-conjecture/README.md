@@ -4,11 +4,13 @@
 
 Is there a universal constant $K$ such that any finite set of vectors $v_1,\dots,v_n$ of
 Euclidean norm $\le 1$ (any dimension) admits signs $\varepsilon_i \in \{\pm1\}$ with
-$\lVert\sum_i \varepsilon_i v_i\rVert_\infty \le K$? The best bound is Banaszczyk's
-$O(\sqrt{\log n})$ from 1998 — made algorithmic by
-[Dadush–Garg–Lovett–Nikolov (arXiv:1612.04304)](https://arxiv.org/abs/1612.04304) — and the
-conjecture implies the Beck–Fiala conjecture for sparse set systems. **Open**: no universal
-constant, and no unbounded family of instances either.
+$\lVert\sum_i \varepsilon_i v_i\rVert_\infty \le K$? Banaszczyk's $O(\sqrt{\log n})$ from 1998 —
+made algorithmic by [Dadush–Garg–Lovett–Nikolov (arXiv:1612.04304)](https://arxiv.org/abs/1612.04304) —
+stood until Bansal–Jiang improved it to $\tilde O(\log^{1/4} n)$
+([arXiv:2508.03961](https://arxiv.org/abs/2508.03961), Aug 2025); the best lower bound is
+$K \ge 1+\sqrt2$ (Kunisky, [arXiv:2111.02974](https://arxiv.org/abs/2111.02974)). The
+conjecture implies the Beck–Fiala conjecture for sparse set systems. **Open** (status
+re-checked 2026-08-17): no universal constant, and no unbounded family of instances either.
 
 ## What this runs
 
@@ -47,4 +49,8 @@ each one reproducible from its `EXP-*` manifest.
   bodies*, Random Structures Algorithms 12.
 - D. Dadush, S. Garg, S. Lovett, A. Nikolov (2016).
   [arXiv:1612.04304](https://arxiv.org/abs/1612.04304)
+- N. Bansal, H. Jiang (2025), *Decoupling via affine spectral-independence: Beck–Fiala and
+  Komlós bounds beyond Banaszczyk*. [arXiv:2508.03961](https://arxiv.org/abs/2508.03961)
+- D. Kunisky (2021), *The discrepancy of unsatisfiable matrices and a lower bound for the
+  Komlós conjecture constant*. [arXiv:2111.02974](https://arxiv.org/abs/2111.02974)
 - J. Beck, T. Fiala (1981), *"Integer-making" theorems*, Discrete Appl. Math. 3.

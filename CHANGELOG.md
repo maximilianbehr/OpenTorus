@@ -6,6 +6,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Ten new examples drawn from the Randomstrasse101 open-problems blog** (ETH Zürich;
+  38 numbered problems in 17 posts, all extracted and status-checked, ten selected for
+  small-machine explorability and certifiability; every audit counter-checked by an
+  independent session, with the usual harvest — an implication direction reversed, a
+  covering radius wrong for the two smallest cases, a lower bound attributed to the
+  wrong classical paper, and a second July-2026 preprint the first audit had not seen).
+  Six campaigns: the Kuramoto 3/4 density threshold (RS101 #5 — twisted-state Hessians
+  make dense non-synchronizing graphs exactly certifiable, so a certified graph above
+  the known 0.6838 bound would be genuine progress), sign-matrix discrepancy (#11–12;
+  exact maxima 2,1,2,3,4 for n = 2..6 computed and independently re-run at creation),
+  the Paley clique conjecture (#25 with the localization relaxations #26–28 as tools —
+  the 1-localization LP with exact rational duals yields certified per-prime clique
+  bounds), Balan–Wang phase-retrieval stability (#20; the Gaussian case settled at
+  exponential scale in July 2026, forcing β ≥ 1/4), KLS (#30 — slicing and thin shell
+  are now theorems, the (log n)^{-1/4} improvement is claimed by two concurrent
+  GPT-5.6-Pro-assisted July-2026 preprints and already cited as known by Milman),
+  and the Lovász number of random circulant graphs (#18; ϑ is an LP with exact
+  certificates). Four calibrations, each testing a different honesty label: ellipsoid
+  fitting (#6 — a full proof claimed on 2026-08-10, one week before the audit),
+  Group Spencer (#2 — two independent unrefereed June-2026 proofs; "two preprints
+  agree" is not peer review), Sylvester Hadamard discrepancy (#13 — refuted for every
+  odd k ≥ 9 via Boolean nonlinearity; the counter-audit re-derived the 512-entry
+  certificate from the published truth tables), and phase-retrieval injectivity at
+  4M−5 (#19 — theorem / false / claimed-by-an-AI-generated-note / open, four labels
+  that must stay apart). Cross-references recorded: #1 and #16 already had examples
+  (matrix-spencer, tensor-concentration); #4 and #9 are resolved (McRae 2025;
+  Kothari–Xu 2025) and appear as settled neighbors.
+
+### Changed
+- `komlos-conjecture` had gone stale: the best upper bound is Bansal–Jiang's
+  Õ(log^{1/4} n) (arXiv:2508.03961, Aug 2025), not Banaszczyk's O(√log n), and the
+  lower bound K ≥ 1+√2 (Kunisky) was missing — driver, README and the examples table
+  now carry them and register the papers. `matrix-spencer` records the June-2026
+  structured special cases (Akbas–Sra's C*-algebra theorem; the group case) as
+  claimed, with a pointer to the new calibration.
+
 ## [0.0.10] — 2026-08-17
 
 Fourteen new problems for the example collection, and eight more inside an existing
