@@ -26,3 +26,29 @@ report that never upgrades evidence into proof. The live design notes are in
 
 Each milestone is a small, reviewable step: run the tests, show the diff,
 summarize the changes, stop. Post-v0.0.3 work continues in that style.
+
+## The next capability band: the campaign engine
+
+The fourth band, landed on the `campaign-engine` branch and recorded in
+[adr/0001-campaign-engine.md](adr/0001-campaign-engine.md), turns the three
+mostly linear loops into a **persistent, portfolio-based campaign engine**
+(`opentorus campaign`): a typed append-only event log with a pure reducer,
+branches with explicit root relations, a documented heuristic scheduler,
+failed-attempt memory that gates retries, narrow worker roles in isolated
+contexts, a semantic proof tree whose obligations close only against accepted
+artifacts, theorem-level literature (`THMREF`, applicability checks, category
+coverage), *actual* per-task model routing with an auditable ledger, a
+`campaign` / `theorem` CLI, an optional read-only Textual dashboard, and a
+build/wheel-install CI plus a non-publishing tag-triggered release workflow. It
+does all of this without weakening any epistemic invariant, breaking `research`
+or `prove`, re-recording golden transcripts, or rewriting existing dossiers.
+
+What it deliberately does *not* do is decide mathematics: a campaign can finish
+without solving the problem, and the problem's status stays derived from
+dossier artifacts. Open ends this band leaves for later, in the same
+milestone style: real parallel workers (`max_parallel_workers` is capped to 1
+today), an LLM-driven de-duplication and scheduling advisor behind the reserved
+task classes, and a migration of `prove` / `research` callers from the
+`AgentLoop` compatibility facade to the control-plane policy objects directly.
+See [campaign-engine.md](campaign-engine.md) for the workflow and
+[model-routing.md](model-routing.md) for routing.

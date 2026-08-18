@@ -51,7 +51,10 @@ known that", "the experiment proves", "obvious") unless the backing artifact
 exists.
 
 OpenTorus does **not** claim to solve open problems for you. It makes a strong
-model's work on them inspectable, reproducible, and honest.
+model's work on them inspectable, reproducible, and honest. The same rule holds
+one level up: **a campaign can finish without solving the problem** — a
+finished `opentorus campaign` reports how the attack went, and the problem's
+status is still derived from the dossier's artifacts, never from the campaign.
 
 ---
 
@@ -71,6 +74,7 @@ same models — the difference is everything wrapped around them:
 | **Literature** | Citations may be invented | arXiv, OpenAlex, Crossref, … → local `PAPER-*` with provenance; reports cite real artifacts only |
 | **Privacy** | Data on the provider's servers | State on disk; egress consent-gated per host; DLP scan before anything leaves |
 | **Safety** | Opaque plugin execution | Gated patches/shell/checkpoints; dangerous commands and secret-file reads always blocked |
+| **Long attacks** | One thread, one model, start over | Resumable campaigns: a portfolio of branches, a scored scheduler, per-task model routing, an event log you can replay |
 
 ---
 
@@ -101,6 +105,42 @@ same models — the difference is everything wrapped around them:
 - **Honest report + export** — `opentorus problem report --lint` and `problem
   export --pdf` produce a citation-checked report (Markdown / LaTeX / PDF) that
   never upgrades evidence into proof.
+
+### Run a campaign on it
+
+- **`opentorus campaign start PROBLEM-XXXX --mode prove-or-refute`** opens a
+  persistent, resumable **portfolio** on one problem: several distinct branches
+  (a proof route, a counterexample search, a literature map, a formalization
+  attempt, special cases, …), each stating how it relates to the root
+  (`equivalent`, `sufficient`, `special-case`, `counterexample-route`, …); a
+  documented heuristic scheduler that picks bounded work items across them; ten
+  narrow worker roles running in isolated contexts (own session, own budget,
+  own tool allow-list, no transcripts) with the model routed per task; and
+  failed-attempt memory that refuses to retry an unchanged failure. Modes:
+  `prove-or-refute`, `exploration`, `survey`.
+- **Everything is an event.** A campaign lives under its dossier as an
+  append-only `events.jsonl` plus a derived snapshot; `campaign status`,
+  `pause` / `resume` / `stop`, `verify` (replay the log) and `tree` (the semantic
+  proof tree with obligations, as text / JSON / DOT) read it back, and an
+  optional read-only dashboard (`pip install 'opentorus[dashboard]'`) navigates
+  it live.
+- **Obligations close only against accepted artifacts.** A proof gap becomes an
+  obligation; it closes through an accepted formal / SMT / symbolic /
+  validated-numerical certificate, an accepted counterexample, a referee-passed
+  gap-free sketch, or an accepted theorem reference — never by deleting a gap
+  marker, and never by the campaign finishing. Special cases and relaxations
+  cannot close the root.
+- **Theorem-level literature.** `opentorus theorem extract PAPER-XXXX` turns a
+  parsed paper into located, reviewable `THMREF-*` candidates; only a human
+  `theorem review --status accepted` accepts one, deterministic applicability
+  checks say whether it applies to a claim, and coverage is assessed per
+  category (a paper count never completes the literature).
+- **Which model answered, and why.** Named model profiles and per-task routes
+  (`models.profiles`, `governance.routing.task_routes`) decide which provider
+  performs which task class; every lease — including a fallback or a refusal —
+  is recorded in `.opentorus/usage/routing.jsonl`, and every usage row names
+  the model that actually answered. `opentorus doctor --capabilities` shows the
+  resolved routes.
 
 ### Research toolkit it draws on
 
@@ -163,6 +203,21 @@ opentorus problem report PROBLEM-0001 --lint  # build + honesty-lint the report
 
 Open `.opentorus/problems/PROBLEM-0001/report.md` — a structured report that keeps
 the conjecture a conjecture, the experiment evidence, and the sketch a sketch.
+
+Or run a whole campaign — several lines of attack, scheduled, budgeted, resumable:
+
+```bash
+opentorus campaign start PROBLEM-0001 --mode prove-or-refute --branches 4 --max-steps 40
+opentorus campaign status CAMPAIGN-0001       # orchestration state + the derived problem status
+opentorus campaign tree CAMPAIGN-0001         # branches, obligations, evidence, what closed what
+opentorus problem verdict PROBLEM-0001        # the problem's status, from the artifacts alone
+```
+
+The status output shows two things and labels them: the *campaign* status
+(phase, budget, branches, obligations) and the *problem* status, derived from the
+dossier exactly as `problem verdict` derives it. A completed campaign whose
+problem is still `UNSOLVED` is the normal case. This runs offline on the mock
+provider too. See [docs/campaign-engine.md](docs/campaign-engine.md).
 
 Prefer to drive it by hand? The full `problem` surface (`attack`, `claim`,
 `evidence`, `attempt`, `experiment`, `proof`, `report`, `replay`) builds the same
@@ -235,11 +290,14 @@ Everything lives under `.opentorus/` in your project (inspectable, Git-friendly)
 .opentorus/
   config.yaml            # configuration (every field documented inline)
   problems/              # the dossiers: statement, claims, evidence, experiments, proofs, report
+    PROBLEM-*/campaigns/ #   each campaign: campaign.yaml, events.jsonl, snapshot.json, progress.md
+  theorems/              # THMREF references, relations, applicability checks, coverage
   memory/  evidence.jsonl  graph.jsonl   # structured memory + typed artifact graph
   experiments/  papers/  proofs/  datasets/  repos/  figures/
   index/  journal/  research/  reviews/   # retrieval, journal, loop state, reviews
   actions.jsonl          # tool action log (with permission decisions)
-  usage/ledger.jsonl     # token/cost ledger (exact provider counts when reported)
+  usage/ledger.jsonl     # token/cost ledger (actual provider + model, routing + campaign provenance)
+  usage/routing.jsonl    # every model-routing decision: task class, profile, fallback reason
 ```
 
 The cross-workspace knowledge base lives in `~/.opentorus/kb/`.
@@ -251,7 +309,15 @@ The cross-workspace knowledge base lives in `~/.opentorus/kb/`.
 - [docs/architecture.md](docs/architecture.md) — how the pieces fit together.
 - [docs/artifact-model.md](docs/artifact-model.md) — the typed artifacts and their relationships.
 - [docs/cli-ux.md](docs/cli-ux.md) — the command surface and output conventions.
+- [docs/campaign-engine.md](docs/campaign-engine.md) — campaigns: modes, workflow, branches, workers, budgets, CLI (a campaign can finish without solving the problem).
+- [docs/campaign-persistence.md](docs/campaign-persistence.md) — the event log, the reducer, replay, and importing legacy research runs.
+- [docs/portfolio-scheduler.md](docs/portfolio-scheduler.md) — how a campaign decides what to try and what to try next.
+- [docs/proof-tree.md](docs/proof-tree.md) — the semantic proof tree, root relations, obligation closure.
+- [docs/theorem-references.md](docs/theorem-references.md) — theorem-level literature: THMREF, applicability, coverage.
+- [docs/model-routing.md](docs/model-routing.md) — model profiles, per-task routes, the routing ledger.
 - [docs/safety.md](docs/safety.md) · [docs/privacy.md](docs/privacy.md) — the safety and privacy models.
+- [docs/release.md](docs/release.md) — how a release is cut and verified.
+- [docs/adr/0001-campaign-engine.md](docs/adr/0001-campaign-engine.md) — the design decisions behind the campaign engine.
 - [docs/roadmap.md](docs/roadmap.md) — where it is going.
 - [examples/README.md](examples/README.md) — runnable examples and command patterns.
 
