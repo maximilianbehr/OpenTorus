@@ -64,6 +64,17 @@ test that pins down its honest behavior.
 - Follow the existing milestone scope; large new directions are best discussed
   first via a **design proposal** issue.
 - Update docs and `CHANGELOG.md` when behavior changes.
+- Do not bump `__version__` in a feature or fix PR; the version changes only in
+  the release PR (see below).
+
+## Releases
+
+Releases are cut by tagging `main` with `vX.Y.Z`; the tag drives
+`.github/workflows/release.yml` (gate, build, clean-venv installs, SBOM,
+provenance, and — only when explicitly enabled — PyPI trusted publishing and a
+draft GitHub release). The checklist, versioning and changelog rules,
+verification commands, trusted-publishing setup, and yank/rollback procedure
+live in [`docs/release.md`](docs/release.md).
 
 ## Code of conduct
 
