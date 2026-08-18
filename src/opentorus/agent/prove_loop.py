@@ -674,9 +674,19 @@ def run_prove(
     on_thinking=None,
     on_status=None,
     session_id: str | None = None,
+    routing=None,
+    event_sink=None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> ProveOutcome:
-    """Run one bounded agent session aimed at an NL proof artifact."""
+    """Run one bounded agent session aimed at an NL proof artifact.
+
+    ``routing``, ``event_sink`` and ``should_stop`` are passed through to every
+    ``AgentLoop`` this run builds (routing provenance for the usage ledger, a run-event
+    sink, and an external cancellation check); the surface and outcome are otherwise
+    unchanged.
+    """
     from opentorus.agent.context import reset_retrieval_breaker
+    from opentorus.agent.control.policies.progress import NoProgressWindow
     from opentorus.agent.loop import AgentLoop
     from opentorus.research.dossier import store
     from opentorus.research.dossier.report import lint_dossier_report
@@ -758,6 +768,9 @@ def run_prove(
             deliverable_complete=deliverable_complete,
             tool_gate=tool_gate,
             stall_check=stall_check,
+            routing=routing,
+            event_sink=event_sink,
+            should_stop=should_stop,
         )
 
     statement_focus = dossier_statement_focus(ot_dir, pid)
@@ -1040,60 +1053,52 @@ def run_prove(
     # step caps were inf. Progress here = a new proof attempt (any scope) or new
     # evidence (parsed paper / experiment); the window length is shared with
     # gap-fill so one config knob governs both.
-    _draft: dict[str, int | None] = {"progress": None, "step": None}
-
     def _draft_progress() -> int:
         return _evidence_count() + len(store.list_proof_attempts(ot_dir, pid))
 
-    def _draft_stall_check() -> str | None:
-        window = config.agent.prove_gap_fill_no_progress_steps
-        if math.isinf(window) or not proof_loop_holder:
-            return None
-        if has_primary_proof(ot_dir, pid):
-            return None  # gap-fill's own window takes over from here
-        loop = proof_loop_holder[0]
-        progress = _draft_progress()
-        if _draft["step"] is None or progress > int(_draft["progress"] or 0):
-            _draft["progress"] = progress
-            _draft["step"] = loop.steps_run
-            return None
-        stalled = loop.steps_run - int(_draft["step"])
-        if stalled < window:
-            return None
+    def _draft_stall_message(stalled: int) -> str:
         return (
             f"[stopped] proof draft made no progress for {stalled} steps: no proof_write "
             f"succeeded for {pid} and no new evidence (paper/experiment) was recorded. "
             "Failed attempts are preserved in the session log."
         )
 
+    _draft_window = NoProgressWindow(
+        config.agent.prove_gap_fill_no_progress_steps, _draft_progress, _draft_stall_message
+    )
+
+    def _draft_stall_check() -> str | None:
+        if math.isinf(_draft_window.window) or not proof_loop_holder:
+            return None
+        if has_primary_proof(ot_dir, pid):
+            return None  # gap-fill's own window takes over from here
+        decision = _draft_window.check(proof_loop_holder[0].steps_run)
+        return None if decision is None else decision.message
+
     # Instance-gate stall window: when the campaign gate is holding a gap-free proof
     # open and the model still starts no instance work for a whole window, end the run
     # honestly instead of holding forever — the gate forces the attempt, not the outcome.
-    _gate_stall: dict[str, int | None] = {"count": None, "step": None}
-
-    def _gate_stall_check() -> str | None:
-        window = config.agent.prove_gap_fill_no_progress_steps
-        if math.isinf(window) or not proof_loop_holder:
-            return None
-        if not _instance_gate_holding():
-            return None
-        if not has_primary_proof(ot_dir, pid) or latest_proof_gap_count(ot_dir, pid) != 0:
-            return None  # the gate only bites at the clean-completion surface
-        loop = proof_loop_holder[0]
-        count = _instance_work_count()
-        if _gate_stall["step"] is None or count > int(_gate_stall["count"] or 0):
-            _gate_stall["count"] = count
-            _gate_stall["step"] = loop.steps_run
-            return None
-        stalled = loop.steps_run - int(_gate_stall["step"])
-        if stalled < window:
-            return None
+    def _gate_stall_message(stalled: int) -> str:
         return (
             "[stopped] instance-work gate: this campaign dossier requires at least one "
             "recorded experiment or proof_submit, and none was started within "
             f"{stalled} steps of the gaps closing. The sketch and all attempts are "
             "preserved; the campaign verdict stays with the artifacts."
         )
+
+    _gate_window = NoProgressWindow(
+        config.agent.prove_gap_fill_no_progress_steps, _instance_work_count, _gate_stall_message
+    )
+
+    def _gate_stall_check() -> str | None:
+        if math.isinf(_gate_window.window) or not proof_loop_holder:
+            return None
+        if not _instance_gate_holding():
+            return None
+        if not has_primary_proof(ot_dir, pid) or latest_proof_gap_count(ot_dir, pid) != 0:
+            return None  # the gate only bites at the clean-completion surface
+        decision = _gate_window.check(proof_loop_holder[0].steps_run)
+        return None if decision is None else decision.message
 
     def _stall_check() -> str | None:
         return _draft_stall_check() or _gate_stall_check()
