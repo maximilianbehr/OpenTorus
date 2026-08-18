@@ -785,3 +785,50 @@ def test_normalisation_never_overwrites_or_invents() -> None:
     # A key that is not a declared property stays exactly as it came.
     unknown = {"title": "X", "made up": 1}
     assert normalize_arg_keys(_KEY_SCHEMA, unknown) == unknown
+
+
+def test_a_repaired_argument_name_stays_visible_in_the_ledger(tmp_path: Path) -> None:
+    """A fix that erases its own evidence makes the next defect harder to find.
+
+    normalize_arg_keys runs before every log_action, so recording only the repaired form
+    would make "the model did not slip" indistinguishable from "the repair worked" —
+    and reading actions.jsonl is how this defect was found in the first place. The note
+    goes to the log only; the tool receives clean arguments.
+    """
+    from opentorus.actions import list_actions
+    from opentorus.agent.loop import AgentLoop
+    from opentorus.config import default_config
+    from opentorus.providers.base import BaseProvider, ProviderResponse
+    from opentorus.tools.builtin import build_default_registry
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    class SlipProvider(BaseProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, messages, tools=None) -> ProviderResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return ProviderResponse(
+                    kind="tool_call", tool_name="read_file", tool_args={"pa th": "notes.md"}
+                )
+            return ProviderResponse(kind="message", content="done")
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    (tmp_path / "notes.md").write_text("SENTINEL", encoding="utf-8")
+    config = default_config()
+    config.permissions.mode = "trusted"
+    loop = AgentLoop(
+        tmp_path,
+        ot,
+        SlipProvider(),
+        build_default_registry(tmp_path, ot, config),
+        config,
+        max_steps=4,
+    )
+    loop.run("read notes")
+
+    logged = [a for a in list_actions(ot) if a.tool_name == "read_file"]
+    assert logged, "the call should have run rather than failed"
+    assert any("_repaired_keys" in (a.args or {}) for a in logged)

@@ -1093,8 +1093,17 @@ class AgentLoop:
         schema = getattr(tool, "input_schema", {}) or {}
         # Repair split argument *names* before values: an unknown key passes
         # validation silently and the argument simply never arrives.
-        args = normalize_arg_keys(schema, args)
-        args = coerce_tool_args(schema, args)
+        repaired = normalize_arg_keys(schema, args)
+        # Keep the slip visible in the ledger: the repair happens before every
+        # log_action below, so recording only the fixed form would erase the signal
+        # that found this defect in the first place. The note goes to the *log*, never
+        # to the tool.
+        log_extra = (
+            {"_repaired_keys": sorted(set(args) - set(repaired))}
+            if set(args) != set(repaired)
+            else {}
+        )
+        args = coerce_tool_args(schema, repaired)
         schema_error = validate_tool_args(schema, args)
         if schema_error is not None:
             message = f"Invalid arguments for {name}: {schema_error}"
@@ -1194,7 +1203,7 @@ class AgentLoop:
             self.ot_dir,
             name,
             ok=result.ok,
-            args=args,
+            args={**args, **log_extra},
             permission_decision=decision.model_dump() if decision else None,
             stdout_summary=result.content[:500] if result.ok else None,
             stderr_summary=None if result.ok else result.content[:500],
