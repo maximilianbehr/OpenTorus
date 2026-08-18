@@ -684,3 +684,18 @@ def test_an_environment_name_split_by_a_space_still_resolves() -> None:
 
     with pytest.raises(OpenTorusError):
         resolve_environment(ot, "nope")
+
+
+def test_a_timed_out_command_says_the_limit_is_the_callers() -> None:
+    """ "Timed out after 120s" reads as a verdict on the command, not on its budget.
+
+    Ten such runs across seven dossiers, spanning three days, and not one of them then
+    raised the limit — 120s is the tool's default, which the message never said.
+    """
+    from opentorus.tools.shell import run_shell
+
+    result = run_shell("sleep 5", cwd="/tmp", timeout=1)
+
+    assert result.timed_out and result.exit_code == 124
+    assert "caller-supplied limit" in result.stderr
+    assert "not a property of the command" in result.stderr

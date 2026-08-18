@@ -1148,6 +1148,16 @@ class ExpRunTool(Tool):
         body = f"exit_code={code}\nstatus={experiment.status}\n\n{summary}"
         if code == 0:
             return self.ok(call, body, exit_code=code, exp_id=exp_id)
+        if code == 124:
+            # 120s is a default, and "Timed out after 120s" reads as a verdict on the
+            # experiment rather than on the budget it was given. Ten such runs across
+            # seven dossiers, none of which then raised the limit.
+            body += (
+                f"\n\nThe {timeout}s limit is this call's default, not the experiment's. "
+                f"If the computation genuinely needs longer, re-run it as "
+                f"exp_run(exp_id='{exp_id}', timeout=1800) — and have the script print "
+                "progress so a cut run is still informative."
+            )
         return self.fail(call, body, exit_code=code, exp_id=exp_id)
 
 

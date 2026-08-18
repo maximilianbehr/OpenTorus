@@ -79,7 +79,13 @@ def run_argv(
         return ShellResult(
             command=command,
             stdout=stdout,
-            stderr=stderr or f"Timed out after {timeout}s",
+            stderr=stderr
+            or (
+                f"Timed out after {timeout}s — this is the caller-supplied limit, "
+                "not a property of the command. Anything the command printed before "
+                "the cut is above; re-run with a larger timeout if the work "
+                "legitimately needs one, or make the command do less."
+            ),
             exit_code=124,
             timed_out=True,
         )
