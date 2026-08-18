@@ -25,8 +25,11 @@ _STATUS_MUTATORS = (
     "downgrade_claim_type",
     "record_validated_numerical",
     "append_status_change",
+    "_log_status_change",
     "rewrite_claims",
-    "status_changes",
+    # Writers of the status changelog. The read side (``list_status_changes``) is
+    # legitimate: settlement inspects recorded reasons for root-assumption mentions.
+    "_status_changes_path",
     "update_claim(",
 )
 
