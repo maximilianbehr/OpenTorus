@@ -33,7 +33,13 @@ from opentorus.permissions.policy import (
     evaluate_write,
 )
 from opentorus.providers.base import BaseProvider, ProviderResponse
-from opentorus.tools.base import Tool, ToolCall, coerce_tool_args, validate_tool_args
+from opentorus.tools.base import (
+    Tool,
+    ToolCall,
+    coerce_tool_args,
+    normalize_arg_keys,
+    validate_tool_args,
+)
 from opentorus.tools.registry import ToolRegistry
 
 # A confirmation callback receives the decision, a human-readable description
@@ -1085,6 +1091,9 @@ class AgentLoop:
         # alone did not help: llama3.1:70b repeated the same mistake sixteen times with
         # the required shape spelled out in every reply.
         schema = getattr(tool, "input_schema", {}) or {}
+        # Repair split argument *names* before values: an unknown key passes
+        # validation silently and the argument simply never arrives.
+        args = normalize_arg_keys(schema, args)
         args = coerce_tool_args(schema, args)
         schema_error = validate_tool_args(schema, args)
         if schema_error is not None:

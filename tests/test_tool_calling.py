@@ -742,3 +742,46 @@ def test_an_unknown_tool_is_still_unknown() -> None:
     init_workspace(root)
     registry = build_default_registry(root, workspace_dir(root), default_config())
     assert registry.resolve("no_such_tool")[0] is None
+
+
+_KEY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "run_from": {"type": "string"},
+        "gaps_markdown": {"type": "string"},
+    },
+    "required": ["title"],
+}
+
+
+def test_an_argument_name_split_by_whitespace_is_repaired() -> None:
+    """An unknown key passes validation and the argument simply never arrives.
+
+    116 calls across six recorded workspaces did this, and the three most common are
+    optional fields on proof_write — gaps_ markdown (34), evidence_ notes (23),
+    connection_ to_ dossier (20). A proof_write whose gaps silently vanish is recorded
+    as a proof *without* gaps: gap laundering by typo rather than by intent.
+    """
+    from opentorus.tools.base import normalize_arg_keys, validate_tool_args
+
+    raw = {"title": "X", "run_ from": "workspace", "gaps_ markdown": "[GAP-1] still open"}
+    # The old behaviour: silently valid, and both values lost.
+    assert validate_tool_args(_KEY_SCHEMA, raw) is None
+
+    fixed = normalize_arg_keys(_KEY_SCHEMA, raw)
+    assert fixed["run_from"] == "workspace"
+    assert fixed["gaps_markdown"] == "[GAP-1] still open"
+    assert "run_ from" not in fixed and "gaps_ markdown" not in fixed
+
+
+def test_normalisation_never_overwrites_or_invents() -> None:
+    from opentorus.tools.base import normalize_arg_keys
+
+    # A key that compacts onto one already supplied is left alone — no silent overwrite.
+    both = {"title": "X", "run_from": "experiment", "run_ from": "workspace"}
+    assert normalize_arg_keys(_KEY_SCHEMA, both)["run_from"] == "experiment"
+
+    # A key that is not a declared property stays exactly as it came.
+    unknown = {"title": "X", "made up": 1}
+    assert normalize_arg_keys(_KEY_SCHEMA, unknown) == unknown

@@ -137,6 +137,36 @@ def _coerced(declared: str, value: object) -> object | None:
     return None
 
 
+def normalize_arg_keys(input_schema: dict, args: dict) -> dict:
+    """Repair argument *names* a model split with whitespace.
+
+    The validator fails open on unknown properties, so a key like ``"gaps_ markdown"``
+    passes validation, never reaches the tool, and nothing is reported. That is worse
+    than a rejection: 116 calls across six recorded workspaces did this, and the three
+    most common are optional fields on ``proof_write`` — ``gaps_ markdown`` (34),
+    ``evidence_ notes`` (23), ``connection_ to_ dossier`` (20). A proof_write whose gaps
+    silently vanish is recorded as a proof *without* gaps, which is precisely the gap
+    laundering this project has guards against, arrived at by a typo instead of intent.
+
+    Only renames when the whitespace-free form is a declared property and that property
+    was not supplied separately, so nothing is ever overwritten or invented.
+    """
+    try:
+        properties = input_schema.get("properties")
+        if not isinstance(input_schema, dict) or not isinstance(properties, dict):
+            return args
+        out = dict(args)
+        for key in list(args):
+            if not isinstance(key, str) or key in properties:
+                continue
+            compact = "".join(key.split())
+            if compact != key and compact in properties and compact not in out:
+                out[compact] = out.pop(key)
+        return out
+    except Exception:  # noqa: BLE001 — normalisation must never crash a tool call
+        return args
+
+
 def coerce_tool_args(input_schema: dict, args: dict) -> dict:
     """Re-read arguments a model encoded as strings, leaving everything else alone."""
     try:
