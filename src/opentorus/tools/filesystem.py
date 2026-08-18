@@ -121,6 +121,7 @@ _DOSSIER_MANAGED_ARTIFACTS: frozenset[str] = frozenset(
         "approaches",
         "counterexample_search",
         "algebra",
+        "campaigns",
         "claims.jsonl",
         "report.md",
         "problem.yaml",
