@@ -35,12 +35,30 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is not None:
             return tool, name
+        for candidate in self._spellings(name):
+            recovered = self._tools.get(candidate)
+            if recovered is not None:
+                return recovered, candidate
+        return None, name
+
+    def _spellings(self, name: str) -> list[str]:
+        """Recoverable misspellings of a tool name, most conservative first.
+
+        Whitespace first, then case. Every registered name is lower case and no two
+        differ only by case, so ``"read_File"`` is as unambiguous as ``"read_ file"`` —
+        it was observed twelve times in one sweep, from a model that had the tool list in
+        front of it. Both are the same failure: the model chose the right tool and typed
+        it slightly wrong, and answering "unknown tool" describes a name it never meant.
+        """
+        out: list[str] = []
         compact = "".join(name.split())
         if compact != name:
-            recovered = self._tools.get(compact)
-            if recovered is not None:
-                return recovered, compact
-        return None, name
+            out.append(compact)
+        for spelling in (name, compact):
+            lowered = spelling.lower()
+            if lowered != spelling and lowered not in out:
+                out.append(lowered)
+        return out
 
     def tools(self) -> list[Tool]:
         return list(self._tools.values())

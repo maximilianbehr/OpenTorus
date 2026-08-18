@@ -704,3 +704,41 @@ def test_a_timed_out_command_says_the_limit_is_the_callers(tmp_path: Path) -> No
     assert result.timed_out and result.exit_code == 124
     assert "caller-supplied limit" in result.stderr
     assert "not a property of the command" in result.stderr
+
+
+def test_a_tool_name_with_the_wrong_case_resolves() -> None:
+    """ "read_File" is the same failure as "read_ file": right tool, typed slightly wrong.
+
+    Twelve occurrences in a single sampling sweep, from a model that had the full tool
+    list in its context. Every registered name is lower case and no two differ only by
+    case, so the recovery is unambiguous.
+    """
+    import tempfile
+
+    from opentorus.config import default_config
+    from opentorus.tools.builtin import build_default_registry
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    root = Path(tempfile.mkdtemp())
+    init_workspace(root)
+    registry = build_default_registry(root, workspace_dir(root), default_config())
+
+    for written in ("read_File", "Read_File", "read_ file", "Read_ File"):
+        tool, _ = registry.resolve(written)
+        assert tool is not None and tool.name == "read_file", written
+
+    assert registry.resolve("PAPER_READ")[0].name == "paper_read"
+    assert registry.resolve("exp_Run")[0].name == "exp_run"
+
+
+def test_an_unknown_tool_is_still_unknown() -> None:
+    import tempfile
+
+    from opentorus.config import default_config
+    from opentorus.tools.builtin import build_default_registry
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    root = Path(tempfile.mkdtemp())
+    init_workspace(root)
+    registry = build_default_registry(root, workspace_dir(root), default_config())
+    assert registry.resolve("no_such_tool")[0] is None
