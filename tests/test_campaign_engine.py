@@ -503,3 +503,49 @@ def test_paused_created_campaign_gets_campaign_started_on_first_run(tmp_path: Pa
     assert types.count("campaign_started") == 1
     final = _snapshot(ot, record.id)
     assert final.started_at is not None and final.status is CampaignStatus.completed
+
+
+def test_a_worker_exception_is_a_failed_item_and_a_phase_crash_pauses_with_the_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two crash classes, two honest outcomes. A worker that raises becomes a failed
+    work item with a failure signature (category 'other') and the campaign goes on. A
+    crash outside any worker (here: the graph mirror) must not leave the campaign
+    'running' on disk with no trace: the engine records a pause naming the error,
+    re-raises for the CLI, and a later resume completes."""
+    root, ot, pid = make_workspace(tmp_path)
+
+    class _Crashing:
+        role = WorkerRole.librarian
+
+        def run(self, ctx: WorkerContext, rt: object) -> WorkerResult:
+            raise RuntimeError("worker exploded")
+
+    from opentorus.campaign import engine as engine_module
+    from opentorus.campaign.workers import DEFAULT_WORKERS
+
+    registry = {**DEFAULT_WORKERS, WorkerRole.librarian: _Crashing()}
+    engine = make_engine(root, ot, worker_registry=registry)
+    real_mirror = engine_module.mirror_graph
+    calls = {"n": 0}
+
+    def _mirror_once_broken(run):  # noqa: ANN001, ANN202
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("phase exploded")
+        return real_mirror(run)
+
+    monkeypatch.setattr(engine_module, "mirror_graph", _mirror_once_broken)
+    with pytest.raises(RuntimeError, match="phase exploded"):
+        engine.start(pid, mode="exploration", max_steps=30)
+    paused = _snapshot(ot, "CAMPAIGN-0001")
+    assert paused.status is CampaignStatus.paused
+    assert paused.pause_reason is not None
+    assert paused.pause_reason.startswith("error: RuntimeError: phase exploded")
+    # the worker's own crash was recorded honestly, not swallowed
+    failed = [wi for wi in paused.work_items.values() if wi.status.value == "failed"]
+    assert failed and any("worker exploded" in (wi.failure_reason or "") for wi in failed)
+    assert open_campaign(ot, "CAMPAIGN-0001").verify_replay().matches
+    result = engine.resume("CAMPAIGN-0001")
+    assert result.resumed
+    assert _snapshot(ot, "CAMPAIGN-0001").status is CampaignStatus.completed

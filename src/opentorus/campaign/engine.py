@@ -291,6 +291,18 @@ class CampaignEngine:
             self._pause_now(run, "interrupted")
             self._write_progress(run)
             raise
+        except Exception as exc:  # noqa: BLE001 — a crash must not leave the campaign 'running'
+            # A worker, provider or dossier operation blew up mid-phase. The log is
+            # already consistent (events are written before the snapshot), so the honest
+            # move is a recorded pause naming the error: the campaign stays inspectable
+            # and resumable instead of sitting on disk as 'running' with no trace of why
+            # it stopped. The exception still propagates so the CLI reports it.
+            self._pause_now(run, f"error: {type(exc).__name__}: {exc}"[:500])
+            try:
+                self._write_progress(run)
+            except Exception:  # noqa: BLE001 — progress.md is a courtesy, never the record
+                _logger.debug("could not write progress for %s after an error", run.cid)
+            raise
         self._write_progress(run)
         return run.snap
 
