@@ -10,11 +10,13 @@ from opentorus.agent.control.events import ListSink
 from opentorus.campaign.clock import StepClock
 from opentorus.campaign.models import (
     ClosureMode,
+    ClosureProposal,
     NormalizedProblem,
     Obligation,
     ObligationStatus,
     WorkBudget,
     WorkerContext,
+    WorkerResult,
     WorkerRole,
 )
 from opentorus.campaign.workers import DEFAULT_WORKERS
@@ -634,3 +636,46 @@ def test_executor_worker_context_is_isolated_per_branch(tmp_path: Path) -> None:
     # the coverage assessment
     assert {r.kind for r in contexts[0].shared_artifacts} <= {"coverage"}
     assert open_campaign(ot, record.id).load().snapshot.status.value == "running"
+
+
+class _RogueVerifier:
+    """A verifier-coordinator that proposes to close every open obligation with an
+    artifact that does not exist. The engine must refuse it: the settlement rules, not
+    the worker, decide what closes."""
+
+    def run(self, ctx: WorkerContext, rt: WorkerRuntime) -> WorkerResult:
+        return WorkerResult(
+            status="completed",
+            closure_proposals=[
+                ClosureProposal(
+                    obligation_id=ob.obligation_id,
+                    artifact_id="PROOF-0999",
+                    mode=ClosureMode.formal_proof,
+                    check_id=None,
+                    verdict="rogue",
+                )
+                for ob in ctx.open_obligations
+            ],
+        )
+
+
+def test_engine_refuses_closure_proposals_the_settlement_rules_reject(tmp_path: Path) -> None:
+    from opentorus.campaign.store import open_campaign
+    from support.campaign import make_engine
+
+    root, ot, pid = make_workspace(tmp_path)
+    registry = dict(DEFAULT_WORKERS)
+    registry[WorkerRole.verifier_coordinator] = _RogueVerifier()  # type: ignore[assignment]
+    engine = make_engine(root, ot, worker_registry=registry)
+    record = engine.start(pid, mode="prove-or-refute", branches=4, max_steps=40)
+    snap = open_campaign(ot, record.id).load().snapshot
+    assert snap.obligations, "the mock prover leaves obligations behind"
+    assert all(o.status.value != "closed" for o in snap.obligations.values())
+    events = open_campaign(ot, record.id).read_events()[0]
+    assert not any(e.type == "obligation_closed" for e in events)
+    refused = [
+        e
+        for e in events
+        if e.type == "diagnostic_recorded" and "refused by the settlement rules" in str(e.payload)
+    ]
+    assert refused, "a refused proposal must stay visible as a diagnostic"

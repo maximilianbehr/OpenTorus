@@ -151,21 +151,50 @@ def mirror_graph(run: RunContext) -> tuple[int, int]:
 
 def record_closures(run: RunContext, proposals: Sequence[ClosureProposal]) -> int:
     """``obligation_closed`` for each verifier-coordinator proposal whose obligation is
-    still open; returns how many closed. The proposal names the accepted artifact, the
-    closure mode and the check that backed it — the only path to a closed obligation."""
+    still open; returns how many closed.
+
+    A proposal is only a *proposal*. Before it becomes an event the engine re-runs
+    :func:`opentorus.campaign.proof_tree.settlement.can_close_obligation` against the
+    named artifact, so the settlement rules are the single gate to a closed obligation
+    no matter which worker (a custom registry included) produced the proposal. A
+    proposal the rules refuse is recorded as a ``diagnostic_recorded`` event with the
+    reason — visible, never silently applied.
+    """
+    from opentorus.campaign.models import Diagnostic
+    from opentorus.campaign.proof_tree.settlement import can_close_obligation
+
     closed = 0
     for proposal in proposals:
         ob = run.snap.obligations.get(proposal.obligation_id)
         if ob is None or ob.status is ObligationStatus.closed:
+            continue
+        verdict = can_close_obligation(
+            run.store.ot_dir, run.pid, ob, artifact_id=proposal.artifact_id
+        )
+        if not verdict.allowed or verdict.artifact_id != proposal.artifact_id:
+            run.store.append(
+                ev.EventType.diagnostic_recorded,
+                Diagnostic(
+                    kind="invalid_payload",
+                    message=(
+                        f"closure proposal for {proposal.obligation_id} with "
+                        f"{proposal.artifact_id} refused by the settlement rules: "
+                        f"{verdict.reason}"
+                    ),
+                ),
+                role=WorkerRole.verifier_coordinator,
+                branch_id=ob.branch_id,
+                refs=[proposal.artifact_id],
+            )
             continue
         run.store.append(
             ev.EventType.obligation_closed,
             ev.ObligationClosedPayload(
                 obligation_id=proposal.obligation_id,
                 artifact_id=proposal.artifact_id,
-                closure_mode=proposal.mode,
-                check_id=proposal.check_id,
-                verdict=proposal.verdict,
+                closure_mode=verdict.mode or proposal.mode,
+                check_id=verdict.check_id or proposal.check_id,
+                verdict=proposal.verdict or verdict.reason,
             ),
             role=WorkerRole.verifier_coordinator,
             branch_id=ob.branch_id,
