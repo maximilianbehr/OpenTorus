@@ -6,6 +6,42 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.13] — 2026-08-18
+
+Three defects found by reading the run ledgers rather than the code — 444 failures across
+all recorded workspaces, clustered by a normalized error key so the classes stand out.
+Two of them are siblings of a bug already fixed for tool names, and the third is a
+four-word message that quietly cost ten experiments.
+
+The sympy backend checked only whether the difference was a *number*, so it declined
+every provable symbolic inequality. An sos-coloring run submitted `x**2 >= 0` and was told
+this backend does not do universally quantified inequalities — but once the variable is
+real, sympy settles that outright, along with `exp(x) > 0`, `-x**2 <= 0` and `abs(x) >= 0`,
+which is exactly what a lemma step reduces to. That run had declared its variables as a
+bare list, which leaves them complex, so the refusal was formally right and the message
+still wrong: it named a missing capability instead of the one-word repair. An undeclared
+symbol is now named first, with the existing routes kept rather than displaced.
+
+`memory_add` stripped its `text` argument and not its `kind`, so a kind arriving as
+`"  \ndecisions  "` was answered "Unknown memory kind" — eight times in one night, each
+about a kind that plainly exists. `resolve_environment` answered "Unknown tool environment
+'python- sci'" and then listed `python-sci` among the known ones, ten times in a single
+run. Both now recover the way the tool registry already does for a tool name a model split
+with a stray space; a genuine typo still fails.
+
+"Timed out after 120s" reads as a verdict on the experiment when it is a statement about
+the default it was given. Ten such runs across seven dossiers over three days, and not one
+raised the limit afterwards, because the message never said there was a limit to raise.
+
+### Fixed
+- **The sympy backend decides the symbolic inequalities sympy can decide**, and names an
+  undeclared symbol as the repair when it cannot.
+- **A stray space in a memory kind or an environment name resolves** to the name that was
+  meant, as it already did for tool names.
+- **A timed-out command names the budget** as the caller's, keeps whatever was printed
+  before the cut, and `exp_run` adds the concrete call form with a larger timeout.
+
+
 ## [0.0.12] — 2026-08-17
 
 Two more from the same stress run, and one of them is the clearest recording yet of the
