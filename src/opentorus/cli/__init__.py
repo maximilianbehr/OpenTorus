@@ -34,6 +34,7 @@ from opentorus.cli import (  # noqa: F401
     review,
     root,
     task,
+    theorem,
 )
 from opentorus.cli._base import BANNER, SLOGAN, app
 
