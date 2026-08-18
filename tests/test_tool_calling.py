@@ -629,3 +629,58 @@ def test_a_genuine_http_error_gets_no_throttling_advice() -> None:
 
     assert not result.ok
     assert "throttling" not in result.content
+
+
+def test_a_memory_kind_with_stray_whitespace_still_resolves() -> None:
+    """The kind arrived as "  \\ndecisions  " and was answered "Unknown memory kind".
+
+    `text` was already stripped in the same method; `kind` was not. Eight of these
+    across three runs in one night, each about a kind that plainly exists.
+    """
+    import tempfile
+
+    from opentorus.tools.base import ToolCall
+    from opentorus.tools.research import MemoryAddTool
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    root = Path(tempfile.mkdtemp())
+    init_workspace(root)
+    tool = MemoryAddTool(workspace_dir(root))
+
+    result = tool.run(
+        ToolCall(id="c", name="memory_add", args={"kind": "  \ndecisions  ", "text": "X"})
+    )
+    assert result.ok, result.content
+    assert "(decisions)" in result.content
+
+    bad = tool.run(ToolCall(id="c", name="memory_add", args={"kind": "nonsense", "text": "X"}))
+    assert not bad.ok
+
+
+def test_an_environment_name_split_by_a_space_still_resolves() -> None:
+    """ "python- sci" can only mean "python-sci" — no environment name has whitespace.
+
+    Ten such calls in one run, each answered with a list of known environments that
+    contained the very name the model had meant. The tool registry already recovers a
+    tool name the same way.
+    """
+    import tempfile
+
+    import yaml
+
+    from opentorus.errors import OpenTorusError
+    from opentorus.execution.environments import resolve_environment
+    from opentorus.workspace import init_workspace, workspace_dir
+
+    root = Path(tempfile.mkdtemp())
+    init_workspace(root)
+    ot = workspace_dir(root)
+    (ot / "environments.yaml").write_text(
+        yaml.safe_dump({"environments": {"python-sci": {"image": "x:local"}}}), encoding="utf-8"
+    )
+
+    for written in ("python-sci", "python- sci", "python-\nsci"):
+        assert resolve_environment(ot, written) is not None, written
+
+    with pytest.raises(OpenTorusError):
+        resolve_environment(ot, "nope")

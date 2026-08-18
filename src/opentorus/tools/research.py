@@ -533,7 +533,11 @@ class MemoryAddTool(Tool):
         text = str(call.args.get("text", "")).strip()
         if not text:
             return self.fail(call, "memory_add requires non-empty 'text'.")
-        kind = call.args.get("kind", "facts")
+        # Stripped for the same reason `text` above is: a model's output picks up a
+        # newline or a trailing space and the kind arrives as "  \ndecisions  ",
+        # which answered "Unknown memory kind" about a kind that plainly exists.
+        # Eight of those across three runs in one night.
+        kind = str(call.args.get("kind", "facts")).strip() or "facts"
         if kind not in VALID_KINDS:
             return self.fail(call, f"Unknown memory kind '{kind}'.")
         before = len(list_memory(self._ot_dir, kind))

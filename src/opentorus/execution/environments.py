@@ -157,6 +157,13 @@ def resolve_environment(ot_dir: Path, name: str) -> ToolEnvironment:
     envs = list_environments(ot_dir)
     env = envs.get(name)
     if env is None:
+        # No environment name contains whitespace, so "python- sci" can only mean
+        # "python-sci" — the same recovery the tool registry already does for a tool
+        # name a model split with a stray space. Ten such calls in one run, each
+        # answered with a list that contained the name the model had meant.
+        compact = "".join(str(name).split())
+        env = envs.get(compact)
+    if env is None:
         valid = ", ".join(sorted(envs)) or "(none)"
         raise OpenTorusError(f"Unknown tool environment '{name}'. Known: {valid}")
     return env
