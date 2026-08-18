@@ -6,6 +6,50 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.14] — 2026-08-18
+
+The worst defect in this series, and it never produced an error message. The argument
+validator fails open on unknown properties, so a key a model wrote as `gaps_ markdown`
+passed validation, never reached the tool, and was reported nowhere. 116 calls across six
+recorded workspaces did exactly that, led by `proof_write`'s `gaps_ markdown` (34),
+`evidence_ notes` (23) and `connection_ to_ dossier` (20), plus `exp_new`'s `run_ from`
+(11), which then silently used the default working directory and could not find its own
+script.
+
+The first of those is the one that matters. Gaps are load-bearing — the referee counts
+them, the gap-closure challenge is built on them — so a `proof_write` whose gaps vanish is
+recorded as a proof *without* gaps. That is precisely the laundering this project guards
+against, reached by a typo rather than by intent, and no guard could see it because
+nothing failed.
+
+Two smaller members of the same family: a tool name with the wrong case (`read_File`, a
+dozen times in one sweep, from a model with the tool list in its context) now resolves
+like one split by whitespace already did. And a repaired argument name is now recorded in
+the action ledger, because normalisation runs before every `log_action` — without the
+note, "the model did not slip" and "the repair worked" are indistinguishable, and reading
+`actions.jsonl` is how every defect in this series was found.
+
+Finally, `top_p`, `top_k` and `seed` are configurable. OpenTorus sent only `temperature`
+and let the rest fall back to each model's Modelfile, which is not nothing: gemma4 ships
+`top_k 64 / top_p 0.95`, mistral-medium ships neither and inherits Ollama's `40 / 0.9`,
+and qwen3.6 carries `presence_penalty 1.5`. Every cross-model comparison in the example
+sweeps was comparing sampling as much as models. All three default to null, so nothing
+changes for an existing config.
+
+### Fixed
+- **An argument name split by whitespace no longer discards the argument.** Renamed only
+  when the whitespace-free form is a declared property that was not supplied separately.
+- **A tool name with the wrong case resolves to the tool that was meant.** Every
+  registered name is lower case and no two differ only by case.
+- **A repaired argument name stays visible in the ledger**, so the slip rate remains
+  measurable after the slip stops hurting.
+
+### Added
+- **`model.top_p`, `model.top_k`, `model.seed`.** A seed makes a run replayable, which
+  before/after comparisons need: four regression checks in one day were inconclusive
+  because an unseeded model simply took a different route.
+
+
 ## [0.0.13] — 2026-08-18
 
 Three defects found by reading the run ledgers rather than the code — 444 failures across
