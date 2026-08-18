@@ -371,6 +371,14 @@ def test_parse_strategist_json_is_lenient() -> None:
     assert parse_strategist_json('[1, 2, {"kind": "proof", "objective": "y"}]') == [
         {"kind": "proof", "objective": "y"}
     ]
+    # the shapes real models produced: an object wrapping the array, and trailing commas
+    wrapped = 'Here are my proposals:\n{"proposals": [{"title": "W", "kind": "proof"},]}'
+    assert parse_strategist_json(wrapped) == [{"title": "W", "kind": "proof"}]
+    assert parse_strategist_json('{"strategies": [{"title": "S"}], "note": "x"}') == [
+        {"title": "S"}
+    ]
+    assert parse_strategist_json('{"a": 1, "single_list": [{"title": "L"}]}') == [{"title": "L"}]
+    assert parse_strategist_json('{"x": [{"t": 1}], "y": [{"t": 2}]}') == []  # ambiguous: refuse
     ctx = _ctx(CampaignMode.prove_or_refute)
     proposals, notes = proposals_from_items(
         [{"title": "?", "kind": "nonsense", "objective": "z"}, {"kind": "proof", "objective": ""}],

@@ -12,6 +12,7 @@ all: the template portfolio is the deterministic answer, and a note says so.
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 from opentorus.campaign.models import (
@@ -57,18 +58,49 @@ RELATION_ALIASES: dict[str, RootRelation] = {r.value: r for r in RootRelation} |
 }
 
 
+_WRAPPER_KEYS = ("proposals", "branches", "portfolio", "strategies", "items")
+_TRAILING_COMMA = re.compile(r",(\s*[\]}])")
+
+
+def _loads_lenient(text: str) -> object | None:
+    """``json.loads`` that also survives a trailing comma before ``]``/``}``."""
+    for candidate in (text, _TRAILING_COMMA.sub(r"\1", text)):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def parse_strategist_json(text: str) -> list[dict[str, object]]:
-    """The JSON array in a model answer, tolerating prose and code fences around it."""
+    """The proposal list in a model answer, tolerating the shapes models actually produce.
+
+    Accepted: a bare JSON array (possibly wrapped in prose or code fences), an object
+    wrapping the array under ``proposals``/``branches``/``portfolio``/``strategies``/
+    ``items``, and trailing commas. A real run fell back to the template portfolio
+    because gemma4 answered ``{"proposals": [...]}`` — a legitimate answer the strict
+    array-only reader threw away.
+    """
     if not text:
         return []
-    start = text.find("[")
-    end = text.rfind("]")
-    if start < 0 or end <= start:
+    starts = [i for i in (text.find("["), text.find("{")) if i >= 0]
+    if not starts:
         return []
-    try:
-        data = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
+    start = min(starts)
+    closer = "]" if text[start] == "[" else "}"
+    end = text.rfind(closer)
+    if end <= start:
         return []
+    data = _loads_lenient(text[start : end + 1])
+    if isinstance(data, dict):
+        for key in _WRAPPER_KEYS:
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
+        else:
+            # An object holding exactly one list value is the wrapper too.
+            lists = [v for v in data.values() if isinstance(v, list)]
+            data = lists[0] if len(lists) == 1 else None
     if not isinstance(data, list):
         return []
     return [item for item in data if isinstance(item, dict)]
@@ -139,7 +171,11 @@ def propose_with_model(
         return [], [f"strategist: provider error ({exc}); template portfolio used"]
     items = parse_strategist_json(answer)
     if not items:
-        return [], ["strategist: answer was not a JSON array of proposals; template portfolio used"]
+        excerpt = " ".join((answer or "").split())[:160]
+        return [], [
+            "strategist: answer was not a JSON array of proposals; template portfolio used"
+            + (f" (answer began: {excerpt!r})" if excerpt else " (empty answer)")
+        ]
     return items, [
         f"strategist: {len(items)} proposal(s) from {lease.profile_name} "
         f"({lease.decision.decision_id})"
