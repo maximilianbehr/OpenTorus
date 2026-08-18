@@ -92,3 +92,29 @@ def test_research_turn_with_routing_disabled_uses_the_given_provider(tmp_path: P
     assert turn.selected_profile is None
     assert turn.model == "mock-default"
     assert turn.actual_model == "mock-default"
+
+
+def test_prove_cli_routes_proof_development_and_stamps_usage(tmp_path: Path, monkeypatch) -> None:
+    """``opentorus prove`` leases its provider through the pool: the ledger holds an
+    ``RTD-`` record for ``proof_development`` and every model turn of the run carries
+    that decision id, so the usage ledger names the provider that actually answered."""
+    from typer.testing import CliRunner
+
+    from opentorus.cli import app
+    from opentorus.research.dossier import store
+
+    root, ot = _setup(tmp_path)
+    store.create_dossier(ot, "For every n >= 1, the routed statement P(n) holds.")
+    monkeypatch.chdir(root)
+    result = CliRunner().invoke(app, ["prove", "PROBLEM-0001", "--no-literature"])
+    assert result.exit_code == 0, result.stdout
+
+    decisions = [r for r in read_routing_ledger(ot) if r.task_class == "proof_development"]
+    assert decisions and decisions[0].outcome == "selected"
+    assert decisions[0].selected_profile == "default"
+    assert decisions[0].provider == "mock"
+
+    turns = [r for r in read_usage(ot) if r.routing_decision_id is not None]
+    assert turns, "prove's model turns must carry the routing decision id"
+    assert {r.routing_decision_id for r in turns} == {decisions[0].decision_id}
+    assert all(r.provider == "mock" and r.actual_model == "mock-default" for r in turns)

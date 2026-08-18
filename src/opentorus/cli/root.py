@@ -23,6 +23,21 @@ from opentorus.errors import OpenTorusError
 from opentorus.workspace import gather_status, init_workspace
 
 
+def _acquire_provider(config, ot_dir, task_class: str):  # noqa: ANN001, ANN202
+    """Lease the provider that performs ``task_class`` and return ``(provider, lease)``.
+
+    The pool records every decision in ``usage/routing.jsonl``; with routing disabled
+    it yields the default profile, which is the same provider ``get_provider(config)``
+    builds, so behaviour is unchanged for single-model configurations. A pool that
+    cannot lease any eligible profile raises ``NoEligibleProviderError`` (a
+    ``ProviderError``), which the calling command reports like any provider failure.
+    """
+    from opentorus.providers.pool import build_pool
+
+    lease = build_pool(config, ot_dir).acquire(task_class)
+    return lease.provider, lease
+
+
 @app.command()
 def chat() -> None:
     """Start the interactive OpenTorus session."""
@@ -433,13 +448,15 @@ def research(
 ) -> None:
     """Pursue a research question autonomously within budgets (start or resume)."""
     from opentorus.agent.research_loop import run_research
-    from opentorus.providers.registry import get_provider
     from opentorus.research.dossier import store
 
     base = _require_workspace_dir()
     root = base.parent
     config = _load_workspace_config(base)
-    provider = get_provider(config)
+    # Acquire through the provider pool so a configured route for narration is the
+    # provider that actually answers (recorded in usage/routing.jsonl). With routing
+    # disabled the pool hands back the default profile, i.e. exactly get_provider(config).
+    provider, _lease = _acquire_provider(config, base, "narration")
     from opentorus.providers.tool_support import require_tool_calling_provider
 
     require_tool_calling_provider(
@@ -517,7 +534,6 @@ def prove(
     from opentorus.agent.prove_loop import run_prove
     from opentorus.approvals import make_console_confirm
     from opentorus.errors import OpenTorusError, ProviderError
-    from opentorus.providers.registry import get_provider
     from opentorus.research.dossier import store
     from opentorus.research.dossier.models import ATTACK_STRATEGIES
     from opentorus.research.dossier.strategies import create_approach
@@ -620,7 +636,15 @@ def prove(
 
     outcome = None
     try:
-        provider = get_provider(config)
+        # The proof session is routed as ``proof_development``: the pool selects the
+        # provider that performs the task and its RoutingDecisionRecord travels with
+        # every AgentLoop the run builds, so the usage ledger names the actual model.
+        provider, lease = _acquire_provider(config, ot_dir, "proof_development")
+        if lease is not None and (verbose or debug):
+            console.print(
+                f"[dim]Model route: {lease.decision.task_class} -> profile "
+                f"'{lease.profile_name}' ({lease.profile.provider}/{lease.profile.name})[/dim]"
+            )
         from opentorus.providers.tool_support import require_tool_calling_provider
 
         require_tool_calling_provider(
@@ -646,6 +670,7 @@ def prove(
             stream_llm=stream_llm,
             on_thinking=on_thinking,
             on_status=_on_status,
+            routing=lease.decision if lease is not None else None,
         )
     except KeyboardInterrupt:
         from opentorus.ux import format_interrupt_message
