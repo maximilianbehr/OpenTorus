@@ -315,6 +315,7 @@ The cross-workspace knowledge base lives in `~/.opentorus/kb/`.
 - [docs/proof-tree.md](docs/proof-tree.md) — the semantic proof tree, root relations, obligation closure.
 - [docs/theorem-references.md](docs/theorem-references.md) — theorem-level literature: THMREF, applicability, coverage.
 - [docs/model-routing.md](docs/model-routing.md) — model profiles, per-task routes, the routing ledger.
+- [docs/dashboard.md](docs/dashboard.md) — the optional, read-only proof-tree dashboard (`opentorus[dashboard]`).
 - [docs/safety.md](docs/safety.md) · [docs/privacy.md](docs/privacy.md) — the safety and privacy models.
 - [docs/release.md](docs/release.md) — how a release is cut and verified.
 - [docs/adr/0001-campaign-engine.md](docs/adr/0001-campaign-engine.md) — the design decisions behind the campaign engine.
