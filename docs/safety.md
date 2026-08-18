@@ -45,6 +45,23 @@ destructive operations.
 
 `normal` (can act, subject to the policy) vs. `review` (strictly read-only).
 
+### Campaign and routing controls
+
+A campaign (`opentorus campaign`) runs its workers through the same permission
+policy, tool gates and DLP as any agent session -- each worker role additionally
+gets only its own tool allow-list, its own session id, a step / token / cost /
+wall-clock budget (`0` = unlimited; a campaign with no positive limit on any axis
+is refused) and no transcript from any other branch. Nothing a campaign records
+-- a closed obligation, a finished branch, a completed campaign -- can promote a
+claim; obligation closure requires an accepted artifact and completion never
+touches a status (a campaign can finish without solving the problem). Model
+routing (`models.profiles`, `governance.routing.task_routes`) decides which
+provider answers a task; the DLP scan, cost estimate and tool-calling check are
+applied to the **leased** provider, and every routing decision -- including a
+refusal -- is written to the local `usage/routing.jsonl`, so a fallback is never
+silent. The optional dashboard is read-only. See
+[campaign-engine.md](campaign-engine.md) and [model-routing.md](model-routing.md).
+
 ## Reversibility & auditability
 
 - **Checkpoints** (`opentorus checkpoint create`) record recoverable state (a git

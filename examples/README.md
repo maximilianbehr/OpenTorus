@@ -46,6 +46,17 @@ primary claim deterministically, the task text runs a dual research process (ref
 proof track), and `opentorus problem verdict` derives the terminal classification. Status
 audits are fresh, dated web checks at creation time.
 
+> **The engine now does what these drivers script by hand.** `opentorus campaign start
+> PROBLEM-XXXX --mode prove-or-refute` replaces the bash drivers' orchestration: it
+> designates the CONJECTURE primary claim, opens a portfolio of distinct branches (proof
+> route, counterexample search, literature map, formalization, special cases, ...),
+> schedules bounded work items across them, remembers failed attempts, and records every
+> decision in a replayable event log under the dossier. The drivers below remain valid
+> for what they set up around it (workspace, model, papers, dossier statement) and as
+> worked examples of the scope policy; the terminal classification is still
+> `opentorus problem verdict` -- a completed campaign does not mean the problem is
+> solved. See [docs/campaign-engine.md](../docs/campaign-engine.md).
+
 | Directory | Conjecture | Audit (2026-08-14) | Run |
 |-----------|-----------|--------------------|-----|
 | [graceful-tree](graceful-tree/) | Every tree admits a graceful labeling (Ringel–Kotzig 1964). | Open; verified ≤ 35 vertices; "almost all trees almost graceful" (arXiv:1608.01577); a 2007 claimed proof is unaccepted. | `bash graceful_tree.sh` |

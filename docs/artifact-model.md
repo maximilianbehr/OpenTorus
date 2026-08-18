@@ -22,6 +22,9 @@ inspectable: you can always trace a conclusion back to its evidence.
   datasets/DATASET-*/    # metadata: hash, license, source
   repos/REPO-*/          # metadata (pinned commit, license, test outcome)
   problems/PROBLEM-*/     # math dossiers (statement, claims, report.md, …)
+    campaigns/CAMPAIGN-*/  #   campaign.yaml, events.jsonl, snapshot.json, progress.md, branches/
+  theorems/              # THMREF references, relations, applicability checks, coverage/
+  providers/capabilities.json   # doctor's probe cache (provider|model|base_url -> capabilities)
   proofs/PROOF-*/        # formal proof attempts (Lean/Coq/SMT)
   reviews/REVIEW-*/      # critic reviews and findings
   figures/FIGURE-*/      # reproducible figures (script, data hash, seed)
@@ -30,6 +33,7 @@ inspectable: you can always trace a conclusion back to its evidence.
   journal/               # research-loop journal entries
   research/              # research-loop checkpoints/state
   usage/ledger.jsonl     # estimated token/cost ledger (UsageRecord)
+  usage/routing.jsonl    # routing decisions (RoutingDecisionRecord) + actual-model observations
 ```
 
 ## Core artifacts
@@ -47,6 +51,9 @@ inspectable: you can always trace a conclusion back to its evidence.
 | Patch | `PATCH-` | A proposed edit (applyable / revertable). |
 | Review | `REVIEW-` | A critic review with structured findings. |
 | Figure | `FIGURE-` | A regenerable plot with provenance. |
+| Campaign | `CAMPAIGN-` | A persistent portfolio campaign on one dossier: event log + derived snapshot (orchestration only). |
+| Theorem reference | `THMREF-` | A located, reviewable pointer to one numbered result in a local paper (`THMREL-` relations, `THMAPP-` applicability checks, `COV-` coverage assessments). |
+| Routing decision | `RTD-` | Which model profile was leased for a task class, and why. |
 
 Workspace-global claims, evidence, and experiments carry an optional `problem_id`,
 stamped from the active problem when the agent creates them, so `problem show`
@@ -222,3 +229,75 @@ was never created is rejected, and citing a real but not-yet-run experiment is
 recorded with an advisory (its results do not exist yet). Both the dossier and the
 workspace-global evidence paths enforce this, mirroring the `PAPER-*` citation
 grounding.
+
+## Campaign artifacts
+
+A campaign lives under its dossier at
+`problems/PROBLEM-XXXX/campaigns/CAMPAIGN-XXXX/` -- workspace-unique ids, one
+directory per campaign:
+
+| file | contents |
+|---|---|
+| `campaign.yaml` | `CampaignRecord`: id, `problem_id`, `mode`, `schema_version`, `created_at`, `statement_sha256`, the frozen `config_snapshot` (every budget as started; `0` = unlimited), `imported_from` / `migration_provenance`, `primary_claim_id`. Never rewritten. |
+| `events.jsonl` | the append-only typed event log: `CampaignEvent{event_id (EVT-NNNNNN = seq), campaign_id, seq, schema_version, timestamp, type, actor, role, refs, payload, causation_id, correlation_id, work_item_id, branch_id}`; the payload of each type is a registered pydantic model. |
+| `snapshot.json` | `CampaignSnapshot`: the pure reducer's fold of the log -- phase, status, branches (`BRANCH-NNNN`), work items (`WI-NNNN`), obligations (`OBL-NNNN`), failure signatures (`FSIG-NNNN`), the budget ledger, artifact *references*, routing decision ids, campaign proof-tree nodes, diagnostics, counters, phase history. Atomically rewritten, never ahead of the log; `campaign verify` recomputes it. |
+| `progress.md`, `branches/*.md` | human-readable; nothing reads them back. |
+
+**What is deliberately absent from the snapshot:** claim statuses and the root
+mathematical status. They are read from the dossier when a view needs them, so
+the campaign layer can never disagree with -- or quietly upgrade -- what the
+dossier says. `campaigns/` is on the dossier's write-protected list
+(`tools/filesystem._DOSSIER_MANAGED_ARTIFACTS`), so the agent's file tools
+cannot edit these files. Details: [campaign-persistence.md](campaign-persistence.md).
+
+### Obligations and the closure rule
+
+An `Obligation` (`OBL-NNNN`) is a proof obligation a campaign opened -- typically
+one per explicit `[GAP-n]` of a new sketch (`source_proof_id`, `gap_marker`) --
+with a statement, assumptions, quantifiers, its `root_relation`, dependencies,
+the closure modes it accepts, supporting / contradicting artifacts, review
+findings, and a status (`open`, `in_progress`, `closed`, `contradicted`,
+`abandoned`). It lives in the campaign event log; editing the proof body cannot
+change it.
+
+An obligation closes **only** through an `obligation_closed` event that cites an
+artifact `proof_tree.settlement.can_close_obligation` accepted, in one of seven
+modes: `formal_proof`, `smt_certificate`, `exact_symbolic_certificate`,
+`validated_numerical_certificate` (an accepted `PROOF-*` in the verifier ledger,
+passing the same four checks as `dossier.claims._require_verification_artifact`),
+`accepted_counterexample_certificate` (a `COUNTEREXAMPLE_VERIFIED` claim naming
+every recorded root assumption), `nl_proof_referee_accepted` (a gap-free primary
+sketch the deterministic referee passes -- the weakest mode, not machine
+verification), `accepted_literature_theorem` (an accepted `THMREF-*` with an
+accepted applicability check). Deleting a gap marker closes nothing; closing an
+obligation changes no claim status; special-case and relaxation obligations
+never settle the root. See [proof-tree.md](proof-tree.md).
+
+## Theorem-reference ledgers
+
+Workspace-level, under `.opentorus/theorems/` (a theorem is a fact about a paper,
+not about one dossier): `references.jsonl` (`TheoremReference`, `THMREF-NNNN`: a
+local `PAPER-*`, a validated `SourceLocator`, `location_hash`, an excerpt of at
+most 300 characters, the normalised statement, categories, `review_status`
+`candidate` / `accepted` / `rejected`), `relations.jsonl` (`THMREL-NNNN`),
+`applicability_checks.jsonl` (`THMAPP-NNNN`, result `accepted` / `rejected` /
+`inconclusive` / `needs-human-review`), `coverage/PROBLEM-XXXX.jsonl`
+(`COV-NNNN` assessments and human overrides). Extraction -- heuristic or LLM --
+only ever produces `candidate`; `opentorus theorem review --status accepted` is
+the sole path to `accepted`; only an accepted, problem-attributed reference
+licenses `has_reference` in the report's honesty context. The per-dossier
+`THM-*` refs (`problem theorem`) are untouched. See
+[theorem-references.md](theorem-references.md).
+
+## Usage and routing ledgers
+
+`usage/ledger.jsonl` (`UsageRecord`) gained routing provenance and campaign
+attribution: `routing_decision_id`, `requested_profile`, `selected_profile`,
+`configured_model`, `actual_model`, `fallback_reason`, `campaign_id`,
+`branch_id`, `work_item_id`, `worker_role`. `provider` and `model` name the
+provider that actually answered. `usage/routing.jsonl` holds one
+`RoutingDecisionRecord` (`RTD-NNNN`) per provider lease -- task class, requested
+and selected profile, provider, configured and actual model, the per-candidate
+verdicts, `fallback_reason`, `outcome` (`selected` / `no_eligible_provider`),
+attribution -- plus append-only actual-model observations. Both are local, and
+the decision id joins them. See [model-routing.md](model-routing.md).

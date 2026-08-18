@@ -105,8 +105,8 @@ python -m venv /tmp/ot-wheel
     && /tmp/ot-wheel/bin/opentorus config set quality.test_command null \
     && /tmp/ot-wheel/bin/opentorus doctor --json )
 
-# Import without optional deps: the CLI must not pull in textual
-/tmp/ot-wheel/bin/python -c "import sys, opentorus.cli; assert 'textual' not in sys.modules"
+# Import without optional deps: neither the CLI nor the campaign engine may pull in textual
+/tmp/ot-wheel/bin/python -c "import sys, opentorus.cli, opentorus.campaign; assert 'textual' not in sys.modules"
 
 # Clean-venv sdist install + CLI smoke
 python -m venv /tmp/ot-sdist
@@ -117,13 +117,16 @@ python -m venv /tmp/ot-sdist
 # Dashboard extra
 /tmp/ot-wheel/bin/pip install "$(ls dist/*.whl)[dashboard]"
 /tmp/ot-wheel/bin/python -c "import textual"
-/tmp/ot-wheel/bin/python -c "import sys, opentorus.cli; assert 'textual' not in sys.modules"
+/tmp/ot-wheel/bin/python -c "import opentorus.dashboard.app"
+/tmp/ot-wheel/bin/python -c "import sys, opentorus.cli, opentorus.campaign; assert 'textual' not in sys.modules"
 ```
 
 `config set quality.test_command null` is there because a clean venv has no
 pytest and `doctor` reports a missing test runner as a failed environment
 check; the smoke wants to know that the *package* works, not that the venv is
-a development environment. Remove `dist/` and `build/` afterwards; neither is
+a development environment. The CLI smoke also runs `opentorus campaign --help`
+and `opentorus theorem --help`, so a broken lazy import in either group is
+caught before a tag. Remove `dist/` and `build/` afterwards; neither is
 tracked.
 
 ## Trusted-publishing setup
@@ -160,8 +163,10 @@ Push an annotated tag `vX.Y.Z` that points at a commit on `main` whose
   it cannot be fooled by whatever `opentorus` the runner might import), and
   the `dist` artifact upload.
 - `install-smoke`: wheel and sdist into two clean venvs, `--version`,
-  `--help`, `init` + `doctor`, the import-without-textual assertion, the
-  dashboard extra.
+  `--help` (including `campaign --help` and `theorem --help`), `init` +
+  `doctor`, the import-without-textual assertion (`opentorus.cli` and
+  `opentorus.campaign`), the dashboard extra (`import opentorus.dashboard.app`
+  succeeds, and the core imports still leave `textual` out of `sys.modules`).
 - `sbom`: an SPDX JSON software bill of materials of the installed wheel and
   its dependency closure (`sbom.spdx.json` artifact).
 - `provenance`: a build provenance attestation for `dist/*`, visible under
@@ -212,13 +217,15 @@ pip install 'opentorus[dashboard]'
 opentorus campaign dashboard CAMPAIGN-0001
 ```
 
-The `campaign dashboard` command lands together with the campaign engine; on
-an older build only the extra itself can be tested (`python -c "import
-textual"`). Without the extra the command fails with an actionable message
-naming `pip install 'opentorus[dashboard]'`. The `dev` extra includes
+The dashboard is read-only (it never writes a campaign event, a snapshot or a
+usage row) and its export flags (`--plain`, `--json`, `--dot`) work without the
+extra. Without the extra the interactive command fails with an actionable
+message naming `pip install 'opentorus[dashboard]'`. The `dev` extra includes
 `textual` so the dashboard's headless tests run in CI, and both CI workflows
-assert that `import opentorus.cli` leaves `textual` out of `sys.modules`
-even when it is installed.
+assert that `import opentorus.cli` and `import opentorus.campaign` leave
+`textual` out of `sys.modules` even when it is installed, and that
+`import opentorus.dashboard.app` succeeds once the extra is present. See
+`docs/dashboard.md`.
 
 ## Action pinning policy
 

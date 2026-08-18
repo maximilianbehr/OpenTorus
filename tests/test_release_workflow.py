@@ -183,6 +183,25 @@ def test_release_smoke_installs_wheel_and_sdist(release: dict[str, Any]) -> None
     assert "opentorus --version" in run
     assert "'textual' not in sys.modules" in run
     assert "[dashboard]" in run
+    _assert_campaign_smoke(run)
+
+
+# The import-without-textual assertion covers the campaign engine as well as the
+# CLI, the dashboard extra must actually import its app, and both new command
+# groups answer --help from a clean install. Pinned for lint.yml and release.yml
+# alike so the two smokes cannot drift apart.
+_IMPORT_ASSERTION = (
+    "import sys, opentorus.cli, opentorus.campaign; assert 'textual' not in sys.modules"
+)
+
+
+def _assert_campaign_smoke(run: str) -> None:
+    assert _IMPORT_ASSERTION in run
+    assert "import opentorus.dashboard.app" in run
+    assert "campaign --help" in run
+    assert "theorem --help" in run
+    # The dashboard import happens after the extra is installed, never before.
+    assert run.index("[dashboard]") < run.index("import opentorus.dashboard.app")
 
 
 def test_release_sbom_and_provenance_produce_artifacts(release: dict[str, Any]) -> None:
@@ -230,6 +249,7 @@ def test_lint_build_job_installs_wheel_and_sdist_into_clean_venvs(lint: dict[str
     assert '"$OT" doctor --json' in run
     assert "'textual' not in sys.modules" in run
     assert "[dashboard]" in run
+    _assert_campaign_smoke(run)
     uploads = [u for u in _uses(build) if u.startswith("actions/upload-artifact@")]
     assert uploads == ["actions/upload-artifact@v4"]
 

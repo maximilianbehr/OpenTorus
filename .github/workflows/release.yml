@@ -133,6 +133,8 @@ jobs:
           OT="$PWD/.venv-wheel/bin/opentorus"
           "$OT" --version
           "$OT" --help
+          "$OT" campaign --help
+          "$OT" theorem --help
           tmp="$(mktemp -d)"
           cd "$tmp"
           "$OT" init
@@ -144,7 +146,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          .venv-wheel/bin/python -c "import sys, opentorus.cli; assert 'textual' not in sys.modules"
+          # Neither the CLI nor the campaign engine may import textual eagerly.
+          .venv-wheel/bin/python -c "import sys, opentorus.cli, opentorus.campaign; assert 'textual' not in sys.modules"
       - name: Install sdist into a second clean venv
         shell: bash
         run: |
@@ -154,13 +157,16 @@ jobs:
           .venv-sdist/bin/pip install dist/*.tar.gz
           .venv-sdist/bin/opentorus --version
           .venv-sdist/bin/opentorus --help
+          .venv-sdist/bin/opentorus campaign --help
+          .venv-sdist/bin/opentorus theorem --help
       - name: Dashboard extra
         shell: bash
         run: |
           set -euo pipefail
           .venv-wheel/bin/pip install "$(ls dist/*.whl)[dashboard]"
           .venv-wheel/bin/python -c "import textual"
-          .venv-wheel/bin/python -c "import sys, opentorus.cli; assert 'textual' not in sys.modules"
+          .venv-wheel/bin/python -c "import opentorus.dashboard.app"
+          .venv-wheel/bin/python -c "import sys, opentorus.cli, opentorus.campaign; assert 'textual' not in sys.modules"
 
   sbom:
     needs: build

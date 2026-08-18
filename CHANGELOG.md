@@ -6,67 +6,235 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+OpenTorus ran three mostly linear loops. `prove` was one budgeted session with its
+anti-loop guards inlined and its recovery hints hard-coded next to them; `research` was
+a fixed counterexample-search iteration with a per-question JSON state file; and both
+built the provider once from `model:` and never rebuilt it, so `governance.routing` was
+advisory metadata -- the usage ledger recorded the configured model name, not the model
+that answered. Literature completeness was a paper count. Nothing coordinated several
+lines of attack on one problem, remembered which of them had already failed and why, or
+survived an interruption in a form that could be resumed and audited later. Theorem
+references (`THM-*`) were unvalidated pointers used in one place.
+
+This release adds a **campaign engine**: a persistent, resumable, portfolio-based attack
+on one dossier, driven from an append-only typed event log with a pure reducer, so
+`campaign status`, `verify` and `tree` read the same truth the engine wrote and a corrupt
+tail is a diagnostic rather than a silent loss. A campaign opens several distinct
+branches that each state their relation to the root problem, schedules bounded work
+items across them with a documented heuristic (every factor visible in the event that
+recorded the choice), runs ten narrow worker roles in isolated contexts, refuses to
+retry an unchanged failure, and closes proof obligations only against accepted
+artifacts. Around it: theorem-level literature (`THMREF-*` with validated locators,
+deterministic applicability checks, category coverage), model routing that actually
+routes -- named profiles, per-task routes, an auditable ledger of every lease -- and
+`doctor` checks that say which profile answers which task class and whether a fallback
+exists.
+
+What did **not** change is the rule everything else hangs on. Campaign completion is an
+orchestration fact: a campaign can finish without solving the problem, and the problem's
+status is still derived from dossier artifacts by `problem verdict` and the status gate.
+No campaign state, closed obligation, finished branch or dashboard view enters that
+derivation; special cases and relaxations cannot close the root; deleting a gap marker
+closes nothing; a model-extracted theorem reference is a candidate until a human accepts
+it. The existing `prove` and `research` commands keep their signatures and outputs, the
+golden transcripts are byte-identical, no dossier is rewritten, and every configuration
+that worked before works unchanged (the `model:` block is the implicit default profile;
+legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
+`docs/campaign-persistence.md`, `docs/portfolio-scheduler.md`, `docs/proof-tree.md`,
+`docs/theorem-references.md`, `docs/model-routing.md`, `docs/dashboard.md`,
+`docs/release.md` and `docs/adr/0001-campaign-engine.md`.
+
 ### Added
-- **Campaign portfolios, a scored scheduler and failed-attempt memory.** A campaign
-  now opens a real portfolio: the mode's fixed strategy recipe (or an LLM strategist's
-  JSON, validated leniently, template fallback recorded) is de-duplicated (Jaccard on
-  the objective, same kind and root relation → `REPEATED_STRATEGY`), capped
-  (`PORTFOLIO_CAP`, rejected proposals kept in the log), and activated top-N by
-  priority; prove-or-refute always keeps a proof and a counterexample route, and a
-  literature branch is forced while critical coverage is insufficient. Work items are
-  picked by a documented heuristic score (root impact, information gain, resolve
-  chance, verifier readiness, novelty, dependency criticality, cost, redundancy,
-  failure risk, fairness, literature boost — every factor visible in
-  `work_item_scheduled`, weights in `campaign.scheduler_weights`), never a
-  probability. Every worker failure is a `FSIG-*` signature keyed on *what* failed;
-  an unchanged repeat is `retry_refused` and the branch is suspended with explicit
-  reactivation conditions (backend changed / new evidence / accepted theorem
-  reference), reactivated only when a recorded condition is met. See
-  `docs/portfolio-scheduler.md`.
-- **The remaining campaign workers** — strategist, prover (bounded `prove` loop; each
-  explicit gap of the new sketch becomes an obligation), falsifier and numerical
-  experimenter (template experiments; an unmodified template records the experiment
-  but no evidence, and says so), symbolic experimenter (sympy certificates), formalizer
-  (`tool_unavailable` without a formal backend), critic (deterministic reviews + the
-  hostile referee) — each with a deterministic offline behaviour under the mock
-  provider and an honest failure signature instead of a silent "completed". A
-  special-case branch writes exploration sketches, never the dossier's primary answer.
+- **`opentorus campaign start PROBLEM-XXXX` runs a persistent, resumable campaign** in
+  one of three modes (`prove-or-refute`, `exploration`, `survey`) with a `campaign:` config
+  block (`default_mode`, `initial_branches`, `max_active_branches`, `max_steps`,
+  `token_budget`, `cost_budget`, `max_wall_seconds`, `branch_step_budget`,
+  `scheduler_weights`, ...; `0 = unlimited`, and a campaign with no positive limit on any
+  axis is refused). `status [--json]`, `pause --reason`, `resume` (idempotent on a
+  finished campaign), `stop --reason`, `list`, `verify` (replay the log against the
+  snapshot; exit 1 on mismatch), `tree [--plain|--json|--dot]` and `dashboard` complete
+  the group; exit 2 names a refused configuration (unknown mode, too few branches,
+  negative or absent budget, missing primary claim), Ctrl-C pauses the campaign with
+  reason `interrupted` and exits 130. Every campaign command that reports state prints
+  the campaign status and the derived problem status side by side and labelled, because
+  a completed campaign does not mean the problem is solved.
+- **A campaign is an append-only event log plus a derived snapshot** under
+  `problems/PROBLEM-XXXX/campaigns/CAMPAIGN-XXXX/` (`campaign.yaml`, `events.jsonl`,
+  `snapshot.json`, `progress.md`, `branches/`): forty-four typed event types validated
+  against a registry, `EVT-` ids from the log position, an injectable clock, a pure
+  reducer, `schema_version` with a migration hook, unknown types and fields tolerated,
+  torn lines / duplicate or missing `seq` / an unreadable or ahead-of-the-log snapshot
+  reported as diagnostics and never silently dropped; the snapshot holds orchestration
+  state and artifact references only, never a claim status. Campaign ids are
+  workspace-unique; `campaigns/` is on the dossier's write-protected list.
+- **The phase machine and the lifecycle**: CREATED -> INGEST -> NORMALIZE ->
+  MAP_LITERATURE -> GENERATE_PORTFOLIO, then rounds of SCHEDULE -> EXECUTE -> CRITIQUE ->
+  VERIFY -> UPDATE_GRAPH -> REALLOCATE until the mode's completion criterion, ending in
+  SYNTHESIZE -> COMPLETED; an explicit transition table enforced at append and replay
+  time; PAUSED remembers its resume phase; budget exhaustion is announced once per axis
+  and pauses the campaign in a resumable state; `max_parallel_workers > 1` is capped to 1
+  with a diagnostic; completion never touches a claim status. In prove-or-refute mode
+  `campaign start` creates the CONJECTURE claim from the statement and designates it
+  primary (status untouched, recorded as `artifact_created`), and `--no-primary-claim`
+  refuses with the manual remediation.
+- **Campaign portfolios, a scored scheduler and failed-attempt memory.** The mode's fixed
+  strategy recipe (or an LLM strategist's JSON, validated leniently, template fallback
+  recorded) is de-duplicated (`REPEATED_STRATEGY`), capped (`PORTFOLIO_CAP`, rejected
+  proposals kept in the log) and activated top-N by priority; prove-or-refute always
+  keeps a proof and a counterexample route, and a literature branch is forced while
+  critical coverage is insufficient; each accepted branch gets a dossier `APPR-*` card.
+  Work items are picked by a documented heuristic score (root impact, information gain,
+  resolve chance, verifier readiness, novelty, dependency criticality, cost, redundancy,
+  failure risk, fairness, literature boost -- every factor visible in
+  `work_item_scheduled`, weights in `campaign.scheduler_weights`), never a probability.
+  Every worker failure is a `FSIG-*` signature keyed on *what* failed; an unchanged
+  repeat is `retry_refused` and the branch is suspended with explicit reactivation
+  conditions (backend changed / new evidence / accepted theorem reference), reactivated
+  only when a recorded condition is met.
+- **Ten worker roles in isolated contexts** -- strategist, prover (bounded `prove` loop;
+  each explicit gap of the new sketch becomes an obligation), falsifier and numerical
+  experimenter (template experiments; an unmodified template records the experiment but
+  no evidence, and says so), symbolic experimenter (sympy certificates), formalizer
+  (`tool_unavailable` without a formal backend), librarian (coverage never above
+  `partial`), critic (deterministic reviews + the hostile referee), verifier-coordinator
+  (closure proposals only), synthesizer -- each with a frozen `WorkerContext` (artifact
+  references restricted to verified/accepted, own session id, own budget, a restricted
+  tool registry, no transcripts), a provider leased from the pool for its task class,
+  campaign / branch / work item / role tags on every usage row, a deterministic offline
+  behaviour under the mock provider, and an honest failure signature instead of a
+  silent "completed". A special-case branch writes exploration sketches, never the
+  dossier's primary answer.
+- **The semantic proof tree** (`opentorus campaign tree`; `--json`, `--dot`, `--kind`,
+  `--status`, `--depth`, `--out`): the campaign's branches, obligations and failure
+  signatures merged read-only with the dossier's claims, evidence, proof attempts,
+  experiments, referee and review reports, theorem references and the verifier ledger;
+  typed root relations with settlement rules (special cases and relaxations never
+  settle the root; a special-case node closing the root is a validation error);
+  obligation closure through `settlement.can_close_obligation` alone -- an accepted
+  formal / SMT / exact-symbolic / validated-numerical certificate passing the same four
+  checks as claim promotion, an accepted counterexample naming every root assumption, a
+  referee-passed gap-free primary sketch, or an accepted theorem reference with an
+  accepted applicability check -- and deleting `[GAP-n]` markers closes nothing; ten
+  validation issue codes reported, never raised; the root status is printed once from
+  `status_gate` + `scope`.
+- **Theorem-level literature and the `theorem` CLI.** A `THMREF-*` points at a local
+  `PAPER-*` through a validated locator (label in the corpus, page/section against the
+  parsed outline when present, sha256 of the located statement, an excerpt of at most
+  300 characters); heuristic and LLM extraction both produce candidates only, and
+  `theorem review --status accepted` is the sole path to `accepted`; typed relations;
+  deterministic applicability checks (`accepted` / `rejected` / `inconclusive` /
+  `needs-human-review`; a reference nobody has accepted can never come out `accepted`;
+  an LLM may only attach a proposed analysis; no claim status is touched); category
+  coverage where a paper count never raises a level, the librarian may set at most
+  `partial`, and `adequate` needs an accepted reference or a human override. Only an
+  accepted, problem-attributed reference licenses `has_reference` in the report's
+  honesty context -- the single change to the honesty surface, pinned by tests.
+  `theorem coverage` without options is a read; `--record` (or `--set`) persists a
+  `COV-*` assessment.
+- **Model profiles, per-task routes and an auditable routing ledger.** `models.profiles`
+  (every `model:` key plus `capabilities` and `local_only`), `models.default_profile`,
+  and `governance.routing.task_routes` (task class -> ordered profile names; sixteen
+  task classes plus `default`; legacy `task_models` and the aliases `proof` / `critique`
+  / `planning` still honoured). `ProviderPool.acquire` leases the first eligible profile
+  (known, capable, local when required, within its per-provider budget) and appends a
+  `RoutingDecisionRecord` (`RTD-*`) to `.opentorus/usage/routing.jsonl` on every acquire
+  -- fallbacks name every skipped profile and why, refusals are recorded as
+  `no_eligible_provider` and raise `NoEligibleProviderError`, and an unknown
+  `models.default_profile` falls back to the implicit `default` with a recorded reason
+  instead of failing every command. Providers report the model that actually answered
+  (`BaseProvider.model_name`, `ProviderResponse.model`), and `UsageRecord` gained
+  `routing_decision_id`, `requested_profile`, `selected_profile`, `configured_model`,
+  `actual_model`, `fallback_reason`, `campaign_id`, `branch_id`, `work_item_id`,
+  `worker_role`. Capabilities come from a static per-provider table, the profile's
+  declared list and a probe cache (`.opentorus/providers/capabilities.json`); acquire
+  never probes online.
+- **`opentorus doctor` reports profiles, routes, credentials and backends**, with
+  `--capabilities` (per-profile capability tables, route fallback availability),
+  `--probe` (one online tool-calling probe per non-mock profile, cached; implies
+  `--capabilities`) and `--json` (`{name, ok, detail, data}` per check); new checks
+  `profiles`, `routes` (an unknown profile name fails, with the note that `config set`
+  cannot write mappings), `credentials` (environment-variable names only, never
+  values), `formal-systems`, `dashboard`, `paper-parsing`, `dossier-state` (dossiers,
+  campaigns and their replay diagnostics), `version`; absent optional backends are ok
+  and informational.
+- **The agent control plane** (`opentorus.agent.control`): the loop's anti-loop guards,
+  budgets, no-progress windows, deliverable and permission rules as pure policy objects
+  returning typed `PolicyDecision`s with stable `ReasonCode`s and the exact messages the
+  loop always printed; `TurnRunner` for provider turns and tool execution; run event
+  sinks; a generic `PhaseMachine`; the prove / literature hint texts in
+  `control.legacy`. `AgentLoop` keeps every constructor parameter, private counter and
+  guard constant callers and tests reach for (new parameters keyword-only:
+  `event_sink`, `routing`, `usage_tags`, `policies`, `should_stop`), pinned by
+  characterization tests written before the extraction; a policy `WARN` never hides a
+  later `BLOCK` / `STOP`, and a sink that raises never aborts a run.
+- **The `dashboard` extra** (`pip install 'opentorus[dashboard]'`): a read-only Textual
+  view of a campaign's proof tree (`opentorus campaign dashboard CAMPAIGN-0001 [--live]`;
+  `--plain|--json|--dot` export without the extra), imported lazily so the core CLI never
+  needs `textual`; without the extra the command fails with the install hint. The `dev`
+  extra gains `textual` and `twine`.
 - **`opentorus research --campaign`** (or `campaign.record_research: true`) mirrors a
   research run into an exploration campaign under the attributed problem; a plain run
-  writes exactly what it always wrote. **`opentorus campaign import-research`**
-  converts a legacy run with a `migration_recorded` provenance event, originals
-  untouched (sha256-checked), refusing a second import unless `--force`.
+  writes exactly what it always wrote. **`opentorus campaign import-research`** converts a
+  legacy run with a `migration_recorded` provenance event (source paths, sha256s, import
+  time, importer version), originals untouched, refusing a second import unless
+  `--force`.
+- **A packaging gate and a non-publishing release workflow.** `lint.yml` builds the sdist
+  and the wheel, `twine`-checks them, installs each into a clean venv and smoke-tests the
+  CLI (`--version`, `--help`, `campaign --help`, `theorem --help`, `init`, `doctor
+  --json`), asserts that importing `opentorus.cli` and `opentorus.campaign` leaves
+  `textual` out of `sys.modules`, and installs the dashboard extra. `release.yml` runs on
+  `v*` tags: test -> build (the tag must equal `v` + `__version__`, read textually) ->
+  clean-venv install smoke -> SBOM -> build-provenance attestation -> PyPI trusted
+  publishing -> draft GitHub release, with the two publishing jobs gated by the
+  repository variable `OPENTORUS_RELEASE_PUBLISH` (unset by default: a tag push is a dry
+  run) and every third-party action pinned to a commit SHA. `docs/release.md` and a
+  `Releases` section in `CONTRIBUTING.md` document the checklist, versioning policy,
+  changelog expectations, verification commands, trusted-publishing setup, yank /
+  rollback and action pinning; the version is not bumped by feature work.
+- **Documentation**: `docs/campaign-engine.md`, `docs/campaign-persistence.md`,
+  `docs/portfolio-scheduler.md`, `docs/proof-tree.md`, `docs/theorem-references.md`,
+  `docs/model-routing.md`, `docs/dashboard.md`, `docs/release.md`,
+  `docs/adr/0001-campaign-engine.md`; `docs/architecture.md`, `docs/artifact-model.md`,
+  `docs/cli-ux.md`, `docs/roadmap.md`, `docs/safety.md`, `docs/privacy.md`, `README.md`
+  and `examples/README.md` updated; `tests/test_docs_consistency.py` pins that the
+  README's documentation list resolves, that no doc uses a Mermaid fence, and that the
+  campaign docs state that a campaign can finish without solving the problem.
 
 ### Changed
-- `agent/research_loop.py` is a façade: the iteration body moved verbatim to
-  `agent/research_iteration.py` (`run_iteration`, `record_turn`,
-  `parse_search_result`); `load_state_by_slug` / `list_states` added. The campaign
-  engine's worker execution moved to `campaign/execution.py`, start-time rules to
-  `campaign/lifecycle.py`, between-round rules to `campaign/reallocation.py`.
-
-### Fixed
+- **`prove` and `research` lease their provider through the pool** (`proof_development`
+  and `narration`), so a configured route is the model that answers and every turn's
+  usage row names the actual provider and model; with routing disabled the pool yields
+  the same provider `get_provider(config)` built before, and behaviour is unchanged.
 - **Locality follows the provider that sends the bytes.** Pre-egress DLP, cost
   estimation (`$0 (local)`), the tool-calling check and Ollama's forced `tool_choice`
-  were decided from the workspace `model:` block even when a routed lease was built
-  from another profile; a cloud lease under a local default profile was never
-  screened. They now read the leased provider's own config.
-- **A theorem reference nobody has accepted can no longer come out `accepted`.**
-  `check_applicability` gained an ordered `reference_reviewed` check (candidate ->
-  at most needs-human-review, rejected -> rejected), and a context relation covers
-  only the hypotheses its rationale names, evaluated per hypothesis.
-- **`theorem coverage` no longer appends a `COV-` record on every read**; `--record`
-  (or `--set`) persists one.
-- **`write_config` renders a non-empty value into an empty one-line container**
-  (`profiles: {}`, `task_routes: {}`, `campaign: {}`) as a block instead of dropping
-  it, and warns by name about leaves it could not place under a hand-written flow
-  container.
-- **An unknown `models.default_profile` falls back to the implicit `default`
-  profile** (recorded as the fallback reason) instead of failing every command;
-  `doctor` still flags it. `doctor --probe` implies `--capabilities`.
-- A run event sink that raises no longer aborts the loop; a policy `WARN` no longer
-  hides a later `BLOCK`/`STOP` (warnings travel in `metadata["warnings"]`).
-- `opentorus.usage` is an import-graph leaf again (the local-provider predicate lives
-  there; `providers.capabilities` re-exports it).
+  are decided from the leased profile's own config, never from the workspace `model:`
+  block, so a cloud lease under a local default profile is screened and priced as a
+  cloud call.
+- **`AgentLoop` is a compatibility facade over the control plane**; every message a run
+  produces is byte-identical (golden transcripts unchanged), and `prove_loop`'s stall
+  windows and deliverable callbacks are `NoProgressWindow` / `DeliverablePolicy`
+  objects. `agent/research_loop.py` is a facade too: the iteration body moved verbatim to
+  `agent/research_iteration.py` (`run_iteration`, `record_turn`, `parse_search_result`);
+  `load_state_by_slug` / `list_states` added. The campaign engine's worker execution
+  lives in `campaign/execution.py`, start-time rules in `campaign/lifecycle.py`,
+  between-round rules in `campaign/reallocation.py`.
+- **`governance.route_model` is a compatibility wrapper over the pool's candidate
+  order** with its rationale strings and the `task_models["default"]` fallback pinned;
+  `budget_alerts` / `assert_within_budget` and `usage.read_usage` accept `campaign_id=`
+  so governance caps bound a campaign across every session it ran.
+- **`write_config` appends missing nested sections and expands empty containers.** An
+  old `config.yaml` without a `campaign:` or `models:` block gains one on the first
+  `config set`; a non-empty value under an empty one-line container (`profiles: {}`,
+  `task_routes: {}`) is rendered as a block instead of dropped; leaves that cannot be
+  placed under a hand-written flow container are reported by name. `config set` still
+  cannot write mappings (`models.profiles`, `task_routes`): edit `config.yaml`, as
+  `doctor` says.
+- **`default_config.yaml` gained the `models:` block, `governance.routing.task_routes`
+  and the `campaign:` block**, each key commented, `0 = unlimited` stated on every
+  budget key, and no real model names (placeholders only).
+- **`opentorus.usage` is an import-graph leaf again**: the local-provider predicate
+  lives there and `providers.capabilities` re-exports it, so the usage ledger and the
+  egress predicates import without the provider package.
 
 ## [0.0.14] — 2026-08-18
 
