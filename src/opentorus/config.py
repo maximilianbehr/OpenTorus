@@ -64,6 +64,22 @@ class ModelConfig(BaseModel):
     timeout_seconds: int = 300
     # Ollama-only generation options (ignored by other providers).
     num_ctx: int | None = None
+    # Sampling shape. Unset means "whatever the model's own Modelfile says", which is
+    # not nothing: gemma4 ships top_k 64 / top_p 0.95, mistral-medium ships neither and
+    # falls back to Ollama's 40 / 0.9, and qwen3.6 carries presence_penalty 1.5. Any
+    # comparison across models that leaves these unset is comparing sampling as much as
+    # models. The agent loop is dominated by exact-syntax output — tool names, JSON
+    # certificates, PAPER-0002 — where a wide tail is what produces "read_ file" and
+    # "python- sci", so tightening these is the point. Temperature is *not* driven to 0:
+    # a run that cannot vary cannot escape a failing call either, and the identical-
+    # failure guards exist because that happens.
+    top_p: float | None = None
+    top_k: int | None = None
+    # Fixes the sampler so a run can be replayed. Left unset by default (a fixed seed
+    # would make every dossier in a sweep explore the same way); set it for before/after
+    # comparisons, where an unseeded model simply picks a different route and the
+    # regression proves nothing — which happened twice in one day.
+    seed: int | None = None
     # Max tokens to generate; -1 means no limit. When unset and tools are used,
     # OpenTorus defaults to -1 for Ollama to reduce truncated tool-call JSON.
     num_predict: int | None = None

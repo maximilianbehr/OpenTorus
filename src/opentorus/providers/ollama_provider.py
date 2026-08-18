@@ -37,6 +37,12 @@ def ollama_options(config: Config, *, tools_enabled: bool) -> dict:
     opts: dict = {"temperature": config.model.temperature}
     if config.model.num_ctx is not None:
         opts["num_ctx"] = config.model.num_ctx
+    # Only sent when set: leaving them out keeps each model's own Modelfile shape, which
+    # is the historical behaviour. Sending them is how a sweep controls for sampling.
+    for key in ("top_p", "top_k", "seed"):
+        value = getattr(config.model, key, None)
+        if value is not None:
+            opts[key] = value
     num_predict = config.model.num_predict
     if num_predict is None and tools_enabled:
         num_predict = -1

@@ -428,3 +428,43 @@ def test_a_tool_result_stays_the_last_message() -> None:
 
     assert _roles(out) == ["system", "user", "assistant", "tool"]
     assert "Workspace context: none" in out[1]["content"]
+
+
+# --- sampling shape ------------------------------------------------------------
+
+
+def test_sampling_options_are_omitted_unless_set() -> None:
+    """Unset means "keep the model's own Modelfile shape" — the historical behaviour."""
+    config = default_config()
+    opts = ollama_options(config, tools_enabled=True)
+    assert "top_p" not in opts and "top_k" not in opts and "seed" not in opts
+
+
+def test_sampling_options_are_sent_when_set() -> None:
+    """Any cross-model comparison that leaves these unset compares sampling too.
+
+    gemma4 ships top_k 64 / top_p 0.95, mistral-medium ships neither and falls back to
+    Ollama's 40 / 0.9, and qwen3.6 carries presence_penalty 1.5 — so "the same run with a
+    different model" was never only a different model.
+    """
+    config = default_config()
+    config.model.top_p = 0.9
+    config.model.top_k = 20
+    config.model.seed = 42
+    opts = ollama_options(config, tools_enabled=True)
+    assert opts["top_p"] == 0.9
+    assert opts["top_k"] == 20
+    assert opts["seed"] == 42
+    assert opts["temperature"] == config.model.temperature
+
+
+def test_a_seed_makes_the_request_body_reproducible() -> None:
+    """Two before/after regressions were inconclusive because the model took another
+    route; a seed is what turns those into an actual comparison."""
+    config = default_config()
+    config.model.seed = 7
+    messages = [SessionMessage(role="user", content="hi")]
+    first = build_ollama_chat_body(config, messages, None)
+    second = build_ollama_chat_body(config, messages, None)
+    assert first == second
+    assert first["options"]["seed"] == 7

@@ -24,6 +24,14 @@ model:
   timeout_seconds: 300
   # Ollama-only: context window size (e.g. 32768). null = model default.
   num_ctx: null
+  # Ollama-only sampling shape. null = keep the model's own Modelfile values, which
+  # differ per model (gemma4 ships top_k 64 / top_p 0.95; mistral-medium ships neither).
+  # Set both to compare models without also comparing their sampling.
+  top_p: null
+  top_k: null
+  # Ollama-only: fix the sampler so a run can be replayed. null = unseeded. Set it for
+  # before/after comparisons, where an unseeded model just takes a different route.
+  seed: null
   # Ollama-only: max tokens to generate (-1 = unlimited). null = unlimited when tools are on.
   # Set with: opentorus config set model.num_predict=-1  (or --value=-1)
   num_predict: null
