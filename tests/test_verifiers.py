@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from opentorus.config import default_config
 from opentorus.research.graph import related
 from opentorus.research.verifiers import submit_proof
@@ -119,6 +121,12 @@ def test_enabled_backend_resolves_from_config(tmp_path: Path) -> None:
     assert proof.accepted is False
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX mode bits and container uids do not exist on Windows; the property "
+    "this guards — a Docker checker running as another uid can read the source — is "
+    "Unix-only.",
+)
 def test_verify_tempfile_readable_by_other_uids(tmp_path: Path) -> None:
     # Containerized checkers (Docker Coq fallback) run as a different uid: with the
     # default 0700 tempdir every submission failed with "Can't find file". The
