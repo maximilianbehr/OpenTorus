@@ -91,6 +91,8 @@ class EventType(StrEnum):
     campaign_failed = "campaign_failed"
     parallelism_capped = "parallelism_capped"
     problem_normalized = "problem_normalized"
+    branch_updated = "branch_updated"
+    retry_allowed = "retry_allowed"
 
 
 ASSIGNMENT_EVENT_TYPES: frozenset[str] = frozenset(
@@ -299,6 +301,23 @@ class RetryRefusedPayload(_Payload):
     why_refused: str = ""
 
 
+class RetryAllowedPayload(_Payload):
+    """A retry of a recorded failure was permitted because something changed;
+    ``why_different`` is appended to the signature's ``retry_notes``."""
+
+    branch_id: str
+    signature_id: str
+    reason_code: str = "OK"
+    why_different: str = ""
+
+
+class BranchUpdatedPayload(_Payload):
+    """Field changes on an existing branch (e.g. the target claim a worker picked)."""
+
+    branch_id: str
+    changes: dict[str, object] = Field(default_factory=dict)
+
+
 class CoverageAssessedPayload(_Payload):
     coverage_ref: str
     insufficient: list[str] = Field(default_factory=list)
@@ -364,6 +383,8 @@ EVENT_PAYLOADS: dict[str, type[BaseModel]] = {
     EventType.campaign_failed: CampaignFailedPayload,
     EventType.parallelism_capped: ParallelismCappedPayload,
     EventType.problem_normalized: NormalizedProblem,
+    EventType.branch_updated: BranchUpdatedPayload,
+    EventType.retry_allowed: RetryAllowedPayload,
 }
 
 
@@ -501,6 +522,7 @@ __all__ = [
     "BranchRejectedPayload",
     "BranchSuspendedPayload",
     "BranchTerminalPayload",
+    "BranchUpdatedPayload",
     "BudgetConsumedPayload",
     "BudgetExhaustedPayload",
     "CampaignCompletedPayload",
@@ -520,6 +542,7 @@ __all__ = [
     "PhaseEnteredPayload",
     "ProofNodeUpdatedPayload",
     "RetryRefusedPayload",
+    "RetryAllowedPayload",
     "ReviewRequestedPayload",
     "RoutingDecisionRecordedPayload",
     "TheoremReferenceCreatedPayload",

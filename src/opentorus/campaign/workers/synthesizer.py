@@ -4,11 +4,21 @@ Writes ``progress.md`` (orchestration state, with the mathematical status derive
 separately) and rebuilds the dossier report through ``dossier.report.build_report``
 — which runs the honesty linter over what it writes. It never touches a claim status
 and treats a report failure as a note, not an error: the campaign still completes.
+
+Called two ways: by SYNTHESIZE at the end of a run (no branch → ``completed``) and as
+the worker of a survey's *synthesis branch* (branch → ``branch_done`` after one pass,
+so the branch is not rescheduled to rewrite the same report until its budget runs out).
 """
 
 from __future__ import annotations
 
-from opentorus.campaign.models import CostTotals, WorkerContext, WorkerResult, WorkerRole
+from opentorus.campaign.models import (
+    CostTotals,
+    WorkerContext,
+    WorkerResult,
+    WorkerResultStatus,
+    WorkerRole,
+)
 from opentorus.campaign.workers.base import WorkerRuntime
 from opentorus.errors import OpenTorusError
 
@@ -31,7 +41,8 @@ class SynthesizerWorker:
             notes.append("dossier report rebuilt (report.md)")
         except OpenTorusError as exc:
             notes.append(f"report not rebuilt: {exc}")
-        return WorkerResult(status="completed", notes=notes, usage=CostTotals())
+        status: WorkerResultStatus = "branch_done" if ctx.branch_id else "completed"
+        return WorkerResult(status=status, notes=notes, usage=CostTotals())
 
 
 __all__ = ["SynthesizerWorker"]

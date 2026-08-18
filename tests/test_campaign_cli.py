@@ -130,9 +130,21 @@ def test_status_json_has_root_math_status_and_both_statuses(
     assert data["status"] == "completed"
     assert data["phase"] == "completed"
     assert "root_math_status" in data
-    assert data["root_math_status"]["report_status"] == "UNSOLVED"
-    assert data["root_math_status"]["label"] in ("STATUS_UNCERTAIN", "INCONCLUSIVE")
-    assert data["branch_counts"] == {"completed": 1}
+    # Derived from dossier artifacts, never from the campaign: an exploration run under
+    # the mock leaves scaffold experiments and at most a scaffold sketch — never a
+    # verified rung.
+    assert data["root_math_status"]["report_status"] in (
+        "UNSOLVED",
+        "HEURISTIC_ONLY",
+        "EXPERIMENTAL_ONLY",
+    )
+    assert data["root_math_status"]["label"] not in (
+        "GENERAL_CONJECTURE_PROVED",
+        "GENERAL_CONJECTURE_REFUTED",
+    )
+    # M4 portfolio: the four exploration template branches, every one terminal.
+    assert sum(data["branch_counts"].values()) == 4
+    assert set(data["branch_counts"]) <= {"completed", "suspended", "exhausted", "rejected"}
     plain = runner.invoke(app, ["campaign", "status", "CAMPAIGN-0001"])
     assert plain.exit_code == 0
     flat = _flat(plain.output)

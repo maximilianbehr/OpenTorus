@@ -31,6 +31,26 @@ _STATUS_MUTATORS = (
 )
 
 
+def test_engine_split_keeps_modules_readable() -> None:
+    """The engine holds the phase handlers; worker execution / result recording live in
+    ``execution.py`` and start-time rules in ``lifecycle.py`` (both must exist and be
+    used by the engine)."""
+    text = (PACKAGE / "engine.py").read_text(encoding="utf-8")
+    assert "from opentorus.campaign.execution import" in text
+    assert "from opentorus.campaign.lifecycle import" in text
+    for name in ("execution.py", "lifecycle.py", "failures.py", "portfolio.py", "scheduler.py"):
+        assert (PACKAGE / name).is_file(), name
+    execution = (PACKAGE / "execution.py").read_text(encoding="utf-8")
+    for method in (
+        "def run_worker",
+        "def record_result",
+        "def worker_context",
+        "def shared_artifacts",
+    ):
+        assert method in execution, method
+    assert "def _run_worker" not in text and "def _record_result" not in text
+
+
 def test_engine_defines_one_phase_method_per_non_terminal_phase() -> None:
     expected = {
         f"_phase_{phase.name.lower()}"
@@ -60,10 +80,11 @@ def _module_sources(pattern: str) -> list[Path]:
     return [p for p in SOURCES if re.search(pattern, str(p.relative_to(PACKAGE)))]
 
 
-@pytest.mark.parametrize(
-    "path", _module_sources(r"^(engine\.py|workers/.*\.py)$"), ids=lambda p: p.name
-)
-def test_engine_and_workers_do_not_import_claim_status_mutators(path: Path) -> None:
+@pytest.mark.parametrize("path", SOURCES, ids=lambda p: str(p.relative_to(PACKAGE)))
+def test_no_campaign_module_imports_claim_status_mutators(path: Path) -> None:
+    """Every module of the campaign package — engine, execution, lifecycle, portfolio,
+    scheduler, failures, importer, research bridge, workers, proof tree — references no
+    claim-status mutator; the layer only ever *references* dossier artifacts."""
     text = path.read_text(encoding="utf-8")
     code = _code_only(text)
     for needle in _STATUS_MUTATORS:

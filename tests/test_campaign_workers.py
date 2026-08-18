@@ -250,3 +250,387 @@ def test_verifier_never_touches_claim_statuses(tmp_path: Path, accepted_proof) -
     assert closure_candidates(ot, pid, [ob])[0]
     assert dstore.get_claim(ot, pid, claim.id).status == "unverified"  # type: ignore[union-attr]
     assert dstore.list_status_changes(ot, pid) == []
+
+
+# --------------------------------------------------------------------------------------
+# M4 workers: offline behaviour under the mock provider, honest failure signatures
+# --------------------------------------------------------------------------------------
+
+
+def _runtime(root: Path, ot: Path, config=None) -> WorkerRuntime:  # noqa: ANN001
+    cfg = config or default_config()
+    return WorkerRuntime(
+        root=root,
+        ot_dir=ot,
+        config=cfg,
+        pool=ProviderPool(cfg, ot_dir=ot),
+        clock=StepClock(),
+    )
+
+
+def _branch_ctx(pid: str, role: WorkerRole, **overrides: object) -> WorkerContext:
+    from opentorus.campaign.scheduler import ROLE_TASK_CLASS
+    from opentorus.campaign.workers.base import ROLE_ALLOWED_TOOLS
+
+    base: dict[str, object] = {
+        "role": role,
+        "task_class": ROLE_TASK_CLASS[role].value,
+        "budget": WorkBudget(max_steps=8),
+        "allowed_tools": ROLE_ALLOWED_TOOLS[role],
+        "root_problem": NormalizedProblem(
+            problem_id=pid, statement="For every n >= 1, the property P(n) holds."
+        ),
+    }
+    base.update(overrides)
+    return _ctx(pid, **base)
+
+
+def test_prover_bootstraps_a_sketch_and_proposes_obligations_under_mock(tmp_path: Path) -> None:
+    from opentorus.campaign.workers.prover import ProverWorker
+    from opentorus.research.dossier import store as dstore
+
+    root, ot, pid = make_workspace(tmp_path)
+    rt = _runtime(root, ot)
+    ctx = _branch_ctx(
+        pid,
+        WorkerRole.prover,
+        branch_objective="Create a clearly labelled informal proof attempt with gaps marked.",
+        root_relation="equivalent",
+        strategy_key="proof_sketch",
+    )
+    result = ProverWorker().run(ctx, rt)
+    assert result.status == "completed"
+    proofs = dstore.list_proof_attempts(ot, pid)
+    assert [p.id for p in proofs] == ["PROOF-0001"]
+    assert proofs[0].scope == "primary" and proofs[0].status == "sketch"
+    assert result.artifacts_created[0].artifact_id == "PROOF-0001"
+    assert result.artifacts_created[0].kind == "proof_attempt"
+    assert result.obligations, "every explicit gap becomes an obligation proposal"
+    for ob in result.obligations:
+        assert ob.source_proof_id == "PROOF-0001"
+        assert ob.gap_marker
+        assert ClosureMode.nl_proof_referee_accepted in ob.closure_modes
+        assert ClosureMode.formal_proof in ob.closure_modes
+        assert ob.root_relation.value == "equivalent"
+    assert result.usage.steps >= 6  # five chat turns, then the bootstrap, then the answer
+    assert result.routing_decision_id is not None
+    assert dstore.list_status_changes(ot, pid) == []
+    # a special-case branch never writes the dossier's primary sketch
+    ctx2 = _branch_ctx(
+        pid,
+        WorkerRole.prover,
+        branch_id="BRANCH-0002",
+        work_item_id="WI-0002",
+        session_id="CAMPAIGN-0001:BRANCH-0002:WI-0002",
+        branch_objective="Special cases of PROBLEM-0001: restrict to n <= 10 and n prime.",
+        root_relation="special-case",
+        strategy_key="special_cases",
+    )
+    result2 = ProverWorker().run(ctx2, rt)
+    assert result2.status == "completed"
+    proofs = dstore.list_proof_attempts(ot, pid)
+    assert [(p.id, p.scope) for p in proofs] == [
+        ("PROOF-0001", "primary"),
+        ("PROOF-0002", "exploration"),
+    ]
+    # a second attempt on the first branch (gap-fill mode) under the mock makes no progress
+    ctx3 = ctx.model_copy(
+        update={"branch_artifact_ids": ("PROOF-0001",), "work_item_id": "WI-0003"}
+    )
+    result3 = ProverWorker().run(ctx3, rt)
+    assert result3.status == "failed"
+    assert result3.error_category == "model_no_progress"
+    assert result3.failure_signature is not None
+    assert result3.failure_signature.strategy_class == "proof_sketch"
+    assert result3.failure_signature.tool_or_solver == "proof_write"
+    assert len(dstore.list_proof_attempts(ot, pid)) == 2
+
+
+def test_falsifier_scaffold_search_records_experiment_but_no_evidence(tmp_path: Path) -> None:
+    from opentorus.campaign.workers.falsifier import UNMODIFIED_TEMPLATE_NOTE, FalsifierWorker
+    from opentorus.research.claims import list_claims
+    from opentorus.research.evidence import list_evidence
+    from opentorus.research.experiments import list_experiments
+
+    root, ot, pid = make_workspace(tmp_path)
+    rt = _runtime(root, ot)
+    ctx = _branch_ctx(pid, WorkerRole.falsifier, strategy_key="counterexample_search")
+    result = FalsifierWorker().run(ctx, rt)
+    assert result.status == "failed" and result.error_category == "no_witness_found"
+    assert result.failure_signature is not None
+    assert result.failure_signature.counterargument == UNMODIFIED_TEMPLATE_NOTE
+    kinds = [(r.kind, r.artifact_id) for r in result.artifacts_created]
+    assert ("claim", "CLAIM-0001") in kinds  # branch-level workspace claim (no primary)
+    assert ("experiment", "EXP-0001") in kinds
+    assert result.target_claim_id == "CLAIM-0001"
+    assert [c.id for c in list_claims(ot)] == ["CLAIM-0001"]
+    assert list_experiments(ot)[0].status == "completed"
+    assert list_evidence(ot) == []  # a tautology test is not evidence about the claim
+    # a second offline attempt on the same branch is an honest no-progress signature
+    ctx2 = ctx.model_copy(
+        update={"branch_artifact_ids": ("CLAIM-0001", "EXP-0001"), "target_claim_id": "CLAIM-0001"}
+    )
+    again = FalsifierWorker().run(ctx2, rt)
+    assert again.status == "failed" and again.error_category == "model_no_progress"
+    assert [c.id for c in list_claims(ot)] == ["CLAIM-0001"]  # the branch claim is reused
+
+
+def test_falsifier_records_evidence_for_a_real_predicate_and_never_touches_status(
+    tmp_path: Path,
+) -> None:
+    from opentorus.campaign.workers.falsifier import FalsifierWorker
+    from opentorus.research.claims import get_claim
+    from opentorus.research.dossier import store as dstore
+    from opentorus.research.dossier.claims import add_claim
+    from opentorus.research.evidence import list_evidence
+    from opentorus.research.experiments import new_experiment
+    from opentorus.research.math_experiments import MATH_TEMPLATES
+
+    root, ot, pid = make_workspace(tmp_path)
+    primary = add_claim(ot, pid, claim_type="CONJECTURE", statement="P(n) for all n.")
+    dossier = dstore.require_dossier(ot, pid)
+    dossier.primary_claim_id = primary.id
+    dstore.save_dossier(ot, dossier)
+    # an experiment whose predicate was edited (as a model or a human would): n < 50 fails at 50
+    body = MATH_TEMPLATES["counterexample_search"].replace("return n * n >= n", "return n < 50")
+    exp = new_experiment(ot, "edited search", run_body=body, problem_id=pid)
+    rt = _runtime(root, ot)
+    ctx = _branch_ctx(
+        pid,
+        WorkerRole.falsifier,
+        strategy_key="counterexample_search",
+        branch_artifact_ids=(exp.id,),
+        root_problem=NormalizedProblem(
+            problem_id=pid, statement="P(n) for all n.", primary_claim_id=primary.id
+        ),
+    )
+    result = FalsifierWorker().run(ctx, rt)
+    assert result.status == "completed"  # a witness was found
+    assert result.target_claim_id == primary.id  # the designated primary claim is the target
+    evidence = list_evidence(ot, primary.id)
+    assert len(evidence) == 1
+    assert evidence[0].direction == "contradicts" and evidence[0].strength == "strong"
+    assert any(
+        r.kind == "evidence" and r.artifact_id == evidence[0].id for r in result.artifacts_created
+    )
+    # evidence only: neither the dossier claim nor any workspace claim changed status
+    assert dstore.get_claim(ot, pid, primary.id).status == "unverified"  # type: ignore[union-attr]
+    assert dstore.list_status_changes(ot, pid) == []
+    assert get_claim(ot, primary.id) is None  # no workspace claim was created for it
+
+
+def test_numerical_worker_scaffold_and_edited_experiment(tmp_path: Path) -> None:
+    from opentorus.campaign.workers.numerical import NumericalWorker, choose_template
+    from opentorus.research.evidence import list_evidence
+    from opentorus.research.experiments import new_experiment
+    from opentorus.research.math_experiments import MATH_TEMPLATES
+
+    assert choose_template("compute a rigorous interval enclosure") == "validated_numerics"
+    assert choose_template("tabulate P(n)") == "numerical"
+    root, ot, pid = make_workspace(tmp_path)
+    rt = _runtime(root, ot)
+    ctx = _branch_ctx(pid, WorkerRole.numerical_experimenter, strategy_key="numerical_experiment")
+    result = NumericalWorker().run(ctx, rt)
+    assert result.status == "failed" and result.error_category == "model_no_progress"
+    assert result.failure_signature is not None
+    assert result.failure_signature.tool_or_solver == "numerical"
+    assert any(r.kind == "experiment" for r in result.artifacts_created)
+    assert list_evidence(ot) == []
+    # an edited validated-numerics experiment yields bounds/sampled evidence
+    body = MATH_TEMPLATES["validated_numerics"].replace("x * x - x + 1", "x * x - x + 2")
+    exp = new_experiment(ot, "edited numerics", run_body=body, problem_id=pid)
+    ctx2 = _branch_ctx(
+        pid,
+        WorkerRole.numerical_experimenter,
+        branch_id="BRANCH-0002",
+        strategy_key="numerical_experiment",
+        branch_objective="rigorous interval bound",
+        branch_artifact_ids=(exp.id,),
+        target_claim_id=result.target_claim_id,
+    )
+    result2 = NumericalWorker().run(ctx2, rt)
+    assert result2.status == "completed", result2.notes
+    assert list_evidence(ot, result.target_claim_id)  # recorded on the branch's claim
+
+
+def test_symbolic_worker_certificate_or_honest_inconclusive(tmp_path: Path) -> None:
+    from opentorus.campaign.workers.symbolic import NO_CERTIFICATE, SymbolicWorker
+    from opentorus.research.verifiers.proofs import list_proofs
+
+    root, ot, pid = make_workspace(tmp_path)
+    rt = _runtime(root, ot)
+    ctx = _branch_ctx(
+        pid,
+        WorkerRole.symbolic_experimenter,
+        strategy_key="symbolic_simplification",
+        branch_objective="Rewrite the recurrence into closed form.",
+    )
+    result = SymbolicWorker().run(ctx, rt)
+    assert result.status == "failed" and result.error_category == "verifier_inconclusive"
+    assert result.failure_signature is not None
+    assert result.failure_signature.counterargument == NO_CERTIFICATE
+    assert result.failure_signature.tool_or_solver == "sympy"
+    assert list_proofs(ot) == []
+    cert = '{"lhs": "sin(x)**2 + cos(x)**2", "rhs": "1", "relation": "eq", "vars": {"x": "real"}}'
+    ctx2 = ctx.model_copy(update={"branch_objective": f"Check the identity. certificate: {cert}"})
+    result2 = SymbolicWorker().run(ctx2, rt)
+    assert result2.status == "completed", result2.notes
+    assert [r.kind for r in result2.artifacts_created] == ["proof"]
+    assert result2.verifications and result2.verifications[0].accepted
+    assert list_proofs(ot)[0].accepted and list_proofs(ot)[0].submitted_under == "CAMPAIGN-0001"
+    bad = '{"lhs": "x + 1", "rhs": "x", "relation": "eq", "vars": {"x": "real"}}'
+    ctx3 = ctx.model_copy(update={"branch_objective": f"Nope. certificate: {bad}"})
+    result3 = SymbolicWorker().run(ctx3, rt)
+    assert result3.status == "failed" and result3.error_category == "verifier_rejected"
+    assert result3.verifications and not result3.verifications[0].accepted
+
+
+def test_formalizer_reports_tool_unavailable_or_inconclusive_honestly(tmp_path: Path) -> None:
+    from opentorus.campaign.workers.formalizer import FormalizerWorker
+    from opentorus.research.verifiers.proofs import list_proofs
+
+    root, ot, pid = make_workspace(tmp_path)
+    ctx = _branch_ctx(pid, WorkerRole.formalizer, strategy_key="formalization_attempt")
+    result = FormalizerWorker().run(ctx, _runtime(root, ot))
+    assert result.status == "failed" and result.error_category == "tool_unavailable"
+    assert result.failure_signature is not None
+    assert result.failure_signature.tool_or_solver == "formal:none"
+    assert result.failure_signature.verifier_backends == []
+    assert result.routing_decision_id is None  # no provider was even leased
+    config = default_config()
+    config.tools.verifiers.smt = True
+    result2 = FormalizerWorker().run(ctx, _runtime(root, ot, config))
+    assert result2.status == "failed" and result2.error_category == "verifier_inconclusive"
+    assert result2.failure_signature is not None
+    assert result2.failure_signature.verifier_backends == ["smt"]
+    assert "no formal source" in result2.failure_signature.counterargument
+    assert list_proofs(ot) == []  # nothing was ever marked checked
+
+
+def test_critic_records_reviews_and_referee_without_touching_status(tmp_path: Path) -> None:
+    from opentorus.agent.review import list_reviews
+    from opentorus.campaign.workers.critic import CriticWorker
+    from opentorus.research.claims import new_claim
+    from opentorus.research.dossier import store as dstore
+    from opentorus.research.dossier.claims import add_claim
+    from opentorus.research.dossier.referee import latest_referee
+
+    root, ot, pid = make_workspace(tmp_path)
+    ws_claim = new_claim(ot, "P(n) holds for all n", problem_id=pid)
+    dossier_claim = add_claim(ot, pid, claim_type="CONJECTURE", statement="P(n) for all n.")
+    ctx = _ctx(
+        pid,
+        role=WorkerRole.critic,
+        branch_id=None,
+        work_item_id=None,
+        review_targets=(ws_claim.id, dossier_claim.id, "PROOF-0001"),
+    )
+    result = CriticWorker().run(ctx, _runtime(root, ot))
+    assert result.status == "completed"
+    kinds = {r.kind for r in result.reviews}
+    assert kinds == {"review", "referee"}
+    review = next(r for r in result.reviews if r.kind == "review")
+    assert review.target_id == ws_claim.id and review.review_id.startswith("REVIEW-")
+    assert list_reviews(ot, ws_claim.id)
+    referee = next(r for r in result.reviews if r.kind == "referee")
+    assert referee.review_id.startswith("REFEREE-") and latest_referee(ot, pid) is not None
+    assert dstore.get_claim(ot, pid, dossier_claim.id).status == "unverified"  # type: ignore[union-attr]
+    assert dstore.list_status_changes(ot, pid) == []
+    empty = CriticWorker().run(_ctx(pid, role=WorkerRole.critic), _runtime(root, ot))
+    assert empty.reviews == [] and "nothing to review" in empty.notes[0]
+
+
+def test_strategist_uses_the_template_under_mock(tmp_path: Path) -> None:
+    from opentorus.campaign.portfolio import PortfolioContext, generate_portfolio
+    from opentorus.campaign.workers.strategist import propose_with_model
+
+    root, ot, pid = make_workspace(tmp_path)
+    rt = _runtime(root, ot)
+    pctx = PortfolioContext(
+        campaign_id="CAMPAIGN-0001",
+        mode="prove-or-refute",  # type: ignore[arg-type]
+        problem=NormalizedProblem(problem_id=pid, statement="P(n)."),
+        coverage_insufficient=("definitions_notation",),
+    )
+    items, notes = propose_with_model(rt, pctx)
+    assert items == [] and any("mock provider" in n for n in notes)
+    proposal = generate_portfolio(rt, pctx)
+    assert proposal.source == "template"
+    assert any("mock provider" in n for n in proposal.notes)
+    assert len(proposal.accepted) == 4 and len(proposal.rejected) == 3
+
+
+def test_strategist_parses_a_scripted_provider_answer(tmp_path: Path) -> None:
+    from opentorus.campaign.portfolio import PortfolioContext, generate_portfolio
+
+    root, ot, pid = make_workspace(tmp_path)
+    answer = (
+        "Here is my plan:\n["
+        '{"title": "Induction", "kind": "proof", "objective": "prove P(n) by induction on n", '
+        '"strategy_summary": "base case then step", "root_relation": "equivalent", '
+        '"assumption_context": ["n >= 1"], "why_distinct": "direct route"},'
+        '{"title": "Search", "kind": "counterexample", "objective": "search n <= 10^6", '
+        '"root_relation": "counterexample-route"},'
+        '{"title": "Search twin", "kind": "counterexample", "objective": "search n <= 10^6 too", '
+        '"root_relation": "counterexample-route"}'
+        "]"
+    )
+    provider = ScriptedProvider([message(answer)], name="scripted", model_name="m")
+    config = default_config()
+    rt = WorkerRuntime(
+        root=root,
+        ot_dir=ot,
+        config=config,
+        pool=ProviderPool(config, ot_dir=ot, factory=lambda _cfg: provider),
+        clock=StepClock(),
+    )
+    pctx = PortfolioContext(
+        campaign_id="CAMPAIGN-0001",
+        mode="prove-or-refute",  # type: ignore[arg-type]
+        problem=NormalizedProblem(problem_id=pid, statement="P(n)."),
+        coverage_insufficient=("definitions_notation",),
+        initial_branches=4,
+        max_active_branches=3,
+    )
+    proposal = generate_portfolio(rt, pctx)
+    assert proposal.source == "llm"
+    kinds = [b.kind.value for b in proposal.accepted]
+    assert kinds[:2] == ["proof", "counterexample"]
+    assert "literature" in kinds  # forced from the template: coverage insufficient
+    assert any(b.rejection_reason == "REPEATED_STRATEGY" for b in proposal.rejected)
+    assert proposal.accepted[0].distinctness_note == "direct route"
+    assert proposal.accepted[0].assumption_context == ["n >= 1"]
+    assert any("template literature branch appended" in n for n in proposal.notes)
+    rows = read_usage(ot, session_id="CAMPAIGN-0001:campaign:strategist")
+    assert rows and rows[-1].worker_role == "strategist"
+
+
+def test_executor_worker_context_is_isolated_per_branch(tmp_path: Path) -> None:
+    from opentorus.campaign.engine import CampaignEngine
+    from opentorus.campaign.models import CampaignPhase
+    from opentorus.campaign.store import open_campaign
+
+    root, ot, pid = make_workspace(tmp_path)
+    engine = CampaignEngine(root, ot, default_config(), clock=StepClock())
+    record = engine.start(pid, mode="prove-or-refute", branches=4, max_steps=40, run=False)
+    engine.run(record.id, until=lambda s: s.phase is CampaignPhase.SCHEDULE)
+    run = engine._open(record.id)
+    snap = run.snap
+    branches = sorted(snap.branches.values(), key=lambda b: b.branch_id)
+    contexts = [engine._executor.worker_context(run, branch=b) for b in branches]
+    sessions = {c.session_id for c in contexts}
+    assert len(sessions) == len(contexts)  # every branch its own session id
+    for b, c in zip(branches, contexts, strict=True):
+        assert c.branch_id == b.branch_id
+        assert b.branch_id in c.session_id and record.id in c.session_id
+        assert set(c.branch_artifact_ids) <= set(b.artifact_references)
+        assert c.allowed_tools  # every model-driven role is restricted
+        assert "run_shell" not in c.allowed_tools and "status" not in c.allowed_tools
+        assert all(sig.branch_id == b.branch_id for sig in c.failure_signatures)
+        assert all(ob.branch_id == b.branch_id for ob in c.open_obligations)
+        dumped = c.model_dump(mode="json")
+        assert "transcript" not in dumped and "messages" not in dumped
+    # shared artifacts are restricted to verified/accepted ones: a fresh campaign has only
+    # the coverage assessment
+    assert {r.kind for r in contexts[0].shared_artifacts} <= {"coverage"}
+    assert open_campaign(ot, record.id).load().snapshot.status.value == "running"

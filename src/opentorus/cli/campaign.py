@@ -1,5 +1,5 @@
 """OpenTorus CLI — the ``campaign`` group (start / resume / status / pause / stop /
-list / verify).
+list / verify / import-research).
 
 Rendering only: every decision lives in ``opentorus.campaign``. Two statuses are
 shown and labelled everywhere: the *campaign status* (orchestration — phase, budget,
@@ -329,3 +329,50 @@ def campaign_verify(
             console.print(f"  ! {diag.kind}: {escape(diag.message)}")
     if not report.matches:
         raise typer.Exit(code=1)
+
+
+@campaign_app.command("import-research")
+def campaign_import_research(
+    question: str | None = typer.Argument(
+        None, help="The research question of a previous `opentorus research` run."
+    ),
+    slug: str | None = typer.Option(
+        None, "--slug", help="Alternatively the investigation slug (research/<slug>.json)."
+    ),
+    problem: str | None = typer.Option(
+        None,
+        "--problem",
+        help="Dossier to file the campaign under (default: the run's claim attribution, "
+        "else the active problem).",
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Import again even if this run was already imported."
+    ),
+) -> None:
+    """Convert a legacy `research` run into an exploration campaign (originals untouched).
+
+    Replays the run's journal as campaign events with provenance (source paths and
+    sha256s in a migration_recorded event). The research state, journal and progress
+    note are read, never modified. Refuses a second import unless --force.
+    """
+    from opentorus.campaign.importer import import_research
+
+    base = _require_workspace_dir()
+    config = _load_workspace_config(base)
+    try:
+        pid = _resolve_problem_id(base, problem) if problem else None
+        report = import_research(
+            base, question=question, slug=slug, config=config, problem_id=pid, force=force
+        )
+    except OpenTorusError as exc:
+        _fail(exc, code=2 if "already imported" in str(exc) else 1)
+        return
+    typer.echo(report.campaign_id)
+    state = "completed" if report.completed else "left resumable (research run still running)"
+    console.print(
+        f"Imported research run '{escape(report.slug)}' ({report.entries} journal entr"
+        f"{'y' if report.entries == 1 else 'ies'}) as {report.campaign_id} under "
+        f"{report.problem_id}; campaign {state}. Sources read, not modified: "
+        + ", ".join(report.source_paths)
+    )
+    console.print(escape(_STATUS_NOTE))

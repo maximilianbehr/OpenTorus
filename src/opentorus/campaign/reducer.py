@@ -227,6 +227,30 @@ def _apply_branch_reactivated(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseM
     branch.consecutive_failures = 0
 
 
+def _apply_branch_updated(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
+    assert isinstance(p, ev.BranchUpdatedPayload)
+    branch = _branch(s, e, p.branch_id)
+    if branch is None:
+        return
+    # Identity, status and bookkeeping fields have their own events; only descriptive
+    # fields may change through an update.
+    known = set(BranchRecord.model_fields) - {
+        "branch_id",
+        "campaign_id",
+        "status",
+        "work_item_ids",
+        "artifact_references",
+        "failure_signatures",
+        "actual_cost",
+        "consecutive_failures",
+        "created_at",
+        "updated_at",
+    }
+    for key, value in p.changes.items():
+        if key in known:
+            setattr(branch, key, value)
+
+
 def _apply_branch_completed(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
     assert isinstance(p, ev.BranchTerminalPayload)
     branch = _branch(s, e, p.branch_id)
@@ -547,6 +571,11 @@ def _apply_failure_signature_recorded(
         for aid in sig.artifact_ids:
             if aid not in existing.artifact_ids:
                 existing.artifact_ids.append(aid)
+        for note in sig.retry_notes:
+            if note not in existing.retry_notes:
+                existing.retry_notes.append(note)
+        if sig.verifier_backends:
+            existing.verifier_backends = list(sig.verifier_backends)
         sig = existing
     else:
         sig.first_seq = sig.first_seq or e.seq
@@ -563,6 +592,13 @@ def _apply_retry_refused(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel)
     sig = s.failure_signatures.get(p.signature_id)
     if sig is not None:
         sig.retry_notes.append(f"refused at seq {e.seq}: {p.reason_code} {p.why_refused}".strip())
+
+
+def _apply_retry_allowed(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
+    assert isinstance(p, ev.RetryAllowedPayload)
+    sig = s.failure_signatures.get(p.signature_id)
+    if sig is not None:
+        sig.retry_notes.append(f"allowed at seq {e.seq}: {p.why_different}".strip())
 
 
 def _apply_coverage_assessed(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
@@ -612,6 +648,7 @@ _HANDLERS: dict[str, Handler] = {
     ev.EventType.branch_activated: _apply_branch_activated,
     ev.EventType.branch_suspended: _apply_branch_suspended,
     ev.EventType.branch_reactivated: _apply_branch_reactivated,
+    ev.EventType.branch_updated: _apply_branch_updated,
     ev.EventType.branch_completed: _apply_branch_completed,
     ev.EventType.branch_exhausted: _apply_branch_exhausted,
     ev.EventType.work_item_created: _apply_work_item_created,
@@ -640,6 +677,7 @@ _HANDLERS: dict[str, Handler] = {
     ev.EventType.obligation_closed: _apply_obligation_closed,
     ev.EventType.failure_signature_recorded: _apply_failure_signature_recorded,
     ev.EventType.retry_refused: _apply_retry_refused,
+    ev.EventType.retry_allowed: _apply_retry_allowed,
     ev.EventType.coverage_assessed: _apply_coverage_assessed,
     ev.EventType.migration_recorded: _apply_migration_recorded,
     ev.EventType.diagnostic_recorded: _apply_diagnostic_recorded,

@@ -118,6 +118,13 @@ class DossierFacts:
     report_status: str = "UNSOLVED"
     insufficient_categories: tuple[str, ...] = ()
     coverage_ref: str | None = None
+    # Counts the scheduler's reactivation rules compare against (all derived, read-only):
+    # evidence recorded for the problem (dossier ledger + workspace evidence attributed to
+    # it or to a claim the campaign targets), theorem references a human accepted, and the
+    # verifier backends enabled right now.
+    evidence_count: int = 0
+    accepted_theorem_ref_count: int = 0
+    verifier_backends: tuple[str, ...] = ()
 
 
 ROOT_SETTLED_LABELS: frozenset[str] = frozenset(

@@ -1,0 +1,13 @@
+id: EXP-0001
+title: is-a-n-prime-for-every-n iter 1
+path: experiments/EXP-0001
+status: completed
+command: python run.py
+run_from: experiment
+environment: null
+problem_id: PROBLEM-0001
+result_summary: 'exit 0; stdout: {"seed": 0, "kind": "counterexample_search", "searched_range":
+  [1, 10000], "step": 1, "checked": 10000, "counterexamp...'
+datasets: []
+created_at: '2026-08-18T15:46:40.089235Z'
+updated_at: '2026-08-18T15:46:40.182581Z'

@@ -6,6 +6,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Campaign portfolios, a scored scheduler and failed-attempt memory.** A campaign
+  now opens a real portfolio: the mode's fixed strategy recipe (or an LLM strategist's
+  JSON, validated leniently, template fallback recorded) is de-duplicated (Jaccard on
+  the objective, same kind and root relation → `REPEATED_STRATEGY`), capped
+  (`PORTFOLIO_CAP`, rejected proposals kept in the log), and activated top-N by
+  priority; prove-or-refute always keeps a proof and a counterexample route, and a
+  literature branch is forced while critical coverage is insufficient. Work items are
+  picked by a documented heuristic score (root impact, information gain, resolve
+  chance, verifier readiness, novelty, dependency criticality, cost, redundancy,
+  failure risk, fairness, literature boost — every factor visible in
+  `work_item_scheduled`, weights in `campaign.scheduler_weights`), never a
+  probability. Every worker failure is a `FSIG-*` signature keyed on *what* failed;
+  an unchanged repeat is `retry_refused` and the branch is suspended with explicit
+  reactivation conditions (backend changed / new evidence / accepted theorem
+  reference), reactivated only when a recorded condition is met. See
+  `docs/portfolio-scheduler.md`.
+- **The remaining campaign workers** — strategist, prover (bounded `prove` loop; each
+  explicit gap of the new sketch becomes an obligation), falsifier and numerical
+  experimenter (template experiments; an unmodified template records the experiment
+  but no evidence, and says so), symbolic experimenter (sympy certificates), formalizer
+  (`tool_unavailable` without a formal backend), critic (deterministic reviews + the
+  hostile referee) — each with a deterministic offline behaviour under the mock
+  provider and an honest failure signature instead of a silent "completed". A
+  special-case branch writes exploration sketches, never the dossier's primary answer.
+- **`opentorus research --campaign`** (or `campaign.record_research: true`) mirrors a
+  research run into an exploration campaign under the attributed problem; a plain run
+  writes exactly what it always wrote. **`opentorus campaign import-research`**
+  converts a legacy run with a `migration_recorded` provenance event, originals
+  untouched (sha256-checked), refusing a second import unless `--force`.
+
+### Changed
+- `agent/research_loop.py` is a façade: the iteration body moved verbatim to
+  `agent/research_iteration.py` (`run_iteration`, `record_turn`,
+  `parse_search_result`); `load_state_by_slug` / `list_states` added. The campaign
+  engine's worker execution moved to `campaign/execution.py`, start-time rules to
+  `campaign/lifecycle.py`, between-round rules to `campaign/reallocation.py`.
+
 ### Fixed
 - **Locality follows the provider that sends the bytes.** Pre-egress DLP, cost
   estimation (`$0 (local)`), the tool-calling check and Ollama's forced `tool_choice`

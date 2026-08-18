@@ -401,6 +401,10 @@ class FailureSignature(_Persisted):
     first_seq: int | None = None
     last_seq: int | None = None
     retry_notes: list[str] = Field(default_factory=list)
+    # The formal/certificate backends enabled when the failure was recorded, so a
+    # ``verification_backend_changed`` reactivation condition has something to compare
+    # against without re-reading an old config.
+    verifier_backends: list[str] = Field(default_factory=list)
 
 
 class Obligation(_Persisted):
@@ -460,6 +464,17 @@ class WorkerContext(BaseModel):
     routing_hint: RoutingHint = Field(default_factory=RoutingHint)
     coverage_ref: str | None = None
     insufficient_categories: tuple[str, ...] = ()
+    # Ids (never contents) of the artifacts this worker's own branch produced so far,
+    # so a worker can tell "first attempt" from "continue" without reading transcripts.
+    branch_artifact_ids: tuple[str, ...] = ()
+    # The claim evidence is recorded against: the dossier's designated primary claim
+    # when there is one, else the branch-level workspace claim the branch created.
+    target_claim_id: str | None = None
+    # Artifact ids the critic is asked to review (claims / proof attempts of this round).
+    review_targets: tuple[str, ...] = ()
+    # The branch's strategy template key (``proof_sketch``, ``counterexample_search``, …)
+    # — the ``strategy_class`` of any failure signature the worker records.
+    strategy_key: str | None = None
 
     @field_serializer("allowed_tools")
     def _sorted_tools(self, value: frozenset[str]) -> list[str]:
@@ -489,6 +504,12 @@ class WorkerResult(_Persisted):
     insufficient_categories: list[str] = Field(default_factory=list)
     error_category: ErrorCategory | None = None
     message: str = ""
+    # The claim the worker recorded evidence against (the engine stores it on the branch).
+    target_claim_id: str | None = None
+    # Reviews the critic recorded and verifier-ledger entries a worker produced; the
+    # engine turns them into ``review_recorded`` / ``verification_recorded`` events.
+    reviews: list[ReviewRef] = Field(default_factory=list)
+    verifications: list[VerificationRef] = Field(default_factory=list)
 
 
 class WorkItem(_Persisted):

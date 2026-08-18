@@ -461,6 +461,12 @@ def research(
         help="Attribute findings to this dossier (PROBLEM-XXXX). Default: the active "
         "problem, or unattributed if none — never silently a mismatched one.",
     ),
+    campaign: bool | None = typer.Option(
+        None,
+        "--campaign/--no-campaign",
+        help="Also record the run as an exploration campaign under the attributed problem "
+        "(default: campaign.record_research). Research state files are unchanged either way.",
+    ),
 ) -> None:
     """Pursue a research question autonomously within budgets (start or resume)."""
     from opentorus.agent.research_loop import run_research
@@ -499,6 +505,7 @@ def research(
         max_iterations=iterations,
         cost_budget_usd=cost_budget,
         token_budget=token_budget,
+        record_campaign=campaign,
     )
     console.print(
         f"[green]{outcome.iterations_run} iteration(s) this run[/green]; "

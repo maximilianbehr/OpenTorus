@@ -104,21 +104,33 @@ def test_mock_exploration_campaign_runs_to_completed(tmp_path: Path) -> None:
     ):
         assert needed in types, needed
     assert "obligation_closed" not in types
-    assert "worker_failed" not in types
-    # exactly one bootstrap literature branch, supporting, worked by the librarian
-    assert len(snap.branches) == 1
-    branch = next(iter(snap.branches.values()))
-    assert branch.kind is BranchKind.literature
-    assert branch.root_relation is RootRelation.supporting
-    assert branch.assigned_worker_role is WorkerRole.librarian
-    assert branch.status is BranchStatus.completed
-    assert branch.approach_id == "APPR-0001"
+    # The exploration template: numerical, counterexample, literature, special-case —
+    # all four kept (initial_branches=4), three activated first, the fourth queued and
+    # activated once the literature branch completed. Every branch ends terminal.
+    kinds = {b.kind for b in snap.branches.values()}
+    assert kinds == {
+        BranchKind.numerical,
+        BranchKind.counterexample,
+        BranchKind.literature,
+        BranchKind.special_case,
+    }
+    assert all(b.status is not BranchStatus.active for b in snap.branches.values())
+    literature = next(b for b in snap.branches.values() if b.kind is BranchKind.literature)
+    assert literature.root_relation is RootRelation.supporting
+    assert literature.assigned_worker_role is WorkerRole.librarian
+    assert literature.status is BranchStatus.completed
+    assert literature.approach_id is not None and literature.approach_id.startswith("APPR-")
+    assert all(b.approach_id for b in snap.branches.values())  # one Approach per branch
     assert snap.coverage_ref is not None and snap.coverage_ref.startswith("COV-")
-    assert snap.budget.steps_used == 1  # offline work item charged one step
-    assert snap.rounds == 1
-    # every phase was visited, in order
+    # The librarian ran first (literature boost while coverage is insufficient) and was
+    # charged the documented one step for an offline work item.
+    first = min(snap.work_items.values(), key=lambda wi: wi.work_item_id)
+    assert first.role is WorkerRole.librarian
+    assert snap.budget.per_work_item[first.work_item_id].steps == 1
+    assert snap.rounds >= 4
+    # every phase was visited, in table order, at least once
     visited = [p.phase for p in snap.phase_history]
-    assert visited == [
+    for phase in (
         CampaignPhase.CREATED,
         CampaignPhase.INGEST,
         CampaignPhase.NORMALIZE,
@@ -132,7 +144,17 @@ def test_mock_exploration_campaign_runs_to_completed(tmp_path: Path) -> None:
         CampaignPhase.REALLOCATE,
         CampaignPhase.SYNTHESIZE,
         CampaignPhase.COMPLETED,
+    ):
+        assert phase in visited, phase
+    assert visited[:6] == [
+        CampaignPhase.CREATED,
+        CampaignPhase.INGEST,
+        CampaignPhase.NORMALIZE,
+        CampaignPhase.MAP_LITERATURE,
+        CampaignPhase.GENERATE_PORTFOLIO,
+        CampaignPhase.SCHEDULE,
     ]
+    assert visited[-2:] == [CampaignPhase.SYNTHESIZE, CampaignPhase.COMPLETED]
     # snapshot == reduce(events)
     store = open_campaign(ot, record.id)
     events, diags = store.read_events()
@@ -443,20 +465,28 @@ def test_resume_after_interrupt_fails_the_stale_item_and_completes(tmp_path: Pat
             return LibrarianWorker().run(ctx, rt)  # type: ignore[arg-type]
 
     worker = _InterruptOnce()
-    engine = make_engine(root, ot, worker_registry={WorkerRole.librarian: worker})
+    from opentorus.campaign.workers import DEFAULT_WORKERS
+
+    registry = {**DEFAULT_WORKERS, WorkerRole.librarian: worker}
+    engine = make_engine(root, ot, worker_registry=registry)
     with pytest.raises(KeyboardInterrupt):
-        engine.start(pid, mode="exploration", max_steps=10)
+        engine.start(pid, mode="exploration", max_steps=30)
     paused = _snapshot(ot, "CAMPAIGN-0001")
     assert paused.current_worker is None
     running = [wi for wi in paused.work_items.values() if wi.status.value == "running"]
     assert len(running) == 1
+    stale = running[0]
+    assert stale.role is WorkerRole.librarian  # the librarian is scheduled first
     result = engine.resume("CAMPAIGN-0001")
     assert result.resumed
     final = _snapshot(ot, "CAMPAIGN-0001")
     assert final.status is CampaignStatus.completed
-    statuses = sorted(wi.status.value for wi in final.work_items.values())
-    assert statuses == ["completed", "failed"]
-    assert final.branches["BRANCH-0001"].status is BranchStatus.completed
+    # the interrupted item is failed on resume, its branch is picked again and completes
+    assert final.work_items[stale.work_item_id].status.value == "failed"
+    assert "interrupted" in (final.work_items[stale.work_item_id].failure_reason or "")
+    literature = final.branches[stale.branch_id]
+    assert literature.kind is BranchKind.literature
+    assert literature.status is BranchStatus.completed
     assert worker.calls == 2
     assert open_campaign(ot, "CAMPAIGN-0001").verify_replay().matches
 

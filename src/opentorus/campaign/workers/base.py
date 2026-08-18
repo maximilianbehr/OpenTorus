@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from opentorus.agent.control.events import RunEventSink
     from opentorus.agent.loop import AgentLoop, ConfirmCallback
     from opentorus.providers.pool import ProviderLease, ProviderPool
+    from opentorus.tools.base import ToolResult
     from opentorus.tools.registry import ToolRegistry
 
 RegistryFactory = Callable[[str | None], "ToolRegistry"]
@@ -96,6 +97,81 @@ def allowed_tools_gate(allowed: frozenset[str]) -> Callable[[str, dict], str | N
     return _gate
 
 
+# The tools each model-driven role may call. Restricting the registry (not only
+# gating it) matters twice: a worker cannot wander outside its role, and the mock
+# provider — which keys on tool *names* it sees — never gets distracted by ``status``
+# / ``memory_list`` and reaches its deliverable bootstrap in a fixed number of turns.
+_DOSSIER_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "list_files",
+        "glob_files",
+        "memory_add",
+        "paper_list",
+        "paper_read",
+        "paper_fetch",
+        "lit_search",
+        "claim_new",
+        "evidence_add",
+        "kb_query",
+    }
+)
+ROLE_ALLOWED_TOOLS: dict[WorkerRole, frozenset[str]] = {
+    WorkerRole.strategist: frozenset(),
+    WorkerRole.prover: _DOSSIER_TOOLS
+    | {
+        "proof_write",
+        "proof_submit",
+        "exp_new",
+        "exp_run",
+        "dossier_known_result_add",
+        "dossier_related_paper_add",
+    },
+    WorkerRole.falsifier: _DOSSIER_TOOLS | {"exp_new", "exp_run"},
+    WorkerRole.numerical_experimenter: _DOSSIER_TOOLS | {"exp_new", "exp_run"},
+    WorkerRole.symbolic_experimenter: _DOSSIER_TOOLS | {"exp_new", "exp_run", "proof_submit"},
+    WorkerRole.formalizer: _DOSSIER_TOOLS | {"proof_submit", "proof_write"},
+    WorkerRole.librarian: _DOSSIER_TOOLS
+    | {"paper_add", "dossier_known_result_add", "dossier_related_paper_add"},
+    WorkerRole.critic: frozenset(),
+    WorkerRole.verifier_coordinator: frozenset(),
+    WorkerRole.synthesizer: frozenset(),
+}
+
+
+def restricted_registry(full: ToolRegistry, allowed: frozenset[str]) -> ToolRegistry:
+    """A registry holding only the ``allowed`` tools of ``full`` (all of them when
+    ``allowed`` is empty)."""
+    from opentorus.tools.registry import ToolRegistry as _Registry
+
+    if not allowed:
+        return full
+    out = _Registry()
+    for tool in full.tools():
+        if tool.name in allowed:
+            out.register(tool)
+    return out
+
+
+def is_mock_provider(provider: object) -> bool:
+    """The deterministic mock is the offline path: workers skip model-driven loops."""
+    return getattr(provider, "name", "") == "mock"
+
+
+def acquire_lease(ctx: WorkerContext, rt: WorkerRuntime) -> ProviderLease:
+    """Lease the provider for the worker's task class, tagged for the routing ledger."""
+    return rt.pool.acquire(ctx.task_class, tags={**usage_tags(ctx), "session_id": ctx.session_id})
+
+
+def formal_backends(config: Config) -> list[str]:
+    """Proof-assistant / SMT backends enabled in config (certificate checkers such as
+    ``sympy`` and ``interval`` are not formalization targets)."""
+    from opentorus.tools.research import enabled_verifier_backends
+
+    return [b for b in enabled_verifier_backends(config) if b in ("lean4", "coq", "smt")]
+
+
 def bounded_loop(
     ctx: WorkerContext,
     rt: WorkerRuntime,
@@ -104,6 +180,7 @@ def bounded_loop(
     registry: ToolRegistry | None = None,
     tool_gate: Callable[[str, dict], str | None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    deliverable_satisfied_by: Callable[[str, ToolResult], bool] | None = None,
     **loop_kwargs: object,
 ) -> AgentLoop:
     """An ``AgentLoop`` bounded by the work item: its steps, session, tags, sink, stop flag.
@@ -112,6 +189,10 @@ def bounded_loop(
     decision id lands on every usage row (``routing=lease.decision``). ``tool_gate``
     stacks behind the ``allowed_tools`` gate; ``loop_kwargs`` are passed through for
     deliverable callbacks (bootstrap, gates) that individual workers need.
+    ``deliverable_satisfied_by`` overrides the loop's notion of *which* deliverable
+    result counts (by default only a primary-scope ``proof_write`` does — a
+    special-case branch writing exploration sketches would otherwise be bootstrapped
+    again on every chat turn).
     """
     from opentorus.agent.loop import AgentLoop
 
@@ -131,11 +212,13 @@ def bounded_loop(
             return True
         return bool(rt.should_stop is not None and rt.should_stop())
 
-    return AgentLoop(
+    loop = AgentLoop(
         rt.root,
         rt.ot_dir,
         lease.provider,
-        registry or rt.registry(ctx.root_problem.problem_id),
+        restricted_registry(
+            registry or rt.registry(ctx.root_problem.problem_id), ctx.allowed_tools
+        ),
         rt.config,
         max_steps=ctx.budget.max_steps,
         session_id=ctx.session_id,
@@ -147,6 +230,12 @@ def bounded_loop(
         should_stop=_stop,
         **loop_kwargs,  # type: ignore[arg-type]
     )
+    if deliverable_satisfied_by is not None:
+        # The loop exposes the bootstrap but not the satisfaction rule; the policy object
+        # is the documented seam (``DeliverablePolicy.satisfied_by``), reached here so
+        # workers never touch the loop's internals themselves.
+        loop._deliverable.satisfied_by = deliverable_satisfied_by
+    return loop
 
 
 # --------------------------------------------------------------------------------------
@@ -217,13 +306,18 @@ def diff_artifacts(
 
 
 __all__ = [
+    "ROLE_ALLOWED_TOOLS",
     "ArtifactIndex",
     "RegistryFactory",
     "Worker",
     "WorkerRuntime",
+    "acquire_lease",
     "allowed_tools_gate",
     "bounded_loop",
     "diff_artifacts",
+    "formal_backends",
+    "is_mock_provider",
+    "restricted_registry",
     "snapshot_artifacts",
     "usage_tags",
 ]
