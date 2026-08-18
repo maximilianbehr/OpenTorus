@@ -176,8 +176,33 @@ class TurnRunner:
             self.on_status(phase, detail)
 
     def _emit(self, event: RunEvent) -> None:
-        if self.event_sink is not None:
+        """Hand an event to the sink; a misbehaving sink must never abort the loop.
+
+        ``events.RunEventSink`` documents that a sink never raises, but the loop is
+        the one paying if it does (a lost final answer, a session left mid-turn), so
+        the guarantee is enforced here rather than trusted.
+        """
+        if self.event_sink is None:
+            return
+        try:
             self.event_sink.emit(event)
+        except Exception as exc:  # noqa: BLE001 — a sink must never abort the loop
+            _logger.debug("Event sink raised on %s: %s", type(event).__name__, exc)
+
+    def _provider_base_url(self) -> str | None:
+        """The endpoint the provider in use actually talks to.
+
+        A routed lease is built from a *profile*, so the provider carries its own
+        ``config`` (see ``BaseProvider.config``); the workspace ``config.model`` is
+        the default profile and may point elsewhere (a local vLLM while the lease is
+        OpenAI, or vice versa). Locality — which decides the DLP exemption and the
+        ``$0 (local)`` pricing — must follow the provider that sends the bytes. A
+        provider without a config (mock, test doubles) falls back to ``config.model``.
+        """
+        provider_cfg = getattr(getattr(self.provider, "config", None), "model", None)
+        if provider_cfg is not None:
+            return getattr(provider_cfg, "base_url", None)
+        return self.config.model.base_url
 
     def reset_run(self) -> None:
         """Per-run reset of counters and the per-run guard state."""
@@ -208,7 +233,8 @@ class TurnRunner:
 
         if not self.config.governance.dlp:
             return None
-        if is_local_provider(getattr(self.provider, "name", "unknown"), self.config.model.base_url):
+        provider_name = getattr(self.provider, "name", "unknown")
+        if is_local_provider(provider_name, self._provider_base_url()):
             return None
         from opentorus.governance import DlpBlocked, assert_egress_safe
 
@@ -273,7 +299,9 @@ class TurnRunner:
         (e.g. the offline mock). The model column is what the provider says it is
         (``provider.model_name``) and falls back to ``config.model.name``; the model
         that actually answered (``response.model``) and the routing provenance are
-        stamped when the ledger schema has the fields.
+        stamped when the ledger schema has the fields. Pricing follows the endpoint
+        of the provider in use (a leased profile's ``base_url``), not the default
+        profile's, so a routed local model is ``$0`` and a routed cloud model is not.
         """
         from opentorus.agent.compaction import estimate_tokens, total_tokens
         from opentorus.usage import UsageRecord, estimate_cost, format_usage_line
@@ -282,7 +310,7 @@ class TurnRunner:
         provider_name = getattr(self.provider, "name", "unknown")
         model = getattr(self.provider, "model_name", None) or self.config.model.name
         actual_model = getattr(response, "model", None) or model
-        base_url = self.config.model.base_url
+        base_url = self._provider_base_url()
         usage = getattr(response, "usage", None)
         thinking_tokens = 0
         if usage is not None:

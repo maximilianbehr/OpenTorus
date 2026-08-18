@@ -18,6 +18,7 @@ import json
 import re
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +26,9 @@ from opentorus.agent.session import SessionMessage
 from opentorus.config import Config
 from opentorus.providers.base import BaseProvider
 from opentorus.research.math_experiments import CounterexampleResult
+
+if TYPE_CHECKING:
+    from opentorus.providers.pool import ProviderPool
 
 DEFAULT_MAX_ITERATIONS = 5
 DEFAULT_MAX_STEPS_PER_ITERATION = 6
@@ -96,6 +100,7 @@ def _record_turn(
     prompt: str,
     *,
     task_class: str = "narration",
+    pool: ProviderPool | None = None,
 ) -> str:
     """One provider turn for narration; routes the model and records usage (M31/M75).
 
@@ -107,6 +112,10 @@ def _record_turn(
     is eligible the pool's ``NoEligibleProviderError`` propagates (after being
     recorded): the caller's provider is itself the default candidate, so silently
     using it would bypass whatever made it ineligible (e.g. a per-provider budget).
+
+    ``pool`` is the run's shared pool (built once by ``run_research``) so provider
+    instances and the decision counter are reused across turns; ``None`` builds one
+    for this turn, which keeps older callers working.
     """
     from opentorus.agent.compaction import estimate_tokens, total_tokens
     from opentorus.errors import OpenTorusError
@@ -116,9 +125,10 @@ def _record_turn(
     active = provider
     lease = None
     if config.governance.routing.enabled:
-        from opentorus.providers.pool import build_pool
+        if pool is None:
+            from opentorus.providers.pool import build_pool
 
-        pool = build_pool(config, ot_dir)
+            pool = build_pool(config, ot_dir)
         lease = pool.acquire(task_class)
         active = lease.provider
     model = getattr(active, "model_name", None) or config.model.name
@@ -127,7 +137,7 @@ def _record_turn(
     response = active.respond(messages)
     elapsed = time.monotonic() - started
     actual_model = response.model or model
-    if lease is not None and response.model:
+    if lease is not None and pool is not None and response.model:
         pool.note_actual_model(lease.decision.decision_id, response.model)
 
     provider_name = getattr(active, "name", "unknown")
@@ -212,6 +222,8 @@ def _run_iteration(
     state: ResearchState,
     iteration: int,
     max_steps: int,
+    *,
+    pool: ProviderPool | None = None,
 ) -> IterationResult:
     from opentorus.research.claims import get_claim, update_claim
     from opentorus.research.experiments import new_experiment, run_experiment
@@ -291,6 +303,7 @@ def _run_iteration(
         provider,
         f"Investigation: {state.question}\nLatest: {actions[-1]}\n"
         "State the single most useful next step (one sentence).",
+        pool=pool,
     ).strip()
 
     add_entry(
@@ -387,6 +400,15 @@ def run_research(
 
     from opentorus.governance import breached_budgets
 
+    # One pool for the whole run (routing enabled only): provider instances are
+    # cached per profile and the routing-decision counter is seeded from the ledger
+    # once, instead of re-reading the ledger and rebuilding providers every turn.
+    pool: ProviderPool | None = None
+    if config.governance.routing.enabled:
+        from opentorus.providers.pool import build_pool
+
+        pool = build_pool(config, ot_dir)
+
     while state.completed_iterations < max_iterations:
         summary = summarize_usage(ot_dir)
         if cost_budget_usd is not None and summary.cost_usd >= cost_budget_usd:
@@ -403,7 +425,7 @@ def run_research(
 
         iteration = state.completed_iterations + 1
         result = _run_iteration(
-            root, ot_dir, provider, config, state, iteration, max_steps_per_iteration
+            root, ot_dir, provider, config, state, iteration, max_steps_per_iteration, pool=pool
         )
         results.append(result)
         state.completed_iterations = iteration

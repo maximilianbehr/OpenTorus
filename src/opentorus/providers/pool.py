@@ -165,7 +165,9 @@ class BudgetContext:
 @dataclass
 class _Candidate:
     name: str
-    source: str  # task_routes | task_routes.default | task_models | task_models.default | default
+    # task_routes | task_routes.default | task_models | task_models.default | default |
+    # default.implicit (the ``model:`` block, when ``models.default_profile`` is undefined)
+    source: str
 
 
 class ProfileReport(BaseModel):
@@ -326,13 +328,22 @@ class ProviderPool:
     def default_profile_name(self) -> str:
         return self.config.models.default_profile or DEFAULT_PROFILE_NAME
 
+    def default_profile_defined(self) -> bool:
+        """Does ``models.default_profile`` (or the implicit ``default``) resolve?"""
+        name = self.default_profile_name()
+        return name == DEFAULT_PROFILE_NAME or name in self.config.models.profiles
+
+    def _default_fallback_reason(self) -> str:
+        return (
+            f"models.default_profile '{self.default_profile_name()}' is not defined; "
+            "using the implicit default profile"
+        )
+
     # -- candidates ---------------------------------------------------------------
 
     def _candidate_entries(self, task_class: str) -> list[_Candidate]:
         routing = self.config.governance.routing
         default_name = self.default_profile_name()
-        if not routing.enabled:
-            return [_Candidate(default_name, "default")]
         entries: list[_Candidate] = []
         seen: set[str] = set()
 
@@ -340,6 +351,16 @@ class ProviderPool:
             if name and name not in seen:
                 seen.add(name)
                 entries.append(_Candidate(name, source))
+
+        if not routing.enabled:
+            add(default_name, "default")
+            if not self.default_profile_defined():
+                # A typo in ``models.default_profile`` must not make every command
+                # fail with routing off: the ``model:`` block is still there and is
+                # what ran before the setting existed. The unknown name stays in the
+                # candidate list so the ledger records the fallback (never silent).
+                add(DEFAULT_PROFILE_NAME, "default.implicit")
+            return entries
 
         lookup = task_class_lookup_names(task_class)
         for key in lookup:
@@ -357,6 +378,8 @@ class ProviderPool:
             if model:
                 add(f"{DEFAULT_PROFILE_NAME}@{model}", "task_models.default")
         add(default_name, "default")
+        if not self.default_profile_defined():
+            add(DEFAULT_PROFILE_NAME, "default.implicit")
         return entries
 
     def candidates(self, task_class: str | TaskClass) -> list[str]:
@@ -388,12 +411,36 @@ class ProviderPool:
             return f"RTD-mem-{self._counter:04d}"
         return f"RTD-{self._counter:04d}"
 
+    def _provider_budget_breaches(self) -> dict[str, str]:
+        """``provider name -> alert message`` for every breached per-provider cap.
+
+        One usage-ledger parse per acquire: ``budget_alerts`` reads the whole ledger,
+        and an acquire may consider several candidates, so the map is built once and
+        shared across the candidates of that acquire (see ``acquire``).
+        """
+        if self.ot_dir is None or not self.config.governance.budgets.per_provider_usd:
+            return {}
+        from opentorus.governance import budget_alerts
+
+        return {
+            alert.scope: alert.message
+            for alert in budget_alerts(self.ot_dir, self.config)
+            if alert.breached and alert.scope not in ("total", "tokens")
+        }
+
     def _ineligibility_reason(
         self,
         profile: ModelProfile | None,
         required: frozenset[ProviderCapability],
         budget_context: BudgetContext | None,
+        breaches: Callable[[], dict[str, str]],
     ) -> str | None:
+        """Why ``profile`` cannot serve this acquire, or ``None`` when it can.
+
+        ``breaches`` is a lazy, memoised view of the per-provider budget breaches so
+        the ledger is parsed at most once per acquire and only when a candidate
+        actually gets that far.
+        """
         if profile is None:
             return "unknown profile (not in models.profiles)"
         if profile.provider.lower() not in KNOWN_PROVIDERS:
@@ -415,12 +462,9 @@ class ProviderPool:
             and not local
         ):
             return "cost budget exhausted; only local providers remain eligible"
-        if self.ot_dir is not None and self.config.governance.budgets.per_provider_usd:
-            from opentorus.governance import budget_alerts
-
-            for alert in budget_alerts(self.ot_dir, self.config):
-                if alert.breached and alert.scope == profile.provider:
-                    return f"per-provider budget breached ({alert.message})"
+        breached = breaches().get(profile.provider)
+        if breached is not None:
+            return f"per-provider budget breached ({breached})"
         return None
 
     def acquire(
@@ -445,8 +489,18 @@ class ProviderPool:
         entries = self._candidate_entries(tc)
         verdicts: list[CandidateVerdict] = []
         selected: _Candidate | None = None
+        breach_map: dict[str, str] | None = None
+
+        def breaches() -> dict[str, str]:
+            nonlocal breach_map
+            if breach_map is None:
+                breach_map = self._provider_budget_breaches()
+            return breach_map
+
         for entry in entries:
-            reason = self._ineligibility_reason(profiles.get(entry.name), required, budget_context)
+            reason = self._ineligibility_reason(
+                profiles.get(entry.name), required, budget_context, breaches
+            )
             if reason is None:
                 verdicts.append(
                     CandidateVerdict(profile=entry.name, eligible=True, reason="selected")
@@ -458,7 +512,12 @@ class ProviderPool:
         skipped = [v for v in verdicts if not v.eligible]
         fallback_reason = None
         if selected is not None and skipped:
-            fallback_reason = "; ".join(f"'{v.profile}' skipped: {v.reason}" for v in skipped)
+            reasons = [f"'{v.profile}' skipped: {v.reason}" for v in skipped]
+            if selected.source == "default.implicit":
+                # The named default profile does not exist; say so in plain words
+                # (the per-candidate verdicts keep the mechanics).
+                reasons.insert(0, self._default_fallback_reason())
+            fallback_reason = "; ".join(reasons)
         campaign_id = (budget_context.campaign_id if budget_context else None) or tags.get(
             "campaign_id"
         )
@@ -490,9 +549,9 @@ class ProviderPool:
         if self.ot_dir is not None:
             append_jsonl(routing_ledger_path(self.ot_dir), record)
         if selected is None or profile is None:
-            reasons = "; ".join(f"{v.profile}: {v.reason}" for v in verdicts) or "no candidates"
+            why = "; ".join(f"{v.profile}: {v.reason}" for v in verdicts) or "no candidates"
             raise NoEligibleProviderError(
-                f"No eligible model profile for task class '{tc}' ({reasons}). "
+                f"No eligible model profile for task class '{tc}' ({why}). "
                 "Check models.profiles and governance.routing.task_routes in config.yaml.",
                 record,
             )

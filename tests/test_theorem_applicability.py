@@ -48,6 +48,7 @@ def _names(check, passed: bool | None) -> set[str]:
 def test_happy_path_is_accepted_and_persisted(tmp_path: Path) -> None:
     ot, _pid, refs = _setup(tmp_path)
     thm = refs[0]
+    store.set_review_status(ot, thm.id, "accepted", "human")
     check = check_applicability(
         ot, thm.id, problem_id="PROBLEM-0001", assumption_context=CONTEXT, claim_text=CLAIM
     )
@@ -56,16 +57,45 @@ def test_happy_path_is_accepted_and_persisted(tmp_path: Path) -> None:
     assert check.performed_by == "deterministic"
     assert check.mismatches == []
     assert _names(check, False) == set()
+    assert [c.name for c in check.checks][0] == "reference_reviewed"
+    assert "reference_reviewed" in _names(check, True)
     assert "statement_observed" in _names(check, True)
     assert "context_implies_hypotheses" in _names(check, True)
     assert [c.id for c in store.list_applicability_checks(ot, ref_id=thm.id)] == [check.id]
     assert (ot / "theorems" / "applicability_checks.jsonl").is_file()
 
 
+def test_candidate_reference_is_at_most_needs_human_review(tmp_path: Path) -> None:
+    """Every other check passes, but nobody has accepted the (possibly model-extracted)
+    reference: the checker must not vouch for it."""
+    ot, _pid, refs = _setup(tmp_path)
+    thm = refs[0]
+    assert thm.review_status == "candidate"
+    check = check_applicability(
+        ot, thm.id, problem_id="PROBLEM-0001", assumption_context=CONTEXT, claim_text=CLAIM
+    )
+    assert check.result is ApplicabilityResult.needs_human_review, check.model_dump()
+    assert _names(check, False) == {"reference_reviewed"}
+    assert check.mismatches == []  # nothing is *wrong*; it is unreviewed
+
+
+def test_rejected_reference_is_rejected(tmp_path: Path) -> None:
+    ot, _pid, refs = _setup(tmp_path)
+    thm = refs[0]
+    store.set_review_status(ot, thm.id, "rejected", "human")
+    check = check_applicability(
+        ot, thm.id, problem_id="PROBLEM-0001", assumption_context=CONTEXT, claim_text=CLAIM
+    )
+    assert check.result is ApplicabilityResult.rejected
+    assert "reference_reviewed" in _names(check, False)
+    assert any("rejected in review" in m for m in check.mismatches)
+
+
 def test_missing_hypotheses_is_inconclusive(tmp_path: Path) -> None:
     ot, _pid, refs = _setup(tmp_path)
     prop = refs[2]
     assert prop.assumptions == []
+    store.set_review_status(ot, prop.id, "accepted", "human")  # isolate the hypotheses check
     check = check_applicability(
         ot,
         prop.id,
@@ -151,23 +181,42 @@ def test_uncovered_hypothesis_needs_human_review(tmp_path: Path) -> None:
     assert "context_implies_hypotheses" in _names(check, False)
 
 
-def test_context_reference_with_implies_relation_covers_hypotheses(tmp_path: Path) -> None:
+def test_context_reference_relation_covers_only_the_hypotheses_its_rationale_names(
+    tmp_path: Path,
+) -> None:
     ot, _pid, refs = _setup(tmp_path)
     thm, lemma = refs[0], refs[1]
+    store.set_review_status(ot, thm.id, "accepted", "human")
+    claim = "Every element of the finite group G has order dividing n."
+    # A bare relation (rationale naming no hypothesis) covers nothing: per hypothesis,
+    # nobody has said which one it establishes.
     add_relation(ot, lemma.id, thm.id, "implies", provenance="manual", rationale="test")
-    check = check_applicability(
-        ot,
-        thm.id,
-        problem_id="PROBLEM-0001",
-        assumption_context=[lemma.id],
-        claim_text="Every element of the finite group G has order dividing n.",
+    bare = check_applicability(
+        ot, thm.id, problem_id="PROBLEM-0001", assumption_context=[lemma.id], claim_text=claim
     )
-    assert check.result is ApplicabilityResult.accepted, check.model_dump()
+    assert bare.result is ApplicabilityResult.needs_human_review, bare.model_dump()
+    assert "context_implies_hypotheses" in _names(bare, False)
+    # A relation whose rationale names the hypothesis covers exactly that one.
+    add_relation(
+        ot,
+        lemma.id,
+        thm.id,
+        "implies",
+        provenance="manual",
+        rationale="the lemma gives that G is a finite group of order n",
+    )
+    named = check_applicability(
+        ot, thm.id, problem_id="PROBLEM-0001", assumption_context=[lemma.id], claim_text=claim
+    )
+    assert named.result is ApplicabilityResult.accepted, named.model_dump()
+    item = next(c for c in named.checks if c.name == "context_implies_hypotheses")
+    assert item.passed is True and "via relation rationale" in item.detail
 
 
 def test_converse_direction_is_rejected_unless_equivalent(tmp_path: Path) -> None:
     ot, _pid, refs = _setup(tmp_path)
     thm, lemma = refs[0], refs[1]
+    store.set_review_status(ot, thm.id, "accepted", "human")
     rejected = check_applicability(
         ot,
         thm.id,
@@ -194,6 +243,7 @@ def test_converse_direction_is_rejected_unless_equivalent(tmp_path: Path) -> Non
 def test_contradicted_by_accepted_reference_is_rejected(tmp_path: Path) -> None:
     ot, _pid, refs = _setup(tmp_path)
     thm, other = refs[0], refs[2]
+    store.set_review_status(ot, thm.id, "accepted", "human")
     add_relation(ot, other.id, thm.id, "contradicts", provenance="manual")
     # A *candidate* contradiction does not disqualify ...
     ok = check_applicability(
@@ -211,6 +261,7 @@ def test_contradicted_by_accepted_reference_is_rejected(tmp_path: Path) -> None:
 
 def test_changed_source_text_is_inconclusive(tmp_path: Path) -> None:
     ot, pid, refs = _setup(tmp_path)
+    store.set_review_status(ot, refs[0].id, "accepted", "human")  # isolate the hash check
     text_path = ot / "papers" / pid / "text.txt"
     text_path.write_text(
         text_path.read_text(encoding="utf-8").replace("order dividing n", "order dividing 2n"),
@@ -239,6 +290,7 @@ def test_result_precedence_rejected_over_review_over_inconclusive(tmp_path: Path
 
 def test_accepted_check_changes_no_claim_status(tmp_path: Path) -> None:
     ot, _pid, refs = _setup(tmp_path)
+    store.set_review_status(ot, refs[0].id, "accepted", "human")
     claim = dossier_claims.add_claim(ot, "PROBLEM-0001", claim_type="CONJECTURE", statement=CLAIM)
     before = [c.model_dump(mode="json") for c in dossier_store.list_claims(ot, "PROBLEM-0001")]
     check = check_applicability(
@@ -254,9 +306,11 @@ def test_accepted_check_changes_no_claim_status(tmp_path: Path) -> None:
     after = [c.model_dump(mode="json") for c in dossier_store.list_claims(ot, "PROBLEM-0001")]
     assert after == before
     assert dossier_store.list_status_changes(ot, "PROBLEM-0001") == []
-    # The reference itself is untouched too: an accepted check is not a review.
+    # The check did not touch the reference either: an accepted check is not a review
+    # (the acceptance above is the human's, made before the check ran).
     ref = store.get_reference(ot, refs[0].id)
-    assert ref is not None and ref.review_status == "candidate"
+    assert ref is not None and ref.review_status == "accepted"
+    assert store.list_applicability_checks(ot, ref_id=refs[0].id)[-1].id == check.id
 
 
 def test_proposed_analysis_is_stored_but_never_changes_the_result(tmp_path: Path) -> None:

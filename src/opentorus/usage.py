@@ -16,7 +16,6 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from opentorus.jsonl import append_jsonl, read_jsonl
-from opentorus.providers.capabilities import is_local_base_url, is_local_provider
 
 LEDGER_DIRNAME = "usage"
 LEDGER_FILENAME = "ledger.jsonl"
@@ -83,9 +82,48 @@ def _price_for(model: str) -> tuple[float, float] | None:
     return None
 
 
-# The local-provider predicate is a routing/egress policy predicate first and a
-# cost predicate second; it lives with the provider capabilities and is re-exported
-# here so ``opentorus.usage.is_local_provider`` keeps working.
+def is_local_base_url(base_url: str | None) -> bool:
+    """True when an OpenAI-compatible endpoint is a loopback/private host (no API cost).
+
+    Running an OpenAI-compatible server locally (llama.cpp, vLLM, LM Studio, Ollama's
+    OpenAI shim, …) incurs no per-token cloud cost, so cost should read ``$0 (local)``
+    rather than ``$? (price unknown)`` just because the model name is not in the price
+    table.
+    """
+    if not base_url:
+        return False
+    from urllib.parse import urlparse
+
+    host = (urlparse(base_url).hostname or "").lower()
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or host.endswith(".local"):
+        return True
+    # RFC 1918 private ranges (a LAN inference box is still not a cloud API).
+    if host.startswith("10.") or host.startswith("192.168."):
+        return True
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) >= 2 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
+            return True
+    return False
+
+
+def is_local_provider(provider: str, base_url: str | None = None) -> bool:
+    """A local provider genuinely costs nothing and sends nothing off-machine: mock or
+    ollama, or any provider whose ``base_url`` points at a loopback/private host (a
+    local OpenAI-compatible server).
+
+    The predicate is defined *here* — the leaf of the import graph — and re-exported by
+    ``opentorus.providers.capabilities`` for the routing pool: importing the usage
+    ledger must not drag in the provider package (``providers/__init__`` pulls in the
+    mock provider and the agent session), which keeps the CLI start-up cheap and the
+    ``egress``/DLP predicates usable from anywhere.
+    """
+    return provider.lower() in {"mock", "ollama"} or is_local_base_url(base_url)
+
+
+# Pre-routing name kept for callers that imported the private helper.
 _is_local_base_url = is_local_base_url
 
 

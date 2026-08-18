@@ -316,19 +316,75 @@ def test_write_config_appends_missing_models_section_with_profiles(tmp_path: Pat
     assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
 
 
-def test_write_config_leaves_existing_container_lines_alone(tmp_path: Path) -> None:
-    # `profiles: {}` on disk with a non-empty in-memory value: the container line is a
-    # documented hand-edit surface; the rewrite must not emit a duplicate key under it.
+def test_write_config_expands_an_empty_container_line_into_a_block(tmp_path: Path) -> None:
+    # `profiles: {}` on disk with a non-empty in-memory value: the empty line has
+    # nothing worth preserving, so it becomes a real mapping block (once — no duplicate
+    # key) and the value round-trips instead of being silently dropped.
     from opentorus.config import CONFIG_FILENAME, ModelProfile, write_config
 
     init_workspace(tmp_path)
     path = workspace_dir(tmp_path) / CONFIG_FILENAME
     config = load_config(path)
     config.models.profiles = {"x": ModelProfile(provider="ollama", name="m")}
+    config.governance.routing.task_routes = {"proof_development": ["x"]}
     write_config(path, config)
     text = path.read_text(encoding="utf-8")
     assert text.count("profiles:") == text.count("# profiles:") + 1
-    assert load_config(path).models.profiles == {}  # unchanged on disk, honestly
+    assert "  profiles:\n    x:\n      provider: ollama\n" in text
+    assert "    task_routes:\n      proof_development:\n      - x\n" in text
+    assert "# profiles: a mapping of profile name" in text  # comments above it survive
+    reloaded = load_config(path)
+    assert reloaded.models.profiles["x"].name == "m"
+    assert reloaded.governance.routing.task_routes == {"proof_development": ["x"]}
+    assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
+
+
+def test_write_config_expands_empty_campaign_block_and_round_trips(tmp_path: Path) -> None:
+    # A one-line `campaign: {}` (an old or hand-minimised file) with scalar leaves set in
+    # memory: the line becomes a block whose values load back.
+    from opentorus.config import CONFIG_FILENAME, set_dotted, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    old_text = _strip_section(path.read_text(encoding="utf-8"), "campaign:", 0)
+    old_text = old_text.rstrip("\n") + "\n\ncampaign: {}\n"
+    path.write_text(old_text, encoding="utf-8")
+
+    config = set_dotted(load_config(path), "campaign.token_budget", "4321")
+    write_config(path, config)
+    text = path.read_text(encoding="utf-8")
+    assert text.count("\ncampaign:") == 1 and "campaign: {}" not in text
+    assert "\ncampaign:\n" in text and "  token_budget: 4321" in text
+    reloaded = load_config(path)
+    assert reloaded.campaign.token_budget == 4321
+    assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
+
+
+def test_write_config_warns_about_leaves_under_a_non_empty_flow_container(
+    tmp_path: Path, caplog
+) -> None:
+    # A hand-written non-empty flow mapping is left as written; the values that could
+    # not be placed under it are named in a warning rather than lost silently.
+    import logging
+
+    from opentorus.config import CONFIG_FILENAME, dropped_leaves, set_dotted, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    text = path.read_text(encoding="utf-8")
+    text = _strip_section(text, "scheduler_weights:", 2)
+    text = text.replace("\ncampaign:\n", "\ncampaign:\n  scheduler_weights: {novelty: 1.0}\n")
+    path.write_text(text, encoding="utf-8")
+
+    config = set_dotted(load_config(path), "campaign.scheduler_weights.novelty", "2.5")
+    with caplog.at_level(logging.WARNING, logger="opentorus"):
+        write_config(path, config)
+    rendered = path.read_text(encoding="utf-8")
+    assert "scheduler_weights: {novelty: 1.0}" in rendered  # hand-edit surface untouched
+    assert dropped_leaves(rendered, config.model_dump(mode="json")) == [
+        "campaign.scheduler_weights.novelty"
+    ]
+    assert any("campaign.scheduler_weights.novelty" in r.message for r in caplog.records)
 
 
 def test_config_set_round_trips_campaign_key_on_old_file(tmp_path: Path, monkeypatch) -> None:

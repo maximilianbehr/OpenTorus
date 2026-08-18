@@ -212,3 +212,40 @@ def test_doctor_json_cli(tmp_path: Path, monkeypatch) -> None:
     payload = json.loads(result.stdout)
     routes = next(e for e in payload if e["name"] == "routes")
     assert all("fallback_ok" in r for r in routes["data"]["routes"])
+
+
+def test_doctor_probe_implies_capabilities(tmp_path: Path, monkeypatch) -> None:
+    """``doctor --probe`` without ``--capabilities`` used to do nothing at all; a probe
+    now always shows the capability tables it fills in (mock profiles are not probed)."""
+    from opentorus import doctor as doctor_module
+
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    probed: list[dict] = []
+
+    def _fake_probe(_ot, _config, profiles):  # noqa: ANN001, ANN202
+        probed.append(dict(profiles))
+        return {name: "probe skipped (test)" for name in profiles}
+
+    monkeypatch.setattr(doctor_module, "_probe_profiles", _fake_probe)
+    checks = {c.name: c for c in run_doctor(tmp_path, ot, default_config(), probe=True)}
+    assert probed and "default" in probed[0]
+    assert "capabilities:" in checks["profiles"].detail
+    assert checks["profiles"].data["probe_notes"] == {"default": "probe skipped (test)"}
+
+
+def test_doctor_flags_an_undefined_default_profile_in_profiles_and_routes(tmp_path: Path) -> None:
+    """A typo in ``models.default_profile``: acquire falls back to ``model:`` at run
+    time (see the pool tests), but doctor must still say the name does not exist."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    config = default_config()
+    config.models.default_profile = "typo"
+    checks = {c.name: c for c in run_doctor(tmp_path, ot, config)}
+    assert not checks["profiles"].ok
+    assert "does not exist" in checks["profiles"].detail
+    assert not checks["routes"].ok
+    assert "typo" in checks["routes"].detail
+    narration = next(r for r in checks["routes"].data["routes"] if r["task_class"] == "narration")
+    assert narration["candidates"] == ["typo", "default"]
+    assert narration["first_eligible"] == "default"

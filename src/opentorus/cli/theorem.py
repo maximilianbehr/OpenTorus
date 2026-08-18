@@ -8,7 +8,7 @@ shows or overrides the category coverage map of a problem.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.markup import escape
@@ -23,6 +23,9 @@ from opentorus.cli._base import (
     console,
 )
 from opentorus.errors import OpenTorusError
+
+if TYPE_CHECKING:
+    from opentorus.research.theorems.models import Direction
 
 theorem_app = typer.Typer(
     cls=SortedGroup,
@@ -254,7 +257,14 @@ def theorem_check(
     from opentorus.research.theorems.applicability import check_applicability
 
     base = _require_workspace_dir()
-    if direction not in ("forward", "converse"):
+    # Narrow the free-form option to the typed ``Direction`` once, here, instead of
+    # silencing the checker at the call site.
+    checked_direction: Direction
+    if direction == "forward":
+        checked_direction = "forward"
+    elif direction == "converse":
+        checked_direction = "converse"
+    else:
         console.print("[red]--direction must be 'forward' or 'converse'.[/red]")
         raise typer.Exit(code=1)
     context: list[str] = list(assume or [])
@@ -277,7 +287,7 @@ def theorem_check(
             problem_id=pid,
             assumption_context=context,
             claim_text=text,
-            direction=direction,  # type: ignore[arg-type]
+            direction=checked_direction,
             target_id=target_id,
         )
     except OpenTorusError as exc:
@@ -367,9 +377,20 @@ def theorem_coverage(
         typer.Option("--evidence", help="Artifact id backing the override (repeatable)."),
     ] = None,
     note: str = typer.Option("", "--note", help="Note for the override."),
+    record: bool = typer.Option(
+        False,
+        "--record",
+        help="Append this assessment to the coverage ledger as a new COV-NNNN record "
+        "(implied by --set; a plain read persists nothing).",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Show (and optionally override) the literature coverage map of a problem."""
+    """Show (and optionally override) the literature coverage map of a problem.
+
+    Reading is side-effect free: the map is derived on the fly and only written to
+    the ledger when something changed (``--set``) or when asked (``--record``), so
+    looking twice does not grow the ledger.
+    """
     from opentorus.research.theorems import store
     from opentorus.research.theorems.coverage import assess_coverage
 
@@ -377,20 +398,22 @@ def theorem_coverage(
     try:
         pid = _resolve_problem_id(base, problem)
         category, level = set_
-        if category is not None or level is not None:
+        overridden = category is not None or level is not None
+        if overridden:
             if not category or not level:
                 raise OpenTorusError("--set needs both CATEGORY and LEVEL.")
             store.set_coverage_override(
                 base, pid, category, level, evidence_ids=list(evidence or []), note=note
             )
-        assessment = assess_coverage(base, pid, mode=mode)
+        assessment = assess_coverage(base, pid, mode=mode, persist=record or overridden)
     except OpenTorusError as exc:
         _fail(exc)
         return
     if as_json:
         console.print_json(assessment.model_dump_json())
         return
-    table = Table(title=f"Coverage {assessment.id} for {pid}")
+    label = assessment.id or "(derived, not recorded; --record to persist)"
+    table = Table(title=f"Coverage {label} for {pid}")
     table.add_column("category")
     table.add_column("level")
     table.add_column("critical")

@@ -5,7 +5,9 @@ reference, the local source and the caller's assumption context. Each test is
 recorded as a :class:`CheckItem`; the typed ``result`` follows the precedence
 ``rejected > needs-human-review > inconclusive > accepted``. The checker is
 intentionally conservative — text heuristics can *refuse* or *defer* to a human,
-but an ``accepted`` here is still only a recorded check: it never changes any
+and only a reference a human has **accepted** in review can come out ``accepted``
+(a candidate is at best ``needs-human-review``, a rejected one is ``rejected``).
+Even then an ``accepted`` here is only a recorded check: it never changes any
 claim status (the verifier-coordinator may cite it; promotion needs a
 verification artifact, as everywhere else in the dossier).
 
@@ -140,20 +142,32 @@ def _domain_mismatches(hypotheses_text: str, context_text: str) -> list[str]:
     return mismatches
 
 
-def _relations_covering(ot_dir: Path, ref: TheoremReference, context_refs: list[str]) -> bool:
-    """A context reference declares ``implies``/``requires-definition`` towards ``ref``."""
+def _relation_rationales(ot_dir: Path, ref: TheoremReference, context_refs: list[str]) -> list[str]:
+    """Rationales of context-reference relations that can cover a hypothesis of ``ref``.
+
+    Rule: a non-rejected ``implies``/``requires-definition`` relation from a context
+    THMREF towards ``ref`` covers exactly the hypotheses its ``rationale`` names (the
+    rationale is matched like a context sentence: substring or token-Jaccard). A
+    relation with a rationale that names no hypothesis covers **none** — a bare edge
+    says the source bears on the target, not that every hypothesis is met, and
+    treating it as blanket coverage let one relation wave through hypotheses nobody
+    had checked.
+    """
     if not context_refs:
-        return False
+        return []
     wanted = {r.upper() for r in context_refs}
+    rationales: list[str] = []
     for rel in store.list_relations(ot_dir, ref_id=ref.id):
         if rel.review_status == "rejected":
             continue
-        if rel.relation in (
-            TheoremRelationKind.implies,
-            TheoremRelationKind.requires_definition,
-        ) and (rel.target_ref.upper() == ref.id.upper() and rel.source_ref.upper() in wanted):
-            return True
-    return False
+        if (
+            rel.relation in (TheoremRelationKind.implies, TheoremRelationKind.requires_definition)
+            and rel.target_ref.upper() == ref.id.upper()
+            and rel.source_ref.upper() in wanted
+            and rel.rationale.strip()
+        ):
+            rationales.append(rel.rationale)
+    return rationales
 
 
 def _has_equivalence(ot_dir: Path, ref: TheoremReference) -> bool:
@@ -189,7 +203,29 @@ def check_applicability(
     context_sentences = [c for c in assumption_context if not _THMREF_ID.match(c.strip())]
     context_refs = [c.strip().upper() for c in assumption_context if _THMREF_ID.match(c.strip())]
 
-    # 1. paper exists
+    # 1. reference reviewed: only a human-accepted reference can come out accepted.
+    # A candidate (possibly extracted by a model) is at best "needs human review":
+    # an ``accepted`` check on an unreviewed reference would be the checker vouching
+    # for a statement nobody has read; a rejected reference cannot apply at all.
+    if ref.review_status == "accepted":
+        checks.append(CheckItem(name="reference_reviewed", passed=True, detail="accepted"))
+    elif ref.review_status == "rejected":
+        checks.append(
+            CheckItem(name="reference_reviewed", passed=False, detail="reference is rejected")
+        )
+        verdicts.add(ApplicabilityResult.rejected)
+        mismatches.append("reference has been rejected in review")
+    else:
+        checks.append(
+            CheckItem(
+                name="reference_reviewed",
+                passed=False,
+                detail=f"reference is '{ref.review_status}'; a human must accept it first",
+            )
+        )
+        verdicts.add(ApplicabilityResult.needs_human_review)
+
+    # 2. paper exists
     if get_paper(ot_dir, ref.paper_id) is None:
         checks.append(
             CheckItem(name="paper_exists", passed=False, detail=f"no local {ref.paper_id}")
@@ -199,7 +235,7 @@ def check_applicability(
     else:
         checks.append(CheckItem(name="paper_exists", passed=True, detail=ref.paper_id))
 
-    # 2. locator resolves
+    # 3. locator resolves
     validation = validate_locator(ot_dir, ref.locator)
     if validation.ok:
         detail = "; ".join(validation.warnings) or "ok"
@@ -211,7 +247,7 @@ def check_applicability(
         verdicts.add(ApplicabilityResult.rejected)
         mismatches.extend(validation.errors)
 
-    # 3. statement observed (context found and hash unchanged since extraction)
+    # 4. statement observed (context found and hash unchanged since extraction)
     context = located_context(ot_dir, ref.locator)
     if context is None:
         checks.append(
@@ -240,7 +276,7 @@ def check_applicability(
     else:
         checks.append(CheckItem(name="statement_observed", passed=True, detail="hash matches"))
 
-    # 4. hypotheses represented
+    # 5. hypotheses represented
     if not ref.assumptions:
         checks.append(
             CheckItem(
@@ -259,13 +295,20 @@ def check_applicability(
             )
         )
 
-    # 5. assumption context implies hypotheses
+    # 6. assumption context implies hypotheses — evaluated per hypothesis: each one
+    # must be covered by a context sentence or by the rationale of a covering
+    # relation (see ``_relation_rationales``); no relation covers "everything".
     if ref.assumptions:
         uncovered: list[str] = []
-        covered_by_relation = _relations_covering(ot_dir, ref, context_refs)
+        via_relation = 0
+        rationales = _relation_rationales(ot_dir, ref, context_refs)
         for hyp in ref.assumptions:
-            if _hypothesis_covered(hyp, context_sentences) is None and not covered_by_relation:
-                uncovered.append(hyp)
+            if _hypothesis_covered(hyp, context_sentences) is not None:
+                continue
+            if _hypothesis_covered(hyp, rationales) is not None:
+                via_relation += 1
+                continue
+            uncovered.append(hyp)
         if uncovered:
             checks.append(
                 CheckItem(
@@ -276,15 +319,16 @@ def check_applicability(
             )
             verdicts.add(ApplicabilityResult.needs_human_review)
         else:
-            checks.append(
-                CheckItem(name="context_implies_hypotheses", passed=True, detail="all covered")
-            )
+            detail = "all covered"
+            if via_relation:
+                detail += f" ({via_relation} via relation rationale)"
+            checks.append(CheckItem(name="context_implies_hypotheses", passed=True, detail=detail))
     else:
         checks.append(
             CheckItem(name="context_implies_hypotheses", passed=None, detail="no hypotheses")
         )
 
-    # 6. conclusion supports claim
+    # 7. conclusion supports claim
     conclusion_tokens = tokens(ref.conclusion)
     if not conclusion_tokens or not claim_text.strip():
         checks.append(
@@ -313,7 +357,7 @@ def check_applicability(
             )
             verdicts.add(ApplicabilityResult.inconclusive)
 
-    # 7. direction
+    # 8. direction
     if direction == "converse":
         if _has_equivalence(ot_dir, ref):
             checks.append(
@@ -334,7 +378,7 @@ def check_applicability(
     else:
         checks.append(CheckItem(name="direction", passed=True, detail="forward"))
 
-    # 8. quantifier agreement
+    # 9. quantifier agreement
     ref_text = " ".join(ref.quantifiers) + " " + ref.normalized_statement
     ref_u, ref_e = _quantifier_shape(ref_text)
     claim_u, claim_e = _quantifier_shape(claim_text)
@@ -360,7 +404,7 @@ def check_applicability(
             CheckItem(name="quantifier_agreement", passed=None, detail="no quantifier words")
         )
 
-    # 9. domain / parameter agreement (context = assumptions + claim text)
+    # 10. domain / parameter agreement (context = assumptions + claim text)
     domain = _domain_mismatches(
         " ".join(ref.assumptions), " ".join(context_sentences + [claim_text])
     )
@@ -371,7 +415,7 @@ def check_applicability(
     else:
         checks.append(CheckItem(name="domain_agreement", passed=True, detail="no domain conflict"))
 
-    # 10. contradicted / superseded by an accepted reference
+    # 11. contradicted / superseded by an accepted reference
     accepted_contradictions = [
         other
         for other in contradicting_refs(ot_dir, ref.id)

@@ -65,8 +65,11 @@ def run_doctor(
     probe: bool = False,
 ) -> list[CheckResult]:
     """All health checks. ``capabilities`` adds per-profile capability tables and
-    route fallback availability; ``probe`` (with ``capabilities``) additionally
-    probes each non-mock profile online for tool calling and caches the result."""
+    route fallback availability; ``probe`` additionally probes each non-mock profile
+    online for tool calling and caches the result. ``probe`` implies
+    ``capabilities``: a probe whose findings are not shown would silently do
+    nothing, which is exactly what ``doctor --probe`` used to do."""
+    capabilities = capabilities or probe
     results: list[CheckResult] = []
 
     if (root / ".opentorus").is_dir():
@@ -317,7 +320,10 @@ def _routing_checks(
 
     # routes ---------------------------------------------------------------------
     routing = config.governance.routing
-    known_profiles = {r.name for r in profile_reports}
+    # A report synthesised for an undefined ``models.default_profile`` is not a
+    # known profile: routes that end in it must be flagged, even though acquire
+    # falls back to the implicit ``default`` at run time.
+    known_profiles = {r.name for r in profile_reports if r.source != "models.default_profile"}
     unknown_routes = [
         f"{r.task_class} → {', '.join(n for n in r.candidates if n not in known_profiles)}"
         for r in route_reports

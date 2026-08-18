@@ -58,7 +58,6 @@ from opentorus.agent.control.policies.anti_loop import (
 )
 from opentorus.agent.control.policies.budget import CANCELLED_MESSAGE, STEP_CAP_MESSAGE
 from opentorus.agent.control.policies.completion import (
-    AlwaysComplete,
     CallableCompletion,
     NeverComplete,
 )
@@ -383,7 +382,6 @@ def test_no_progress_window_disabled_when_infinite() -> None:
 
 def test_completion_policies() -> None:
     assert NeverComplete().is_complete() is False
-    assert AlwaysComplete().is_complete() is True
     flag = {"done": False}
     policy = CallableCompletion(lambda: flag["done"])
     assert policy.is_complete() is False
@@ -518,7 +516,91 @@ def test_composite_policy_set_first_non_allow_wins() -> None:
     assert first_blocking([ok, ok]).allows
     assert first_blocking([ok, block, ok]) is block
     warn = PolicyDecision(action=PolicyAction.WARN, reason_code=ReasonCode.OK, message="hm")
-    assert first_blocking([ok, warn]) is warn
+    only_warn = first_blocking([ok, warn])
+    assert only_warn.action is PolicyAction.WARN and only_warn.message == "hm"
+    assert only_warn.metadata["warnings"] == ["hm"]
+
+
+def test_composite_policy_set_warning_does_not_hide_a_later_block() -> None:
+    """A WARN keeps the consultation going; its message travels with the final decision."""
+    calls: list[str] = []
+
+    class _Recording(NullPolicySet):
+        def __init__(self, tag: str, decision: PolicyDecision) -> None:
+            self.tag = tag
+            self.decision = decision
+
+        def before_tool(self, name: str, args: dict) -> PolicyDecision:
+            calls.append(self.tag)
+            return self.decision
+
+    ok = PolicyDecision(action=PolicyAction.ALLOW, reason_code=ReasonCode.OK)
+    warn_a = PolicyDecision(action=PolicyAction.WARN, reason_code=ReasonCode.OK, message="slow")
+    warn_b = PolicyDecision(action=PolicyAction.WARN, reason_code=ReasonCode.OK, message="costly")
+    block = PolicyDecision(
+        action=PolicyAction.BLOCK, reason_code=ReasonCode.TOOL_GATE_BLOCKED, message="no"
+    )
+    composite = CompositePolicySet(
+        [_Recording("a", warn_a), _Recording("b", ok), _Recording("c", block), _Recording("d", ok)]
+    )
+    decision = composite.before_tool("x", {})
+    assert decision.blocks and decision.message == "no"
+    assert decision.metadata["warnings"] == ["slow"]
+    assert calls == ["a", "b", "c"]  # the warning did not stop at "a"; "d" is after the block
+
+    # Warnings only: the first warning is returned with every warning attached.
+    calls.clear()
+    composite = CompositePolicySet([_Recording("a", warn_a), _Recording("b", warn_b)])
+    decision = composite.before_tool("x", {})
+    assert decision.action is PolicyAction.WARN and decision.message == "slow"
+    assert decision.metadata["warnings"] == ["slow", "costly"]
+    assert calls == ["a", "b"]
+    # A stop behind a warning wins too, and the original decisions are not mutated.
+    stop = PolicyDecision(action=PolicyAction.STOP, reason_code=ReasonCode.CANCELLED)
+    folded = first_blocking([warn_a, stop])
+    assert folded.stops and folded.metadata["warnings"] == ["slow"]
+    assert stop.metadata == {} and warn_a.metadata == {}
+
+
+# --- permission translation and the null sink --------------------------------------------------
+
+
+def test_permission_decision_to_policy_translates_all_three_outcomes() -> None:
+    from opentorus.agent.control.policies import permission_decision_to_policy
+    from opentorus.permissions.policy import PermissionDecision
+
+    denied = PermissionDecision(
+        allowed=False,
+        reason="Safe mode is read-only.",
+        requires_confirmation=False,
+        risk_level="high",
+    )
+    policy = permission_decision_to_policy(denied)
+    assert policy.blocks and policy.reason_code is ReasonCode.PERMISSION_DENIED
+    assert policy.message == "Blocked: Safe mode is read-only."
+    assert policy.metadata == {"risk_level": "high", "reason": "Safe mode is read-only."}
+
+    confirm = PermissionDecision(
+        allowed=True, requires_confirmation=True, reason="destructive command", risk_level="high"
+    )
+    policy = permission_decision_to_policy(confirm)
+    assert policy.action is PolicyAction.WARN and policy.allows and not policy.blocks
+    assert policy.message == "Requires confirmation: destructive command"
+
+    allowed = PermissionDecision(
+        allowed=True, reason="ok", requires_confirmation=False, risk_level="low"
+    )
+    policy = permission_decision_to_policy(allowed)
+    assert policy.action is PolicyAction.ALLOW and policy.reason_code is ReasonCode.OK
+    assert policy.message == "" and policy.metadata == {}
+
+
+def test_null_sink_discards_events() -> None:
+    from opentorus.agent.control import NullSink, TurnStarted
+
+    sink = NullSink()
+    assert sink.emit(TurnStarted(step=1, session_id="s")) is None
+    assert not hasattr(sink, "events")
 
 
 # --- phase machine -----------------------------------------------------------------------------

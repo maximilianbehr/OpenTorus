@@ -243,14 +243,40 @@ def _coverage_lines(ot_dir: Path, problem_id: str) -> list[CoverageLedgerLine]:
 
 
 def _all_coverage_ids(ot_dir: Path) -> Iterable[str]:
+    """Every assessment id across all problems' coverage ledgers (for ``next_id``).
+
+    Only the *write* path (:func:`record_coverage`) needs this, and it must scan
+    every problem's ledger because COV ids are workspace-wide. It reads the raw
+    JSON and plucks ``assessment.id`` instead of validating each line as a
+    ``CoverageLedgerLine``: id allocation needs no typed model, and validating
+    whole assessments (a dozen entries each) on every write grew linear in the
+    ledger size. Unparseable lines are skipped, exactly as ``read_jsonl`` does.
+    """
+    import json
+
     base = coverage_dir(ot_dir)
     if not base.is_dir():
         return []
     ids: list[str] = []
     for path in sorted(base.glob("*.jsonl")):
-        for line in read_jsonl(path, CoverageLedgerLine):
-            if line.assessment is not None and line.assessment.id:
-                ids.append(line.assessment.id)
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        payload = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    assessment = payload.get("assessment")
+                    ident = assessment.get("id") if isinstance(assessment, dict) else None
+                    if isinstance(ident, str) and ident:
+                        ids.append(ident)
+        except OSError:
+            continue
     return ids
 
 

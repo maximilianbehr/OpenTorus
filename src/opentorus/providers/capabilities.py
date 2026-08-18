@@ -12,8 +12,10 @@ answer, unioned in :func:`effective_capabilities`:
   --probe`` run, persisted in ``.opentorus/providers/capabilities.json``.
 
 ``acquire`` never probes online; only doctor does, and only when asked. The local
-predicate :func:`is_local_provider` lives here (hoisted from ``usage``) because it
-is a routing/egress policy predicate first and a cost predicate second.
+predicate :func:`is_local_provider` is *re-exported* here from ``opentorus.usage``:
+it is a routing/egress policy predicate as much as a cost predicate, but the usage
+ledger is the leaf of the import graph and must stay importable without the
+provider package.
 """
 
 from __future__ import annotations
@@ -26,6 +28,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, ValidationError
+
+# The local predicate is defined on the usage ledger (the import-graph leaf) and
+# re-exported here for the pool and doctor; see ``opentorus.usage.is_local_provider``.
+from opentorus.usage import is_local_base_url as is_local_base_url
+from opentorus.usage import is_local_provider as is_local_provider
 
 if TYPE_CHECKING:
     from opentorus.config import ModelProfile
@@ -86,40 +93,6 @@ CREDENTIAL_ENV_VARS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
 }
-
-
-def is_local_base_url(base_url: str | None) -> bool:
-    """True when an OpenAI-compatible endpoint is a loopback/private host (no API cost).
-
-    Running an OpenAI-compatible server locally (llama.cpp, vLLM, LM Studio, Ollama's
-    OpenAI shim, …) incurs no per-token cloud cost, so cost should read ``$0 (local)``
-    rather than ``$? (price unknown)`` just because the model name is not in the price
-    table.
-    """
-    if not base_url:
-        return False
-    from urllib.parse import urlparse
-
-    host = (urlparse(base_url).hostname or "").lower()
-    if not host:
-        return False
-    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or host.endswith(".local"):
-        return True
-    # RFC 1918 private ranges (a LAN inference box is still not a cloud API).
-    if host.startswith("10.") or host.startswith("192.168."):
-        return True
-    if host.startswith("172."):
-        parts = host.split(".")
-        if len(parts) >= 2 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
-            return True
-    return False
-
-
-def is_local_provider(provider: str, base_url: str | None = None) -> bool:
-    """A local provider genuinely costs nothing and sends nothing off-machine: mock or
-    ollama, or any provider whose ``base_url`` points at a loopback/private host (a
-    local OpenAI-compatible server)."""
-    return provider.lower() in {"mock", "ollama"} or is_local_base_url(base_url)
 
 
 def profile_is_local(profile: ModelProfile) -> bool:

@@ -35,14 +35,34 @@ class WorkflowPolicySet(Protocol):
 
 
 def first_blocking(decisions: Iterable[PolicyDecision]) -> PolicyDecision:
-    """The first decision that is not a plain ``ALLOW``, else ``ALLOW``.
+    """Fold an ordered sequence of decisions into the one the loop acts on.
 
-    A ``WARN`` counts as "not plain allow" so its message is not lost; callers that only
-    care about blocking/stopping check ``.blocks``/``.stops`` on the result.
+    Members are consulted in order until one **stops** or **blocks**; that decision
+    is returned. A ``WARN`` (or an ``ALLOW`` that carries a message) does not
+    short-circuit — later members must still get their say, otherwise a mere
+    warning would silence a real block behind it — but its message is not lost
+    either: every warning seen is collected into the returned decision's
+    ``metadata["warnings"]``. Without a stop/block the result is the first warning
+    (with all warnings attached), else ``ALLOW``.
     """
+    warnings: list[str] = []
+    first_warn: PolicyDecision | None = None
     for decision in decisions:
-        if not (decision.allows and not decision.message):
+        if decision.blocks or decision.stops:
+            if warnings:
+                return decision.model_copy(
+                    update={"metadata": {**decision.metadata, "warnings": list(warnings)}}
+                )
             return decision
+        if not (decision.allows and not decision.message):
+            if decision.message:
+                warnings.append(decision.message)
+            if first_warn is None:
+                first_warn = decision
+    if first_warn is not None:
+        return first_warn.model_copy(
+            update={"metadata": {**first_warn.metadata, "warnings": list(warnings)}}
+        )
     return ALLOW
 
 
@@ -66,10 +86,11 @@ class NullPolicySet:
 
 
 class CompositePolicySet:
-    """Ask each member in order; the first non-allow answer wins.
+    """Ask each member in order; the first stop/block answer wins, warnings accumulate.
 
     Members before the deciding one are still consulted (their hooks may keep state,
-    e.g. a stall window anchors itself on every call), members after it are not.
+    e.g. a stall window anchors itself on every call), members after it are not. A
+    warning never ends the consultation (see :func:`first_blocking`).
     """
 
     def __init__(self, members: Sequence[WorkflowPolicySet]) -> None:
@@ -77,7 +98,8 @@ class CompositePolicySet:
 
     @staticmethod
     def _ask(decisions: Iterable[PolicyDecision]) -> PolicyDecision:
-        # A lazy generator comes in, so members after the deciding one are not asked.
+        # A lazy generator comes in, so members after the stopping/blocking one are
+        # not asked; a warning keeps the generator going.
         return first_blocking(decisions)
 
     def before_turn(self, ctx: PolicyContext) -> PolicyDecision:

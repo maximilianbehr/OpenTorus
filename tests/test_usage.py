@@ -229,3 +229,22 @@ def test_is_local_provider_is_the_capabilities_predicate() -> None:
     from opentorus.usage import is_local_provider
 
     assert is_local_provider is hoisted
+
+
+def test_usage_module_is_an_import_graph_leaf() -> None:
+    """``opentorus.usage`` must import without dragging in the provider package.
+
+    The DLP/egress and cost predicates live on the ledger module so anything (CLI
+    start-up, governance, the campaign engine) can use them without paying for
+    ``providers/__init__`` (mock provider, agent session). Run in a subprocess so a
+    previous test's imports cannot mask a regression.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, opentorus.usage; "
+        "assert 'opentorus.providers.base' not in sys.modules, "
+        "sorted(m for m in sys.modules if m.startswith('opentorus.providers'))"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

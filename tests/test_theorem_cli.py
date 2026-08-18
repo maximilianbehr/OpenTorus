@@ -173,26 +173,35 @@ def test_check_with_claim_uses_dossier_context_and_exit_codes(tmp_path: Path, mo
     )
     before = [c.model_dump(mode="json") for c in dossier_store.list_claims(ot, "PROBLEM-0001")]
 
-    res = runner.invoke(
-        app,
-        [
-            "theorem",
-            "check",
-            "THMREF-0001",
-            "--problem",
-            "PROBLEM-0001",
-            "--claim",
-            claim.id,
-            "--json",
-        ],
-    )
+    check_args = [
+        "theorem",
+        "check",
+        "THMREF-0001",
+        "--problem",
+        "PROBLEM-0001",
+        "--claim",
+        claim.id,
+    ]
+    # An unreviewed (candidate) reference never comes out accepted, however well the
+    # rest of the checks go: the human review is the gate.
+    res = runner.invoke(app, [*check_args, "--json"])
+    assert res.exit_code == 0, res.stdout
+    unreviewed = json.loads(res.stdout)
+    assert unreviewed["result"] == "needs-human-review"
+    assert [c["name"] for c in unreviewed["checks"] if c["passed"] is False] == [
+        "reference_reviewed"
+    ]
+
+    review = ["theorem", "review", "THMREF-0001", "--status", "accepted", "--note", "read it"]
+    assert runner.invoke(app, review).exit_code == 0
+    res = runner.invoke(app, [*check_args, "--json"])
     assert res.exit_code == 0, res.stdout
     data = json.loads(res.stdout)
     assert data["result"] == "accepted"
     assert data["target_id"] == claim.id
     assert data["assumption_context"] == ["G is a finite group of order n"]
     assert data["claim_text"] == claim.statement
-    assert data["id"] == "THMAPP-0001"
+    assert data["id"] == "THMAPP-0002"
     after = [c.model_dump(mode="json") for c in dossier_store.list_claims(ot, "PROBLEM-0001")]
     assert after == before
 
@@ -247,13 +256,27 @@ def test_check_with_claim_uses_dossier_context_and_exit_codes(tmp_path: Path, mo
 
 
 def test_coverage_show_and_override(tmp_path: Path, monkeypatch) -> None:
-    _ot, pid = _setup(tmp_path, monkeypatch)
+    from opentorus.research.theorems import store
+
+    ot, pid = _setup(tmp_path, monkeypatch)
+    # A plain read derives the map and persists nothing: reading twice must not grow
+    # the ledger (each COV record is meant to mark a real assessment, not a look).
     res = runner.invoke(app, ["theorem", "coverage", "PROBLEM-0001", "--json"])
     assert res.exit_code == 0, res.stdout
     data = json.loads(res.stdout)
-    assert data["id"] == "COV-0001"
+    assert data["id"] == ""  # not recorded
     assert data["entries"]["known_counterexamples"]["level"] == "unknown"
     assert "known_counterexamples" in data["insufficient"]
+    assert runner.invoke(app, ["theorem", "coverage", "PROBLEM-0001", "--json"]).exit_code == 0
+    assert store.list_coverage_history(ot, "PROBLEM-0001") == []
+    res = runner.invoke(app, ["theorem", "coverage", "PROBLEM-0001"])
+    assert res.exit_code == 0 and "not recorded" in res.stdout
+
+    # ``--record`` appends exactly one assessment.
+    res = runner.invoke(app, ["theorem", "coverage", "PROBLEM-0001", "--record", "--json"])
+    assert res.exit_code == 0, res.stdout
+    assert json.loads(res.stdout)["id"] == "COV-0001"
+    assert [a.id for a in store.list_coverage_history(ot, "PROBLEM-0001")] == ["COV-0001"]
 
     res = runner.invoke(
         app,
@@ -280,6 +303,8 @@ def test_coverage_show_and_override(tmp_path: Path, monkeypatch) -> None:
     assert entry["evidence_ids"] == [pid]
     assert "definitions_notation" not in data["insufficient"]
     assert data["mode"] == "exploration"
+    assert data["id"] == "COV-0002"  # --set implies a recorded assessment
+    assert len(store.list_coverage_history(ot, "PROBLEM-0001")) == 2
 
     res = runner.invoke(app, ["theorem", "coverage", "PROBLEM-0001"])
     assert res.exit_code == 0

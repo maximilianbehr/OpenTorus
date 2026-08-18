@@ -419,3 +419,66 @@ def test_task_class_enum_and_aliases() -> None:
         decision_id="RTD-0001", task_class="x", created_at=_fixed_clock()
     )
     assert record.outcome == "selected"
+
+
+def test_budget_alerts_are_read_once_per_acquire(tmp_path: Path, monkeypatch) -> None:
+    """Three paid candidates over budget: the usage ledger is parsed once, not per candidate."""
+    from opentorus import governance
+    from opentorus.usage import UsageRecord, record_usage
+
+    ot = _ot(tmp_path)
+    config = default_config()
+    config.models.profiles = {
+        "p1": ModelProfile(provider="openai", name="model-a"),
+        "p2": ModelProfile(provider="openai", name="model-a"),
+        "p3": ModelProfile(provider="anthropic", name="model-a"),
+        "free": ModelProfile(provider="ollama", name="model-b"),
+    }
+    config.governance.routing.enabled = True
+    config.governance.routing.task_routes = {"narration": ["p1", "p2", "p3", "free"]}
+    config.governance.budgets.per_provider_usd = {"openai": 0.5, "anthropic": 0.5}
+    record_usage(ot, UsageRecord(provider="openai", model="model-a", cost_usd=0.6))
+    record_usage(ot, UsageRecord(provider="anthropic", model="model-a", cost_usd=0.6))
+    calls = {"n": 0}
+    original = governance.budget_alerts
+
+    def _counting(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(governance, "budget_alerts", _counting)
+    lease = ProviderPool(config, ot_dir=ot, factory=_factory).acquire(TaskClass.narration)
+    assert lease.profile_name == "free"
+    assert calls["n"] == 1
+    reasons = [v.reason for v in lease.decision.candidates_considered[:3]]
+    assert all("per-provider budget breached" in r for r in reasons)
+
+
+def test_unknown_default_profile_falls_back_to_the_implicit_default(tmp_path: Path) -> None:
+    """A typo in ``models.default_profile`` must not break every command: acquire falls
+    back to the ``model:`` block and says so in the recorded fallback reason."""
+    ot = _ot(tmp_path)
+    config = default_config()
+    config.models.default_profile = "typo"
+    pool = ProviderPool(config, ot_dir=ot)
+    assert pool.default_profile_defined() is False
+    assert pool.candidates(TaskClass.narration) == ["typo", "default"]
+    lease = pool.acquire(TaskClass.narration)
+    assert lease.profile_name == "default"
+    assert isinstance(lease.provider, MockProvider)
+    assert lease.decision.fallback_reason is not None
+    assert lease.decision.fallback_reason.startswith(
+        "models.default_profile 'typo' is not defined; using the implicit default profile"
+    )
+    assert lease.decision.candidates_considered[0].profile == "typo"
+    assert lease.decision.candidates_considered[0].eligible is False
+    # Routing enabled: the same fallback closes the candidate list.
+    config.governance.routing.enabled = True
+    config.models.profiles = {"a": ModelProfile(provider="ollama", name="model-a")}
+    config.governance.routing.task_routes = {"proof_development": ["a"]}
+    routed = ProviderPool(config, ot_dir=ot)
+    assert routed.candidates(TaskClass.narration) == ["typo", "default"]
+    assert routed.candidates(TaskClass.proof_development) == ["a", "typo", "default"]
+    # Doctor still flags the undefined name (a fallback is not a fix).
+    profiles, routes = routed.describe()
+    assert any("does not exist" in p for r in profiles for p in r.problems)

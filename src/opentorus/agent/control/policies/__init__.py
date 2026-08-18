@@ -18,7 +18,6 @@ from opentorus.agent.control.policies.budget import (
     WallClockPolicy,
 )
 from opentorus.agent.control.policies.completion import (
-    AlwaysComplete,
     CallableCompletion,
     CompletionPolicy,
     NeverComplete,
@@ -33,7 +32,6 @@ from opentorus.agent.control.policies.progress import NoProgressWindow
 
 __all__ = [
     "AcquisitionGuard",
-    "AlwaysComplete",
     "CallableCompletion",
     "CancellationPolicy",
     "ChatOnlyStallGuard",

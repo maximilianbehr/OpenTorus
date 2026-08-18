@@ -41,12 +41,6 @@ class NoProgressWindow:
         self.best = None
         self.anchor_step = None
 
-    def stalled_steps(self, step: int) -> int:
-        """Steps since the last progress (0 before the window is armed)."""
-        if self.anchor_step is None:
-            return 0
-        return step - self.anchor_step
-
     def check(self, step: int) -> PolicyDecision | None:
         """Consult the window at ``step``; ``None`` while progress is being made."""
         if math.isinf(self.window):

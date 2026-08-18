@@ -7,6 +7,7 @@ files remain readable by older code paths during development.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from importlib.resources import files
@@ -17,6 +18,8 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 
 from opentorus.errors import ConfigError
+
+_logger = logging.getLogger("opentorus")
 
 CONFIG_FILENAME = "config.yaml"
 
@@ -594,7 +597,15 @@ def render_commented_config(base_text: str, data: dict) -> str:
     section — a whole missing top-level section is appended at EOF as a block.
     Container values (dicts/lists) that live *under* such a missing mapping are
     emitted too (via indented ``yaml.safe_dump``): the file has no line for them
-    that could be preserved. Existing container lines are never rewritten.
+    that could be preserved.
+
+    An **empty** one-line container (``profiles: {}``, ``mcp: []``) whose value in
+    ``data`` is non-empty is replaced by a proper block (the header line at the same
+    indent, the value below it via indented ``yaml.safe_dump``): the file has nothing
+    inside it worth preserving, and leaving the line alone would silently drop what
+    the caller set (``models.profiles``, ``routing.task_routes``). A *non-empty*
+    one-line container (``{a: 1}``, ``[x]``) is a hand-edit surface and is left
+    untouched; :func:`write_config` reports what that dropped.
     """
     out: list[str] = []
     stack: list[tuple[int, str]] = []  # (indent, key) of open mapping parents
@@ -631,6 +642,18 @@ def render_commented_config(base_text: str, data: dict) -> str:
             continue
         if value_part.rstrip() in ("[]", "{}"):
             container_paths.add(tuple(path))
+            found, val = _lookup(data, path)
+            empty_kind = dict if value_part.rstrip() == "{}" else list
+            if found and isinstance(val, empty_kind) and val:
+                # The empty container has children now: render it as a block in place.
+                dumped = yaml.safe_dump(
+                    {key: val}, sort_keys=False, allow_unicode=True, default_flow_style=False
+                )
+                pad = match.group(1)
+                out.extend(
+                    pad + text if text else text for text in dumped.rstrip("\n").splitlines()
+                )
+                continue
             out.append(line)
             continue
         seen.add(tuple(path))
@@ -692,15 +715,57 @@ def render_commented_config(base_text: str, data: dict) -> str:
     return "\n".join(out) + trailing
 
 
+def dropped_leaves(rendered: str, data: dict) -> list[str]:
+    """Dotted paths of scalar leaves in ``data`` that ``rendered`` does not carry.
+
+    ``render_commented_config`` leaves a non-empty one-line container alone, so a
+    value set under it never reaches the file. Re-parsing the rendered text and
+    comparing scalar leaves is the honest check: it names exactly what was lost
+    instead of assuming the render was complete.
+    """
+    try:
+        parsed = yaml.safe_load(rendered) or {}
+    except yaml.YAMLError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    # Compare what a *load* of the file yields, so a key the file merely omits (and
+    # that loads back as its default) is not reported as lost.
+    try:
+        parsed = Config.model_validate(parsed).model_dump(mode="json")
+    except Exception:  # noqa: BLE001 — an unloadable render still reports raw leaves
+        pass
+    dropped: list[str] = []
+    for leaf in _scalar_leaves(data):
+        _, wanted = _lookup(data, list(leaf))
+        found, actual = _lookup(parsed, list(leaf))
+        if not found or actual != wanted:
+            dropped.append(".".join(leaf))
+    return dropped
+
+
 def write_config(path: Path, config: Config) -> None:
     """Persist a :class:`Config`, preserving the inline field documentation.
 
     Scalar values are written into the existing commented ``config.yaml`` (or the
     annotated default template on first write), so the per-field comments survive
-    ``opentorus config set``.
+    ``opentorus config set``. A value that could not be written because it lives
+    under a hand-edited one-line container is reported by name (never silently
+    lost).
     """
     base_text = path.read_text(encoding="utf-8") if path.exists() else default_config_yaml()
-    path.write_text(render_commented_config(base_text, config.model_dump(mode="json")), "utf-8")
+    data = config.model_dump(mode="json")
+    rendered = render_commented_config(base_text, data)
+    path.write_text(rendered, "utf-8")
+    lost = dropped_leaves(rendered, data)
+    if lost:
+        _logger.warning(
+            "config: %d value(s) were not written to %s because they live under a one-line "
+            "container that was left as written (%s); edit that line by hand.",
+            len(lost),
+            path,
+            ", ".join(lost),
+        )
 
 
 def _coerce(value: str) -> object:

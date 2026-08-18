@@ -14,7 +14,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from opentorus.errors import OpenTorusError
 from opentorus.research.paper_citations import _THM_LABEL, paper_corpus
@@ -34,6 +34,11 @@ from opentorus.research.theorems.models import (
     SourceLocator,
     TheoremReference,
 )
+
+if TYPE_CHECKING:
+    from opentorus.config import Config
+    from opentorus.providers.base import BaseProvider
+    from opentorus.providers.pool import ProviderLease, ProviderPool
 
 logger = logging.getLogger("opentorus")
 
@@ -291,40 +296,31 @@ def _as_int(value: Any) -> int | None:
     return None
 
 
-def _acquire_provider(ot_dir: Path, pool: Any, provider: Any, config: Any) -> tuple[Any, Any]:
-    """``(provider, lease)``: via the routing pool when available, else the given provider.
+def _acquire_provider(
+    ot_dir: Path,
+    pool: ProviderPool | None,
+    provider: BaseProvider | None,
+    config: Config | None,
+) -> tuple[BaseProvider, ProviderLease | None]:
+    """``(provider, lease)``: via the routing pool, else the explicitly given provider.
 
-    The pool (``opentorus.providers.pool``) may not exist in every build; falling
-    back to the explicitly passed provider keeps this module usable without it.
+    An explicit ``pool`` is used as is; with neither pool nor provider one is built
+    for the workspace so ``theorem_extraction`` is routed and recorded like every
+    other task class. Only an explicitly passed ``provider`` bypasses the pool (a
+    test double, or a caller that already leased). The pool import is lazy so the
+    heuristic path never pays for the provider package.
     """
-    lease = None
-    task: Any = "theorem_extraction"
-    try:
-        from opentorus.providers.pool import TaskClass
+    from opentorus.providers.pool import TaskClass, build_pool
 
-        task = TaskClass.theorem_extraction
-    except (ImportError, AttributeError):
-        pass
-    if pool is None and provider is None:
-        try:
-            from opentorus.providers.pool import build_pool
-
-            cfg = config if config is not None else _load_config(ot_dir)
-            pool = build_pool(cfg, ot_dir)
-        except (ImportError, AttributeError):
-            pool = None
-    if pool is not None:
-        lease = pool.acquire(task)
-        return lease.provider, lease
-    if provider is None:
-        from opentorus.providers.registry import get_provider
-
-        cfg = config if config is not None else _load_config(ot_dir)
-        provider = get_provider(cfg)
-    return provider, None
+    if pool is None and provider is not None:
+        return provider, None
+    if pool is None:
+        pool = build_pool(config if config is not None else _load_config(ot_dir), ot_dir)
+    lease = pool.acquire(TaskClass.theorem_extraction)
+    return lease.provider, lease
 
 
-def _load_config(ot_dir: Path) -> Any:
+def _load_config(ot_dir: Path) -> Config:
     from opentorus.config import CONFIG_FILENAME, default_config, load_config
 
     path = ot_dir / CONFIG_FILENAME
@@ -336,9 +332,9 @@ def extract_with_llm(
     paper_id: str,
     *,
     problem_id: str | None = None,
-    pool: Any = None,
-    provider: Any = None,
-    config: Any = None,
+    pool: ProviderPool | None = None,
+    provider: BaseProvider | None = None,
+    config: Config | None = None,
 ) -> list[TheoremReference]:
     """Ask a model to structure the paper's results; keep only locatable candidates.
 

@@ -38,6 +38,22 @@ def _acquire_provider(config, ot_dir, task_class: str):  # noqa: ANN001, ANN202
     return lease.provider, lease
 
 
+def _lease_config(config, lease):  # noqa: ANN001, ANN202
+    """The config whose ``model:`` block is the *leased* profile.
+
+    Checks that read ``config.model`` (tool-calling verification, the Ollama host, the
+    model name in warnings) must look at the profile the pool selected, not at the
+    workspace default profile — otherwise a routed lease is verified against a model
+    it is not. With routing disabled the lease *is* the implicit default profile, so
+    the derived config equals the workspace config and behaviour is unchanged.
+    """
+    if lease is None:
+        return config
+    from opentorus.providers.pool import profile_config
+
+    return profile_config(config, lease.profile)
+
+
 @app.command()
 def chat() -> None:
     """Start the interactive OpenTorus session."""
@@ -456,11 +472,13 @@ def research(
     # Acquire through the provider pool so a configured route for narration is the
     # provider that actually answers (recorded in usage/routing.jsonl). With routing
     # disabled the pool hands back the default profile, i.e. exactly get_provider(config).
-    provider, _lease = _acquire_provider(config, base, "narration")
+    provider, lease = _acquire_provider(config, base, "narration")
     from opentorus.providers.tool_support import require_tool_calling_provider
 
     require_tool_calling_provider(
-        provider, config, warn=lambda m: console.print(f"[yellow]{m}[/yellow]")
+        provider,
+        _lease_config(config, lease),
+        warn=lambda m: console.print(f"[yellow]{m}[/yellow]"),
     )
     # Explicit target wins; otherwise findings attach to the active problem (or stay
     # unattributed) — they are never silently filed under an arbitrary dossier.
@@ -648,7 +666,9 @@ def prove(
         from opentorus.providers.tool_support import require_tool_calling_provider
 
         require_tool_calling_provider(
-            provider, config, warn=lambda m: console.print(f"[yellow]{m}[/yellow]")
+            provider,
+            _lease_config(config, lease),
+            warn=lambda m: console.print(f"[yellow]{m}[/yellow]"),
         )
         stream_llm = stream_llm and provider.supports_streaming
         if indicator is not None:
@@ -805,8 +825,8 @@ def doctor_cmd(
         False,
         "--probe",
         help=(
-            "With --capabilities: probe every non-mock profile online for tool calling "
-            "(costs one model call each) and cache the result."
+            "Probe every non-mock profile online for tool calling (costs one model call "
+            "each) and cache the result. Implies --capabilities."
         ),
     ),
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),

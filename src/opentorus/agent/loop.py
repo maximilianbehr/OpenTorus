@@ -24,7 +24,7 @@ from pathlib import Path
 
 from opentorus.agent.context import build_messages
 from opentorus.agent.control import legacy as _legacy_texts
-from opentorus.agent.control.events import RunEventSink, RunStopped, TurnStarted
+from opentorus.agent.control.events import RunEvent, RunEventSink, RunStopped, TurnStarted
 from opentorus.agent.control.legacy import LegacyCallbackPolicySet
 from opentorus.agent.control.models import (
     PolicyAction,
@@ -560,11 +560,38 @@ class AgentLoop:
             session_id=self.session_id,
         )
 
+    def _emit(self, event: RunEvent) -> None:
+        """Hand an event to the sink without letting a sink failure end the run.
+
+        ``events.RunEventSink`` says a sink never raises; the loop enforces it because
+        it — not the sink — would otherwise lose the final answer.
+        """
+        if self.event_sink is None:
+            return
+        try:
+            self.event_sink.emit(event)
+        except Exception as exc:  # noqa: BLE001 — a sink must never abort the loop
+            _logger.debug("Event sink raised on %s: %s", type(event).__name__, exc)
+
     def _emit_stop(self, decision: PolicyDecision) -> None:
-        if self.event_sink is not None:
-            self.event_sink.emit(
-                RunStopped(step=self.steps_run, session_id=self.session_id, decision=decision)
-            )
+        self._emit(RunStopped(step=self.steps_run, session_id=self.session_id, decision=decision))
+
+    def _provider_kind(self) -> str:
+        """The provider *kind* actually answering (``ollama``, ``openai``, ...).
+
+        A routed lease is built from a profile, so the provider's own ``config`` is
+        authoritative; a bare provider's ``name`` comes next; the workspace
+        ``config.model.provider`` (the default profile) is the last resort. Deciding
+        Ollama-only behaviour from the default profile would mis-drive a leased
+        provider of another kind.
+        """
+        provider_cfg = getattr(getattr(self.provider, "config", None), "model", None)
+        kind = getattr(provider_cfg, "provider", None) if provider_cfg is not None else None
+        if not kind:
+            kind = getattr(self.provider, "name", None)
+        if not kind:
+            kind = self.config.model.provider
+        return str(kind)
 
     def _stop_run(self, decision: PolicyDecision) -> str:
         """Record a policy stop: append the message as the assistant turn, emit, log."""
@@ -610,8 +637,7 @@ class AgentLoop:
         for _ in StepCapPolicy(self.max_steps).steps():
             self.steps_run += 1
             self._runner.step = self.steps_run
-            if self.event_sink is not None:
-                self.event_sink.emit(TurnStarted(step=self.steps_run, session_id=self.session_id))
+            self._emit(TurnStarted(step=self.steps_run, session_id=self.session_id))
             # External cancellation (a campaign engine pausing, a caller's Ctrl-C proxy):
             # honoured before spending anything on this step.
             cancel = self._runner.check_cancel()
@@ -653,7 +679,7 @@ class AgentLoop:
                 self._deliverable.needs_deliverable(planned_task)
                 and not self._session_ready()
                 and deliverable_retries > 0
-                and self.config.model.provider == "ollama"
+                and self._provider_kind() == "ollama"
             ):
                 tool_choice = "required"
             try:

@@ -116,6 +116,140 @@ def test_request_screens_outbound_for_cloud_providers(tmp_path: Path) -> None:
     assert provider.calls == [] and read_usage(ot, "s3") == []
 
 
+def _configured(provider: ScriptedProvider, *, kind: str, base_url: str | None) -> ScriptedProvider:
+    """Give a scripted double the ``config`` a pool-built provider carries.
+
+    Real providers keep the profile-derived ``Config`` they were built from, so the
+    runner can read the endpoint the lease actually talks to.
+    """
+    cfg = default_config()
+    cfg.model.provider = kind  # type: ignore[assignment]
+    cfg.model.name = provider.model_name or cfg.model.name
+    cfg.model.base_url = base_url
+    provider.config = cfg  # type: ignore[attr-defined]
+    return provider
+
+
+_SECRET_MESSAGE = "key sk-abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def test_dlp_follows_the_leased_provider_not_the_default_profile(tmp_path: Path) -> None:
+    """A cloud lease is screened even when the workspace default profile is local.
+
+    The default ``model:`` block points at a local server (exempt from DLP), but the
+    provider in use is an OpenAI lease built from another profile: the secret must
+    not leave the machine.
+    """
+    from opentorus.agent.session import SessionMessage
+
+    ot, config, registry = _workspace(tmp_path)
+    config.governance.dlp = True
+    config.model.base_url = "http://localhost:8000/v1"
+    provider = _configured(
+        ScriptedProvider([message("never")], name="openai", model_name="gpt-4o"),
+        kind="openai",
+        base_url="https://api.openai.com/v1",
+    )
+    runner = TurnRunner(tmp_path, ot, provider, registry, config, session_id="s-lease")
+    turn = runner.request([SessionMessage(role="user", content=_SECRET_MESSAGE)])
+    assert turn.response is None and turn.stop is not None
+    assert turn.stop.reason_code is ReasonCode.EGRESS_BLOCKED
+    assert provider.calls == [] and read_usage(ot, "s-lease") == []
+
+
+def test_dlp_exempts_a_local_lease_even_when_the_default_profile_is_cloud(
+    tmp_path: Path,
+) -> None:
+    """The mirror case: workspace default is a cloud endpoint, the lease is local."""
+    from opentorus.agent.session import SessionMessage
+
+    ot, config, registry = _workspace(tmp_path)
+    config.governance.dlp = True
+    config.model.provider = "openai"  # type: ignore[assignment]
+    config.model.base_url = "https://api.openai.com/v1"
+    provider = _configured(
+        ScriptedProvider([message("ok")], name="openai", model_name="local-llm"),
+        kind="openai",
+        base_url="http://localhost:8000/v1",
+    )
+    runner = TurnRunner(tmp_path, ot, provider, registry, config, session_id="s-local")
+    turn = runner.request([SessionMessage(role="user", content=_SECRET_MESSAGE)])
+    assert turn.stop is None and turn.response is not None and turn.response.content == "ok"
+    assert len(provider.calls) == 1
+
+
+def test_dlp_falls_back_to_the_workspace_profile_without_a_provider_config(
+    tmp_path: Path,
+) -> None:
+    """A provider without ``config`` (test doubles, the mock) is judged by ``model:``."""
+    from opentorus.agent.session import SessionMessage
+
+    ot, config, registry = _workspace(tmp_path)
+    config.governance.dlp = True
+    config.model.base_url = "http://localhost:8000/v1"
+    provider = ScriptedProvider([message("ok")], name="openai")
+    runner = TurnRunner(tmp_path, ot, provider, registry, config, session_id="s-fb")
+    turn = runner.request([SessionMessage(role="user", content=_SECRET_MESSAGE)])
+    assert turn.stop is None and turn.response is not None
+
+
+def test_cost_estimate_uses_the_leased_providers_endpoint(tmp_path: Path) -> None:
+    """Pricing follows the provider in use: a cloud lease costs money even when the
+    default profile is local, and a local lease is free even when the default is cloud."""
+    from opentorus.providers.base import ProviderResponse, TokenUsage
+
+    ot, config, registry = _workspace(tmp_path)
+    config.model.base_url = "http://localhost:8000/v1"  # default profile: local
+    priced = ProviderResponse(
+        kind="message",
+        content="hi",
+        usage=TokenUsage(prompt_tokens=1_000_000, completion_tokens=0),
+    )
+    cloud = _configured(
+        ScriptedProvider([priced], name="openai", model_name="gpt-4o"),
+        kind="openai",
+        base_url="https://api.openai.com/v1",
+    )
+    TurnRunner(tmp_path, ot, cloud, registry, config, session_id="cloud").request([])
+    (record,) = read_usage(ot, "cloud")
+    assert record.cost_usd == 2.50  # gpt-4o input price per 1M tokens, not $0 (local)
+
+    config.model.base_url = "https://api.openai.com/v1"  # default profile: cloud
+    local = _configured(
+        ScriptedProvider([priced], name="openai", model_name="gpt-4o"),
+        kind="openai",
+        base_url="http://localhost:8000/v1",
+    )
+    TurnRunner(tmp_path, ot, local, registry, config, session_id="local").request([])
+    (record,) = read_usage(ot, "local")
+    assert record.cost_usd == 0.0
+
+
+# --- event sink robustness ------------------------------------------------------------------
+
+
+class _RaisingSink:
+    """A sink that violates the contract; the loop must survive it."""
+
+    def __init__(self) -> None:
+        self.seen = 0
+
+    def emit(self, event: object) -> None:
+        self.seen += 1
+        raise RuntimeError("sink exploded")
+
+
+def test_a_raising_sink_never_aborts_the_run(tmp_path: Path) -> None:
+    ot, config, registry = _workspace(tmp_path)
+    sink = _RaisingSink()
+    provider = ScriptedProvider([tool_call("status"), message("done")])
+    loop = AgentLoop(tmp_path, ot, provider, registry, config, max_steps=5, event_sink=sink)
+    assert loop.run("do it") == "done"
+    assert sink.seen >= 4  # turn started, turn completed, tool executed, run stopped
+    assert loop.tools_used_this_run == ["status"]
+    assert len(read_usage(ot)) == 2  # usage is still recorded after the sink raised
+
+
 # --- tool execution -----------------------------------------------------------------------
 
 

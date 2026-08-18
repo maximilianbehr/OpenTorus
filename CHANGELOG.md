@@ -6,6 +6,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Locality follows the provider that sends the bytes.** Pre-egress DLP, cost
+  estimation (`$0 (local)`), the tool-calling check and Ollama's forced `tool_choice`
+  were decided from the workspace `model:` block even when a routed lease was built
+  from another profile; a cloud lease under a local default profile was never
+  screened. They now read the leased provider's own config.
+- **A theorem reference nobody has accepted can no longer come out `accepted`.**
+  `check_applicability` gained an ordered `reference_reviewed` check (candidate ->
+  at most needs-human-review, rejected -> rejected), and a context relation covers
+  only the hypotheses its rationale names, evaluated per hypothesis.
+- **`theorem coverage` no longer appends a `COV-` record on every read**; `--record`
+  (or `--set`) persists one.
+- **`write_config` renders a non-empty value into an empty one-line container**
+  (`profiles: {}`, `task_routes: {}`, `campaign: {}`) as a block instead of dropping
+  it, and warns by name about leaves it could not place under a hand-written flow
+  container.
+- **An unknown `models.default_profile` falls back to the implicit `default`
+  profile** (recorded as the fallback reason) instead of failing every command;
+  `doctor` still flags it. `doctor --probe` implies `--capabilities`.
+- A run event sink that raises no longer aborts the loop; a policy `WARN` no longer
+  hides a later `BLOCK`/`STOP` (warnings travel in `metadata["warnings"]`).
+- `opentorus.usage` is an import-graph leaf again (the local-provider predicate lives
+  there; `providers.capabilities` re-exports it).
+
 ## [0.0.14] — 2026-08-18
 
 The worst defect in this series, and it never produced an error message. The argument

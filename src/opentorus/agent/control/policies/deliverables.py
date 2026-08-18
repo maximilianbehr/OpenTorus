@@ -13,9 +13,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from opentorus.agent.control.legacy import DEFAULT_HINTS, HintTexts, pre_deliverable_block_message
 from opentorus.tools.base import ToolResult
+
+if TYPE_CHECKING:
+    from opentorus.research.tasks import Task
 
 
 def default_satisfied_by(name: str, result: ToolResult) -> bool:
@@ -62,7 +66,7 @@ class DeliverablePolicy:
             return True
         return False
 
-    def needs_deliverable(self, planned_task: object | None) -> bool:
+    def needs_deliverable(self, planned_task: Task | None) -> bool:
         """Does this run have anything it must produce (task, bootstrap, or gate)?"""
         return (
             planned_task is not None or self.bootstrap is not None or self.session_gate is not None
@@ -90,13 +94,13 @@ class DeliverablePolicy:
     # --- what the model is told ------------------------------------------------------
 
     def recovery_hint(
-        self, planned_task: object | None, attempt: int, tool_calls_this_run: int
+        self, planned_task: Task | None, attempt: int, tool_calls_this_run: int
     ) -> str:
         """The hint for a chat-only turn while the deliverable is missing."""
         if planned_task is not None:
             from opentorus.agent.task_bootstrap import recovery_hint_for_task
 
-            return recovery_hint_for_task(planned_task, attempt=attempt)  # type: ignore[arg-type]
+            return recovery_hint_for_task(planned_task, attempt=attempt)
         if self.session_gate is not None:
             if self.session_recovery_hint is not None:
                 return self.session_recovery_hint()
@@ -115,7 +119,7 @@ class DeliverablePolicy:
         return self.hints.prove_gaps_recovery
 
     def bootstrap_call(
-        self, planned_task: object | None, root: Path, ot_dir: Path
+        self, planned_task: Task | None, root: Path, ot_dir: Path
     ) -> tuple[str, dict] | None:
         """The tool call to fire when the model will not: per task, else the bootstrap.
 
@@ -126,7 +130,7 @@ class DeliverablePolicy:
         if planned_task is not None:
             from opentorus.agent.task_bootstrap import bootstrap_tool_for_task
 
-            return bootstrap_tool_for_task(planned_task, root, ot_dir)  # type: ignore[arg-type]
+            return bootstrap_tool_for_task(planned_task, root, ot_dir)
         if self.bootstrap is not None and not self.in_gap_fill():
             return self.bootstrap
         return None

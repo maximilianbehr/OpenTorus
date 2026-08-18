@@ -25,10 +25,3 @@ class NeverComplete:
 
     def is_complete(self) -> bool:
         return False
-
-
-class AlwaysComplete:
-    """A run with no deliverable: the first final answer ends it."""
-
-    def is_complete(self) -> bool:
-        return True

@@ -142,18 +142,22 @@ runs these checks in order and records each as a `CheckItem{name, passed, detail
 
 | # | check | when it fails -> verdict |
 |---|---|---|
-| 1 | `paper_exists` | rejected |
-| 2 | `locator_resolves` (`validate_locator.ok`) | rejected |
-| 3 | `statement_observed` (context found and hash matches) | inconclusive (`source text changed since extraction`) |
-| 4 | `hypotheses_represented` (reference has assumptions) | inconclusive |
-| 5 | `context_implies_hypotheses` (each hypothesis is a substring of / has token-Jaccard >= 0.6 with a context sentence, or a context THMREF declares `implies`/`requires-definition` towards this reference) | needs-human-review |
-| 6 | `conclusion_supports_claim` (token overlap >= 0.3) | inconclusive |
-| 7 | `direction` (converse needs an `equivalent-to` relation) | rejected |
-| 8 | `quantifier_agreement` (universal vs existential words in reference vs claim) | rejected |
-| 9 | `domain_agreement` (finite/infinite, compact, smooth, real/complex, prime, integer, bounded, connected, convex and `d = 3`-style parameters present in the hypotheses but absent from or contradicted by the context + claim text) | rejected, named mismatch |
-| 10 | `not_contradicted` (`contradicts` edge to an *accepted* reference) | rejected |
+| 1 | `reference_reviewed` (the reference's `review_status`) | `candidate` -> needs-human-review; `rejected` -> rejected |
+| 2 | `paper_exists` | rejected |
+| 3 | `locator_resolves` (`validate_locator.ok`) | rejected |
+| 4 | `statement_observed` (context found and hash matches) | inconclusive (`source text changed since extraction`) |
+| 5 | `hypotheses_represented` (reference has assumptions) | inconclusive |
+| 6 | `context_implies_hypotheses` — evaluated **per hypothesis**: each one is a substring of / has token-Jaccard >= 0.6 with a context sentence, or with the `rationale` of a non-rejected `implies`/`requires-definition` relation from a context THMREF towards this reference. A relation covers only the hypotheses its rationale names; a relation with an empty or unrelated rationale covers none | needs-human-review |
+| 7 | `conclusion_supports_claim` (token overlap >= 0.3) | inconclusive |
+| 8 | `direction` (converse needs an `equivalent-to` relation) | rejected |
+| 9 | `quantifier_agreement` (universal vs existential words in reference vs claim) | rejected |
+| 10 | `domain_agreement` (finite/infinite, compact, smooth, real/complex, prime, integer, bounded, connected, convex and `d = 3`-style parameters present in the hypotheses but absent from or contradicted by the context + claim text) | rejected, named mismatch |
+| 11 | `not_contradicted` (`contradicts` edge to an *accepted* reference) | rejected |
 
 Result precedence: `rejected > needs-human-review > inconclusive > accepted`.
+Because of check 1, only a reference a human has accepted (`theorem review
+--status accepted`) can ever come out `accepted`; a model-extracted candidate is
+at best `needs-human-review` no matter how well the other checks go.
 `performed_by` is `deterministic`; `proposed_analysis` (an LLM's prose, task
 class `verification_support`) is stored verbatim and never influences the
 result. `assumption_context` entries may be sentences or THMREF ids. The
@@ -204,7 +208,7 @@ opentorus theorem check THMREF-0001 --problem PROBLEM-0001 --claim CLAIM-0003 [-
 opentorus theorem check THMREF-0001 --problem PROBLEM-0001 --claim-text "..." --assume "G is a finite group" [--direction converse]
 opentorus theorem review THMREF-0001 --status accepted --note "read the statement on p.3" \
     --category strongest_known_positive_results --root-relation supporting --problem PROBLEM-0001
-opentorus theorem coverage PROBLEM-0001 [--mode exploration] [--json]
+opentorus theorem coverage PROBLEM-0001 [--mode exploration] [--record] [--json]
 opentorus theorem coverage PROBLEM-0001 --set definitions_notation adequate --evidence PAPER-0001 --note "section 2"
 ```
 
@@ -213,6 +217,9 @@ assumptions (plus any `--assume`) form the context. `theorem review` is also
 where a human classifies a reference: `--category` (repeatable) sets the
 coverage categories it covers, `--root-relation` its relation to the problem
 and `--problem` its attribution; omitted options leave those fields untouched.
+`theorem coverage` without options is a read: the map is derived on the fly and
+nothing is appended to the coverage ledger (`id` is empty in `--json`); a
+`COV-NNNN` assessment is recorded only with `--record` or as part of `--set`.
 Exit codes: 0 ok, 1 error
 (unknown paper/reference/claim, unparsed paper, bad status/relation/category),
 2 when `check` results in `rejected` so scripts can gate on it.
