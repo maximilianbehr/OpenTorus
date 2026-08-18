@@ -13,7 +13,8 @@
 # (arXiv:0709.2201) is not accepted by the community.
 #
 # Prerequisites: `opentorus` on PATH; Docker; a tool-calling model (defaults to
-# a local Ollama server on :11434; override with OPENTORUS_MODEL / OPENTORUS_BASE_URL).
+# a local Ollama server on :11434; override with OPENTORUS_MODEL / OPENTORUS_BASE_URL; the campaign budget with
+# OPENTORUS_BRANCHES / OPENTORUS_MAX_STEPS / OPENTORUS_MAX_WALL_SECONDS).
 # WARNING: step 1 runs `rm -rf .opentorus` in this directory.
 # Usage: ./graceful_tree.sh [PROBLEM-ID]   (defaults to PROBLEM-0001)
 # ============================================================================
@@ -120,7 +121,22 @@ opentorus problem claim "${TARGET}" --type CONJECTURE \
 opentorus problem verdict "${TARGET}" --set-primary CLAIM-0001
 
 # --- 6. Dual-track campaign run ----------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 5
+# (was: opentorus --verbose prove "${TARGET}" --min-papers 5)
+# The campaign engine replaces the single prove session: a portfolio of branches
+# (proof, counterexample, literature, formalization, ...) against the designated
+# primary claim, scheduled and budgeted, pausable and resumable, replayable. The
+# budget below bounds the run; every axis can be overridden from the environment.
+# A finished campaign is orchestration state -- the mathematical status still comes
+# from `opentorus problem verdict` (derived from accepted dossier artifacts only).
+opentorus --verbose campaign start "${TARGET}" --mode prove-or-refute \
+  --branches "${OPENTORUS_BRANCHES:-4}" \
+  --max-steps "${OPENTORUS_MAX_STEPS:-200}" \
+  --max-wall-seconds "${OPENTORUS_MAX_WALL_SECONDS:-0}"
+CAMPAIGN="$(opentorus campaign list --problem "${TARGET}" --json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)[-1]["campaign_id"])')"
+opentorus campaign status "${CAMPAIGN}"
+opentorus campaign tree "${CAMPAIGN}"
+opentorus campaign verify "${CAMPAIGN}"   # replay the event log against the snapshot
 
 # --- 7. Honest report + verdict + PDF ----------------------------------------
 opentorus problem report "${TARGET}"

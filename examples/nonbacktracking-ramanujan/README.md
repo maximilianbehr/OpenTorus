@@ -38,7 +38,7 @@ eigenvalues above $\sqrt\rho$ — the honest open question is the connected exac
 `nonbacktracking_ramanujan.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with **nauty** geng + numpy/scipy/sympy → four audit-verified
 papers → dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 5` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 The instance program: NB spectra via the Ihara–Bass reduction over all small connected
 graphs, exact integer-polynomial certificates for the minimisers and the gadget family

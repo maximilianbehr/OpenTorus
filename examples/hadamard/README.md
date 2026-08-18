@@ -37,7 +37,7 @@ conjecture counterexamples.
 
 `hadamard.sh` follows the campaign template: fresh workspace → config (timeout 2400s) →
 container with numpy/sympy/python-sat → three audit-verified papers → dossier →
-**driver-created primary claim** + `verdict --set-primary` → `prove --min-papers 5` →
+**driver-created primary claim** + `verdict --set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) →
 report + lint → `problem verdict` → PDF.
 
 Dual track with an honest asymmetry: the "refutation" of an order is a nonexistence

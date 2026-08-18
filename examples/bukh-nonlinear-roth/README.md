@@ -38,7 +38,7 @@ pattern-free.
 `bukh_nonlinear_roth.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with python-sat + sympy → four audit-verified papers →
 dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 4` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 The instance program is exact end to end: forbidden pairs/triples in $\mathbb{F}_p$,
 maximum pattern-free sets by SAT with cardinality bisection, explicit extremal sets and

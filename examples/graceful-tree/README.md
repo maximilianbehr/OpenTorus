@@ -17,7 +17,7 @@ accepted by the community and is classified as an unaccepted claim in the dossie
 Built from [CAMPAIGN_TEMPLATE.md](../CAMPAIGN_TEMPLATE.md): fresh workspace → config →
 container (networkx, z3-solver, sympy) → three audit-verified source papers → dossier →
 **driver-designated primary claim** (`problem claim` + `problem verdict --set-primary`) →
-`prove --min-papers 5` → report + lint + **`problem verdict`** (scope check + terminal
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint + **`problem verdict`** (scope check + terminal
 classification) → PDF.
 
 Dual track: the refutation side treats per-tree gracefulness as a finite CSP — an UNSAT

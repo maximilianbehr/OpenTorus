@@ -29,7 +29,7 @@ as an unverified claim.
 
 `distinct_subset_sums.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with sympy/OR-Tools/python-sat → three audit-verified papers →
-dossier → **driver-created primary claim** + `verdict --set-primary` → `prove --min-papers 5`
+dossier → **driver-created primary claim** + `verdict --set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards)
 → report + lint → `problem verdict` → PDF.
 
 Dual track: the refutation side searches for sum-distinct sets with small maximum at

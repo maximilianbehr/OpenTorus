@@ -26,7 +26,7 @@ proofs circulate periodically without acceptance; the run re-checks and classifi
 
 `frankl.sh` follows the campaign template: fresh workspace → config (timeout 2400s) →
 `python-sci` container with z3 → three audit-verified papers → dossier from `notes.md` →
-**driver-created primary claim** + `verdict --set-primary` → `prove --min-papers 5` →
+**driver-created primary claim** + `verdict --set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) →
 report + lint → `problem verdict` (scope check + terminal classification) → PDF.
 
 Dual track: the refutation side searches union-closed families with all abundances below

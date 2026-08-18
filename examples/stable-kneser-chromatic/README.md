@@ -38,7 +38,7 @@ seconds to minutes; $KG_3(17,4)$ resisted a naive encoding.
 `stable_kneser_chromatic.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with networkx + python-sat → four audit-verified papers →
 dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 5` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 Every instance is a finite theorem: SAT with symmetry breaking on the cyclic action gives
 the colouring (SAT side) and a DRAT-certified UNSAT for one colour fewer, verified via

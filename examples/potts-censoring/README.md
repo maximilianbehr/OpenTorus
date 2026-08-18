@@ -33,7 +33,7 @@ starts) reproduce the known violations.
 
 `potts_censoring.sh` follows the campaign template: fresh workspace → config (timeout
 2400s) → container with numpy/sympy/networkx → four audit-verified papers → dossier →
-**driver-created primary claim** + `verdict --set-primary` → `prove --min-papers 4` →
+**driver-created primary claim** + `verdict --set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) →
 report + lint → `problem verdict` → PDF.
 
 The instance program is exact: distributions on $q^n$ states as tensors, heat-bath updates

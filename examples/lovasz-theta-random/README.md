@@ -34,7 +34,7 @@ Paley graphs are the deterministic analogue ([paley-clique](../paley-clique/)).
 
 `lovasz_theta_random.sh` follows the campaign template: fresh workspace → config (timeout
 2400s) → container with scipy/sympy/cvxpy → three audit-verified papers → dossier →
-**driver-created primary claim** + `verdict --set-primary` → `prove --min-papers 3` →
+**driver-created primary claim** + `verdict --set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) →
 report + lint → `problem verdict` → PDF.
 
 The instance program is fast and exact where it matters: the frequency-domain LP solves
