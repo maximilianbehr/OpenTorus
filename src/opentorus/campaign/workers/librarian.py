@@ -115,6 +115,34 @@ def parse_local_papers(
     return parsed, notes
 
 
+def literature_work_remains(ot_dir: Path) -> tuple[bool, str]:
+    """Is there literature work a later work item could still do offline?
+
+    True while a registered paper has no local full text yet (another worker's
+    ``paper_fetch`` may bring it — the drivers' ``paper add`` only *registers* a paper,
+    and in the first real runs every fetch happened after the librarian's single visit)
+    or has a local file that is not parsed yet. Nothing here fetches; the branch merely
+    stays active so the scheduler's fairness gives it another turn later, bounded by its
+    step budget like every branch.
+    """
+    from opentorus.research.papers import is_paper_parsed, list_papers
+
+    unfetched = 0
+    unparsed = 0
+    for paper in list_papers(ot_dir):
+        if is_paper_parsed(ot_dir, paper):
+            continue
+        if paper.local_path and (ot_dir / paper.local_path).is_file():
+            unparsed += 1
+        else:
+            unfetched += 1
+    if unparsed:
+        return True, f"{unparsed} local paper(s) still unparsed"
+    if unfetched:
+        return True, f"{unfetched} registered paper(s) await a fetch by another worker"
+    return False, "every registered paper is parsed and extracted"
+
+
 def extract_candidates(ot_dir: Path, problem_id: str) -> tuple[list[str], list[str]]:
     """Heuristic ``THMREF-*`` candidates for every parsed paper without any; ``(ids, notes)``.
 
@@ -165,13 +193,20 @@ class LibrarianWorker:
                 notes=[f"coverage assessment failed: {exc}", *parse_notes, *extract_notes],
             )
         covered = len(critical) - len(insufficient)
+        # The branch stays active (work item merely "completed") while registered
+        # papers can still arrive or be parsed; it declares itself done only when there
+        # is nothing left an offline pass could do. Each revisit costs one step of the
+        # branch budget, so a paper that is never fetched cannot keep the branch alive
+        # forever.
+        remains, why = literature_work_remains(rt.ot_dir)
         return WorkerResult(
-            status="branch_done",
+            status="completed" if remains else "branch_done",
             coverage_ref=cov_id,
             insufficient_categories=insufficient,
             artifacts_created=_refs(created, ctx),
             usage=CostTotals(steps=1),
             notes=[
+                f"literature branch {'stays active' if remains else 'done'}: {why}",
                 f"parsed {len(parsed)} local paper(s)"
                 + (f": {', '.join(parsed)}" if parsed else ""),
                 f"{len(created)} candidate theorem reference(s) extracted (heuristic; candidates "

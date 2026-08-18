@@ -229,11 +229,29 @@ def test_librarian_skips_unfetched_and_broken_papers_honestly(tmp_path: Path) ->
     )
     assert broken.local_path and not (papers_dir(ot) / broken.id / "structure.json").exists()
     result = LibrarianWorker().run(_ctx(pid, role=WorkerRole.librarian), _runtime(root, ot))
-    assert result.status == "branch_done"
+    # A registered paper is still awaiting a fetch by another worker, so the literature
+    # branch stays active ("completed" work item, not "branch_done") and will be
+    # revisited — bounded by its step budget; nothing was fetched here.
+    assert result.status == "completed"
+    assert any(
+        "stays active" in n for n in result.notes
+    )  # broken PDF stays unparsed, URL unfetched
     assert result.artifacts_created == []
     assert any(f"{broken.id}: parse failed" in n for n in result.notes)
     assert any("1 registered paper(s) have no local full text" in n for n in result.notes)
     assert result.coverage_ref == "COV-0001"
+
+
+def test_librarian_declares_the_branch_done_only_when_nothing_is_left(tmp_path: Path) -> None:
+    """With no registered papers at all there is nothing an offline pass could ever do,
+    so the branch is done at once; with a parsed paper whose candidates are already
+    extracted it is done as well (idempotent revisit)."""
+    from opentorus.campaign.workers.librarian import literature_work_remains
+
+    root, ot, pid = make_workspace(tmp_path)
+    assert literature_work_remains(ot) == (False, "every registered paper is parsed and extracted")
+    result = LibrarianWorker().run(_ctx(pid, role=WorkerRole.librarian), _runtime(root, ot))
+    assert result.status == "branch_done"
 
 
 def _obligation(**overrides: object) -> Obligation:
