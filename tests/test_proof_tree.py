@@ -138,16 +138,41 @@ class _SketchingWorker:
         )
 
 
+class _QuietWorker:
+    """A worker that finishes its branch without touching the dossier, so the portfolio's
+    other branches (proof, counterexample, ...) stay silent and the sketching worker in
+    the librarian slot is the only source of artifacts."""
+
+    def run(self, ctx: WorkerContext, rt: WorkerRuntime) -> WorkerResult:
+        return WorkerResult(status="branch_done", notes=["quiet test worker"])
+
+
 def run_sketch_campaign(tmp_path: Path, **worker_kwargs: object):
-    """A completed prove-or-refute mock campaign whose one branch produced a sketch,
-    sketch evidence and one open obligation. Returns ``(root, ot, pid, snapshot)``."""
+    """A completed prove-or-refute mock campaign in which exactly one branch (the
+    literature branch, served by the sketching worker) produced a sketch, sketch
+    evidence and one open obligation. Returns ``(root, ot, pid, snapshot)``."""
     root, ot, pid = make_workspace(tmp_path)
     registry = dict(DEFAULT_WORKERS)
+    quiet_roles = (
+        WorkerRole.prover,
+        WorkerRole.falsifier,
+        WorkerRole.formalizer,
+        WorkerRole.symbolic_experimenter,
+        WorkerRole.numerical_experimenter,
+        WorkerRole.critic,
+    )
+    for role in quiet_roles:
+        registry[role] = _QuietWorker()  # type: ignore[assignment]
     registry[WorkerRole.librarian] = _SketchingWorker(**worker_kwargs)  # type: ignore[arg-type]
     engine = make_engine(root, ot, worker_registry=registry)
     record = engine.start(pid, mode="prove-or-refute", branches=2)
     snapshot = open_campaign(ot, record.id).load().snapshot
     return root, ot, pid, snapshot
+
+
+def sketch_branch_id(snapshot) -> str:  # noqa: ANN001
+    """The id of the literature branch the sketching worker served."""
+    return next(b.branch_id for b in snapshot.branches.values() if str(b.kind) == "literature")
 
 
 # --------------------------------------------------------------------------------------
@@ -191,10 +216,11 @@ def test_builder_merges_campaign_and_dossier(tmp_path: Path) -> None:
         ProofNodeKind.proof_attempt,
     } <= kinds
     assert graph.campaign_id == snap.campaign_id
-    # branch under the root, obligation under the branch
-    assert "BRANCH-0001" in graph.nodes and graph.nodes["BRANCH-0001"].parents == [ROOT_ID]
+    # branch under the root, obligation under the branch that produced the sketch
+    sketch_branch = sketch_branch_id(snap)
+    assert sketch_branch in graph.nodes and graph.nodes[sketch_branch].parents == [ROOT_ID]
     ob = graph.nodes["OBL-0001"]
-    assert ob.parents == ["BRANCH-0001"] and ob.status == "open"
+    assert ob.parents == [sketch_branch] and ob.status == "open"
     assert ob.extra["closed_by_artifact"] is None
     assert ob.extra["gap_marker"] == "GAP-1"
     # the primary claim is attached to the root as equivalent
@@ -207,7 +233,7 @@ def test_builder_merges_campaign_and_dossier(tmp_path: Path) -> None:
     assert proof.kind is ProofNodeKind.proof_attempt
     assert proof.extra["gap_count"] == 1 and proof.extra["scope"] == "primary"
     assert proof.parents == [primary]
-    assert proof.extra["campaign"]["branch_id"] == "BRANCH-0001"
+    assert proof.extra["campaign"]["branch_id"] == sketch_branch
     assert "campaign_node_id" in proof.extra["campaign"]
     # evidence nests under its claim with a supports edge
     ev_nodes = [n for n in graph.nodes.values() if n.kind is ProofNodeKind.evidence]
@@ -216,7 +242,7 @@ def test_builder_merges_campaign_and_dossier(tmp_path: Path) -> None:
     assert (ev_nodes[0].node_id, primary, "supports") in rels
     assert ("PROOF-0001", primary, "supports") in rels
     assert ("OBL-0001", "PROOF-0001", "depends_on") in rels
-    assert ("OBL-0001", "BRANCH-0001", "parent") in rels
+    assert ("OBL-0001", sketch_branch, "parent") in rels
     # the obligation node id is reused from the snapshot; the campaign node is merged
     assert ob.extra["campaign_node_id"].startswith("NODE-")
     assert not graph.has_errors(), [i.message for i in graph.issues if i.severity == "error"]

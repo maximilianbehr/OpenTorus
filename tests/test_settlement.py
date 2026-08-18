@@ -498,12 +498,21 @@ def test_campaign_completion_leaves_root_status_unchanged(tmp_path: Path) -> Non
     snap = open_campaign(ot, record.id).load().snapshot
     assert snap.status.value == "completed"
     after = root_status(ot, pid)
-    assert after.report_status == before.report_status == "UNSOLVED"
+    # The campaign's workers may legitimately add support-only artifacts (a sketch turns
+    # UNSOLVED into HEURISTIC_ONLY), but completion itself never settles anything: the
+    # status is whatever the dossier artifacts derive to, recomputed independently of
+    # the campaign, and it is never a resolving label.
+    from opentorus.research.dossier.status_gate import derive_status
+
+    assert before.report_status == "UNSOLVED"
+    assert after.report_status == derive_status(ot, pid).status
+    assert after.report_status in {"UNSOLVED", "HEURISTIC_ONLY", "EXPERIMENTAL_ONLY"}
+    assert after.label not in {"GENERAL_CONJECTURE_PROVED", "GENERAL_CONJECTURE_REFUTED"}
     assert "classify_outcome" in " ".join(after.derived_from)
     assert not any("campaign" in d.lower() for d in after.derived_from)
     graph = build_proof_graph(ot, pid, snap)
-    assert graph.root_status.report_status == "UNSOLVED"
-    assert graph.nodes[ROOT_ID].status == "UNSOLVED"
+    assert graph.root_status.report_status == after.report_status
+    assert graph.nodes[ROOT_ID].status == after.report_status
 
 
 def test_root_status_never_raises_on_a_missing_dossier(tmp_path: Path) -> None:
