@@ -97,24 +97,40 @@ def _record_turn(
     *,
     task_class: str = "narration",
 ) -> str:
-    """One provider turn for narration; routes the model and records usage (M31/M75)."""
+    """One provider turn for narration; routes the model and records usage (M31/M75).
+
+    With routing enabled the provider is *acquired* from the pool for the task class
+    (so a ``task_routes``/``task_models`` entry really changes who answers) and the
+    decision is recorded in ``usage/routing.jsonl``. With routing disabled the caller's
+    provider is used unchanged. Either way the ledger records the provider and model
+    that actually answered — never a chosen-but-unused route. When no routed profile
+    is eligible the pool's ``NoEligibleProviderError`` propagates (after being
+    recorded): the caller's provider is itself the default candidate, so silently
+    using it would bypass whatever made it ineligible (e.g. a per-provider budget).
+    """
     from opentorus.agent.compaction import estimate_tokens, total_tokens
     from opentorus.errors import OpenTorusError
-    from opentorus.governance import route_model
     from opentorus.usage import UsageRecord, estimate_cost, record_usage
 
     messages = [SessionMessage(role="user", content=prompt)]
-    # Policy model routing (M75) is advisory here: the provider is built from
-    # config.model.name and is not rebuilt per decision, so record the model actually
-    # sent (never the chosen-but-unused decision.model). The task class is still
-    # recorded for routing transparency.
-    decision = route_model(config, task_class)
-    model = config.model.name or decision.model
-    started = time.monotonic()
-    response = provider.respond(messages)
-    elapsed = time.monotonic() - started
+    active = provider
+    lease = None
+    if config.governance.routing.enabled:
+        from opentorus.providers.pool import build_pool
 
-    provider_name = getattr(provider, "name", "unknown")
+        pool = build_pool(config, ot_dir)
+        lease = pool.acquire(task_class)
+        active = lease.provider
+    model = getattr(active, "model_name", None) or config.model.name
+    base_url = lease.profile.base_url if lease is not None else config.model.base_url
+    started = time.monotonic()
+    response = active.respond(messages)
+    elapsed = time.monotonic() - started
+    actual_model = response.model or model
+    if lease is not None and response.model:
+        pool.note_actual_model(lease.decision.decision_id, response.model)
+
+    provider_name = getattr(active, "name", "unknown")
     prompt_tokens = total_tokens(messages)
     completion_tokens = estimate_tokens(response.content) if response.content else 0
     try:
@@ -128,9 +144,15 @@ def _record_turn(
                 completion_tokens=completion_tokens,
                 latency_ms=round(elapsed * 1000),
                 cost_usd=estimate_cost(
-                    provider_name, model, prompt_tokens, completion_tokens, config.model.base_url
+                    provider_name, model, prompt_tokens, completion_tokens, base_url
                 ),
-                task_class=decision.task_class,
+                task_class=task_class,
+                routing_decision_id=lease.decision.decision_id if lease else None,
+                requested_profile=lease.decision.requested_profile if lease else None,
+                selected_profile=lease.profile_name if lease else None,
+                configured_model=model,
+                actual_model=actual_model,
+                fallback_reason=lease.decision.fallback_reason if lease else None,
             ),
         )
     except OpenTorusError:

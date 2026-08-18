@@ -172,3 +172,60 @@ def test_empty_summary(tmp_path: Path) -> None:
     summary = summarize_usage(ot)
     assert summary.turns == 0
     assert summary.total_tokens == 0
+
+
+def test_usage_record_routing_fields_default_none() -> None:
+    record = UsageRecord()
+    for name in (
+        "routing_decision_id",
+        "requested_profile",
+        "selected_profile",
+        "configured_model",
+        "actual_model",
+        "fallback_reason",
+        "campaign_id",
+        "branch_id",
+        "work_item_id",
+        "worker_role",
+    ):
+        assert getattr(record, name) is None, name
+    # Older ledgers (without the fields) still parse.
+    legacy = UsageRecord.model_validate_json('{"provider": "mock", "model": "mock-default"}')
+    assert legacy.actual_model is None
+
+
+def test_read_usage_filters_by_campaign_id(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    record_usage(ot, UsageRecord(session_id="a", campaign_id="CAMPAIGN-0001", prompt_tokens=1))
+    record_usage(ot, UsageRecord(session_id="b", campaign_id="CAMPAIGN-0002", prompt_tokens=2))
+    record_usage(ot, UsageRecord(session_id="c", prompt_tokens=4))
+    assert len(read_usage(ot)) == 3
+    only_one = read_usage(ot, campaign_id="CAMPAIGN-0001")
+    assert [r.session_id for r in only_one] == ["a"]
+    assert read_usage(ot, "b", campaign_id="CAMPAIGN-0002")[0].prompt_tokens == 2
+    assert read_usage(ot, "b", campaign_id="CAMPAIGN-0001") == []
+
+
+def test_agent_loop_records_mock_default_and_no_routing_fields(tmp_path: Path) -> None:
+    # The mock path is pinned by the golden transcripts: the model stays "mock-default"
+    # and, without a pool lease, the routing/campaign provenance fields stay unset.
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    config = default_config()
+    registry = build_default_registry(tmp_path, ot, config)
+    loop = AgentLoop(tmp_path, ot, MockProvider(), registry, config, max_steps=2)
+    loop.run("say hi")
+    records = read_usage(ot)
+    assert records
+    assert {r.model for r in records} == {"mock-default"}
+    assert {r.provider for r in records} == {"mock"}
+    assert all(r.routing_decision_id is None for r in records)
+    assert all(r.campaign_id is None for r in records)
+
+
+def test_is_local_provider_is_the_capabilities_predicate() -> None:
+    from opentorus.providers.capabilities import is_local_provider as hoisted
+    from opentorus.usage import is_local_provider
+
+    assert is_local_provider is hoisted

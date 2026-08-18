@@ -129,17 +129,23 @@ class BudgetAlert(BaseModel):
 
 
 def budget_alerts(
-    ot_dir: Path, config: Config, *, session_id: str | None = None
+    ot_dir: Path,
+    config: Config,
+    *,
+    session_id: str | None = None,
+    campaign_id: str | None = None,
 ) -> list[BudgetAlert]:
     """Compare recorded usage against configured caps; return all alerts.
 
     ``breached`` flags caps that are met or exceeded. Per-provider caps are
     evaluated against that provider's spend; total cost/token caps against the
-    investigation (optionally a single session).
+    investigation (optionally a single session and/or a single campaign — a
+    campaign's workers run under many session ids, so the campaign id is the
+    axis that makes its budget non-vacuous).
     """
     from opentorus.usage import read_usage
 
-    records = read_usage(ot_dir, session_id)
+    records = read_usage(ot_dir, session_id, campaign_id=campaign_id)
     budgets = config.governance.budgets
     alerts: list[BudgetAlert] = []
 
@@ -181,18 +187,32 @@ def budget_alerts(
 
 
 def breached_budgets(
-    ot_dir: Path, config: Config, *, session_id: str | None = None
+    ot_dir: Path,
+    config: Config,
+    *,
+    session_id: str | None = None,
+    campaign_id: str | None = None,
 ) -> list[BudgetAlert]:
-    return [a for a in budget_alerts(ot_dir, config, session_id=session_id) if a.breached]
+    return [
+        a
+        for a in budget_alerts(ot_dir, config, session_id=session_id, campaign_id=campaign_id)
+        if a.breached
+    ]
 
 
 class BudgetExceeded(OpenTorusError):
     """Raised when a hard budget cap is reached and work must stop cleanly."""
 
 
-def assert_within_budget(ot_dir: Path, config: Config, *, session_id: str | None = None) -> None:
+def assert_within_budget(
+    ot_dir: Path,
+    config: Config,
+    *,
+    session_id: str | None = None,
+    campaign_id: str | None = None,
+) -> None:
     """Raise :class:`BudgetExceeded` if any configured budget is breached."""
-    breached = breached_budgets(ot_dir, config, session_id=session_id)
+    breached = breached_budgets(ot_dir, config, session_id=session_id, campaign_id=campaign_id)
     if breached:
         reasons = "; ".join(a.message for a in breached)
         raise BudgetExceeded(f"Budget reached, stopping cleanly: {reasons}")
@@ -202,14 +222,19 @@ def assert_within_budget(ot_dir: Path, config: Config, *, session_id: str | None
 # Model routing
 # ---------------------------------------------------------------------------
 
-TaskClass = str  # "planning" | "narration" | "proof" | "critique" | "default" | ...
-VALID_TASK_CLASSES: tuple[str, ...] = (
-    "planning",
-    "narration",
-    "proof",
-    "critique",
-    "default",
-)
+TaskClass = str  # any value of ``providers.pool.TaskClass``, or a legacy alias
+
+
+def _valid_task_classes() -> tuple[str, ...]:
+    from opentorus.providers.pool import LEGACY_TASK_ALIASES
+    from opentorus.providers.pool import TaskClass as _TaskClass
+
+    names = list(LEGACY_TASK_ALIASES)
+    names.extend(tc.value for tc in _TaskClass if tc.value not in names)
+    return tuple(names)
+
+
+VALID_TASK_CLASSES: tuple[str, ...] = _valid_task_classes()
 
 
 class RoutingDecision(BaseModel):
@@ -221,9 +246,14 @@ class RoutingDecision(BaseModel):
 def route_model(config: Config, task_class: str) -> RoutingDecision:
     """Pick the model for a task class per policy, falling back to ``model.name``.
 
-    With routing disabled (the default), every task uses the configured model.
-    The decision is returned so callers can record it per turn for transparency.
+    A compatibility view over :class:`opentorus.providers.pool.ProviderPool`: the
+    pool decides (``task_routes`` first, then legacy ``task_models``, then the
+    default profile) and this reports the *model name* of its first candidate with
+    the historical rationale strings. Callers that need the provider itself — and
+    the ledger record — should acquire from the pool directly.
     """
+    from opentorus.providers.pool import ProviderPool
+
     routing = config.governance.routing
     default_model = config.model.name
     if not routing.enabled:
@@ -232,11 +262,13 @@ def route_model(config: Config, task_class: str) -> RoutingDecision:
             model=default_model,
             rationale="routing disabled; using model.name",
         )
-    mapped = routing.task_models.get(task_class) or routing.task_models.get("default")
-    if mapped:
+    pool = ProviderPool(config)
+    candidates = pool.candidates(task_class)
+    if candidates and pool.route_source(task_class) != "default":
+        profile = pool.profiles().get(candidates[0])
         return RoutingDecision(
             task_class=task_class,
-            model=mapped,
+            model=profile.name if profile is not None else candidates[0],
             rationale=f"routed '{task_class}' to configured model",
         )
     return RoutingDecision(

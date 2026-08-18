@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from opentorus.jsonl import append_jsonl, read_jsonl
+from opentorus.providers.capabilities import is_local_base_url, is_local_provider
 
 LEDGER_DIRNAME = "usage"
 LEDGER_FILENAME = "ledger.jsonl"
@@ -52,6 +53,19 @@ class UsageRecord(BaseModel):
     tokens_estimated: bool = True
     # Model-routing transparency (Phase 24, M75): which task class chose this model.
     task_class: str | None = None
+    # Routing provenance (campaign engine): the pool decision that picked the provider,
+    # what was asked for vs. selected, and the model the API actually reported.
+    routing_decision_id: str | None = None
+    requested_profile: str | None = None
+    selected_profile: str | None = None
+    configured_model: str | None = None
+    actual_model: str | None = None
+    fallback_reason: str | None = None
+    # Campaign attribution (None outside a campaign).
+    campaign_id: str | None = None
+    branch_id: str | None = None
+    work_item_id: str | None = None
+    worker_role: str | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -69,37 +83,10 @@ def _price_for(model: str) -> tuple[float, float] | None:
     return None
 
 
-def _is_local_base_url(base_url: str | None) -> bool:
-    """True when an OpenAI-compatible endpoint is a loopback/private host (no API cost).
-
-    Running an OpenAI-compatible server locally (llama.cpp, vLLM, LM Studio, Ollama's
-    OpenAI shim, …) incurs no per-token cloud cost, so cost should read ``$0 (local)``
-    rather than ``$? (price unknown)`` just because the model name is not in the price
-    table.
-    """
-    if not base_url:
-        return False
-    from urllib.parse import urlparse
-
-    host = (urlparse(base_url).hostname or "").lower()
-    if not host:
-        return False
-    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or host.endswith(".local"):
-        return True
-    # RFC 1918 private ranges (a LAN inference box is still not a cloud API).
-    if host.startswith("10.") or host.startswith("192.168."):
-        return True
-    if host.startswith("172."):
-        parts = host.split(".")
-        if len(parts) >= 2 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
-            return True
-    return False
-
-
-def is_local_provider(provider: str, base_url: str | None = None) -> bool:
-    """A local provider genuinely costs nothing: mock/ollama, or any provider whose
-    ``base_url`` points at a loopback/private host (a local OpenAI-compatible server)."""
-    return provider.lower() in {"mock", "ollama"} or _is_local_base_url(base_url)
+# The local-provider predicate is a routing/egress policy predicate first and a
+# cost predicate second; it lives with the provider capabilities and is re-exported
+# here so ``opentorus.usage.is_local_provider`` keeps working.
+_is_local_base_url = is_local_base_url
 
 
 def cost_known(provider: str, model: str, base_url: str | None = None) -> bool:
@@ -137,10 +124,15 @@ def record_usage(ot_dir: Path, record: UsageRecord) -> UsageRecord:
     return record
 
 
-def read_usage(ot_dir: Path, session_id: str | None = None) -> list[UsageRecord]:
+def read_usage(
+    ot_dir: Path, session_id: str | None = None, *, campaign_id: str | None = None
+) -> list[UsageRecord]:
+    """Read the ledger, optionally narrowed to one session and/or one campaign."""
     records = read_jsonl(ledger_path(ot_dir), UsageRecord)
     if session_id is not None:
         records = [r for r in records if r.session_id == session_id]
+    if campaign_id is not None:
+        records = [r for r in records if r.campaign_id == campaign_id]
     return records
 
 
