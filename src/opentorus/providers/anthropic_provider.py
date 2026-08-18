@@ -151,6 +151,8 @@ def _anthropic_usage(message: object) -> TokenUsage | None:
 def parse_anthropic_message(message: object) -> ProviderResponse:
     usage = _anthropic_usage(message)
     truncated = getattr(message, "stop_reason", None) == "max_tokens"
+    # The model id the API reports (an alias may resolve to a dated snapshot).
+    model = getattr(message, "model", None) or None
     blocks = getattr(message, "content", []) or []
     # Extended-thinking blocks are billed within ``output_tokens``; Anthropic does
     # not break them out, so apportion the exact total by character share.
@@ -184,8 +186,11 @@ def parse_anthropic_message(message: object) -> ProviderResponse:
             tool_calls=parsed,
             usage=usage,
             truncated=truncated,
+            model=model,
         )
     text = "".join(
         getattr(block, "text", "") for block in blocks if getattr(block, "type", "") == "text"
     )
-    return ProviderResponse(kind="message", content=text, usage=usage, truncated=truncated)
+    return ProviderResponse(
+        kind="message", content=text, usage=usage, truncated=truncated, model=model
+    )

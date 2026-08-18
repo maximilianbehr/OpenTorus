@@ -32,3 +32,23 @@ def get_provider(config: Config) -> BaseProvider:
         f"Unknown provider '{config.model.provider}'. "
         "Valid providers: mock, openai, anthropic, ollama."
     )
+
+
+def get_provider_for_profile(config: Config, profile_name: str) -> BaseProvider:
+    """Build the provider for one named profile from ``models.profiles``.
+
+    A thin wrapper over :func:`get_provider` on a profile-derived config; the
+    implicit ``default`` profile (the ``model:`` block) is always resolvable. Use
+    :class:`opentorus.providers.pool.ProviderPool` when the choice should be
+    routed and recorded.
+    """
+    from opentorus.providers.pool import ProviderPool, profile_config
+
+    profiles = ProviderPool(config).profiles()
+    profile = profiles.get(profile_name)
+    if profile is None:
+        raise ProviderError(
+            f"Unknown model profile '{profile_name}'. Known profiles: "
+            f"{', '.join(sorted(profiles)) or 'default'}."
+        )
+    return get_provider(profile_config(config, profile))

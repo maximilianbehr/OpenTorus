@@ -143,3 +143,69 @@ def test_routing_selects_model_per_task_class() -> None:
     assert route_model(config, "proof").model == "strong-model"
     assert route_model(config, "planning").model == "mid-model"  # falls back to default
     assert route_model(config, "narration").task_class == "narration"
+
+
+# --- Campaign-scoped budgets ---------------------------------------------------
+
+
+def test_campaign_scoped_budget_breach(tmp_path) -> None:  # noqa: ANN001
+    # A campaign's workers run under many session ids; the campaign id is the axis
+    # that makes a campaign budget non-vacuous. Spend outside the campaign must not
+    # count against it, and the campaign's own spend must.
+    ot = _ot(tmp_path)
+    config = default_config()
+    config.governance.budgets.cost_budget_usd = 1.0
+    record_usage(
+        ot,
+        UsageRecord(session_id="s1", provider="openai", model="gpt-4o", cost_usd=0.9),
+    )  # unattributed
+    record_usage(
+        ot,
+        UsageRecord(
+            session_id="s2",
+            provider="openai",
+            model="gpt-4o",
+            cost_usd=0.4,
+            campaign_id="CAMPAIGN-0001",
+        ),
+    )
+    record_usage(
+        ot,
+        UsageRecord(
+            session_id="s3",
+            provider="openai",
+            model="gpt-4o",
+            cost_usd=0.4,
+            campaign_id="CAMPAIGN-0001",
+        ),
+    )
+    # Workspace-wide: 1.7 >= 1.0 → breached.
+    assert breached_budgets(ot, config)
+    # Campaign-scoped: 0.8 < 1.0 → within budget, across two session ids.
+    assert breached_budgets(ot, config, campaign_id="CAMPAIGN-0001") == []
+    assert_within_budget(ot, config, campaign_id="CAMPAIGN-0001")  # does not raise
+    alerts = budget_alerts(ot, config, campaign_id="CAMPAIGN-0001")
+    assert [a.spent for a in alerts] == [0.8]
+    record_usage(
+        ot,
+        UsageRecord(
+            session_id="s4",
+            provider="openai",
+            model="gpt-4o",
+            cost_usd=0.3,
+            campaign_id="CAMPAIGN-0001",
+        ),
+    )
+    with pytest.raises(BudgetExceeded):
+        assert_within_budget(ot, config, campaign_id="CAMPAIGN-0001")
+    # Another campaign is unaffected.
+    assert breached_budgets(ot, config, campaign_id="CAMPAIGN-0002") == []
+
+
+def test_valid_task_classes_cover_new_and_legacy_names() -> None:
+    from opentorus.governance import VALID_TASK_CLASSES
+
+    for name in ("planning", "narration", "proof", "critique", "default"):
+        assert name in VALID_TASK_CLASSES
+    for name in ("proof_development", "campaign_strategy", "final_synthesis"):
+        assert name in VALID_TASK_CLASSES

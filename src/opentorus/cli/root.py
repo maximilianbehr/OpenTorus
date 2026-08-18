@@ -11,6 +11,7 @@ from opentorus.actions import list_actions
 from opentorus.cli._base import (
     BANNER,
     _cli_verbosity,
+    _emit_json,
     _load_workspace_config,
     _require_workspace_dir,
     _require_workspace_root,
@@ -769,18 +770,43 @@ def prove(
 
 
 @app.command("doctor")
-def doctor_cmd() -> None:
-    """Check workspace, config, model provider, index, and tools."""
+def doctor_cmd(
+    capabilities: bool = typer.Option(
+        False,
+        "--capabilities",
+        help="Show per-profile capability tables and route fallback availability.",
+    ),
+    probe: bool = typer.Option(
+        False,
+        "--probe",
+        help=(
+            "With --capabilities: probe every non-mock profile online for tool calling "
+            "(costs one model call each) and cache the result."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Check workspace, config, model profiles/routes, index, tools, and backends."""
+    from dataclasses import asdict
+
     from opentorus.doctor import doctor_for_cwd
 
-    root, _ot_dir, checks = doctor_for_cwd()
+    root, _ot_dir, checks = doctor_for_cwd(capabilities=capabilities, probe=probe)
+    if as_json:
+        _emit_json([asdict(check) for check in checks])
+        if root is None or not all(c.ok for c in checks):
+            raise typer.Exit(code=1)
+        return
+    from rich.markup import escape
+
     if root is None:
         for check in checks:
-            console.print(f"[red]✗[/red] {check.name}: {check.detail}")
+            console.print(f"[red]✗[/red] {check.name}: {escape(check.detail)}")
         raise typer.Exit(code=1)
     for check in checks:
         mark = "[green]✓[/green]" if check.ok else "[red]✗[/red]"
-        console.print(f"{mark} {check.name}: {check.detail}")
+        # Details are plain text (they may mention ``opentorus[dashboard]``), not markup.
+        console.print(f"{mark} {check.name}: {escape(check.detail)}")
     if not all(c.ok for c in checks):
         raise typer.Exit(code=1)
 

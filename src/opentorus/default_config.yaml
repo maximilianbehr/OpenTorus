@@ -42,6 +42,28 @@ model:
   # refused with a clear message. Set false to skip the check.
   verify_tool_calling: true
 
+# --- Model profiles (per-task routing) ------------------------------------------
+models:
+  # Named model profiles for governance.routing.task_routes. The `model:` block above
+  # is always available as the implicit profile "default"; set default_profile to a
+  # profile name below to use that one when no route applies (null = the `model:` block).
+  default_profile: null
+  # profiles: a mapping of profile name -> the same keys as `model:`, plus
+  #   capabilities: [tool_calling, vision, ...]   # declared capabilities (optional; needed
+  #                                               # for tool calling on Ollama models)
+  #   local_only: true | false                    # override the local-vs-cloud classification
+  # `opentorus config set` cannot write mappings — edit this file. Example (placeholders):
+  # profiles:
+  #   strong:
+  #     provider: <provider>
+  #     name: <model-id>
+  #     capabilities: [tool_calling]
+  #   fast:
+  #     provider: <provider>
+  #     name: <model-id>
+  #     base_url: <optional endpoint url>
+  profiles: {}
+
 # --- Project & agent behaviour ------------------------------------------------
 project:
   # Focus hint for prompts: code | research | writing | data | mixed
@@ -272,6 +294,58 @@ governance:
     token_budget: null
     per_provider_usd: {}
   routing:
-    # Map task classes (planning, narration, proof, critique, default) to model names
+    # Per-task model routing. Off by default: every task uses the default profile.
     enabled: false
+    # Legacy form: task class -> bare model name (run on the default profile's provider).
     task_models: {}
+    # task class -> ordered list of profile names from models.profiles (first eligible
+    # profile answers; the rest are fallbacks; "default" is the fallback route). Task
+    # classes: problem_normalization, campaign_strategy, portfolio_deduplication,
+    # scheduling, theorem_extraction, literature_synthesis, proof_development,
+    # counterexample_search, symbolic_experiment_design, numerical_experiment_design,
+    # code_generation, formalization, adversarial_critique, verification_support,
+    # final_synthesis, narration, default (legacy names proof/critique/planning still
+    # work). Every routing decision is recorded in .opentorus/usage/routing.jsonl.
+    # `opentorus config set` cannot write mappings — edit this file. Example:
+    # task_routes:
+    #   proof_development: [strong, default]
+    #   narration: [fast]
+    task_routes: {}
+
+# --- Campaign engine (opentorus campaign) --------------------------------------
+campaign:
+  # Default campaign mode: prove-or-refute | exploration | survey
+  default_mode: exploration
+  # Strategy proposals kept after de-duplication (--branches overrides per run)
+  initial_branches: 4
+  # Branches scheduled concurrently; the rest wait as "proposed"
+  max_active_branches: 3
+  # v1 executes work items sequentially; a larger value is capped to 1 with a diagnostic
+  max_parallel_workers: 1
+  # Total model turns across all workers; 0 = not configured / unlimited
+  max_steps: 50
+  # Wall-clock budget for the whole campaign in seconds; 0 = not configured / unlimited
+  max_wall_seconds: 0
+  # Token budget across all workers; 0 = not configured / unlimited
+  token_budget: 0
+  # USD cost budget across all workers; 0 = not configured / unlimited
+  cost_budget: 0.0
+  # Model turns per branch before it is marked exhausted
+  branch_step_budget: 10
+  # Require a literature-mapping branch before proof work is scheduled
+  require_literature_mapping: true
+  # Require every branch to declare its relation to the root problem
+  require_root_relation: true
+  # Rewrite snapshot.json after every event (false = at phase boundaries only)
+  persist_every_event: true
+  # Opt-in: `opentorus research` also records an exploration campaign
+  record_research: false
+  # Multipliers for the scheduler's documented scoring factors (1.0 = neutral)
+  scheduler_weights:
+    novelty: 1.0
+    root_impact: 1.0
+    verifier_readiness: 1.0
+    dependency: 1.0
+    cost: 1.0
+    redundancy: 1.0
+    failure: 1.0

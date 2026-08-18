@@ -34,6 +34,17 @@ def _cli_verbosity(ctx: typer.Context) -> tuple[bool, bool]:
     return bool(obj.get("verbose")), bool(obj.get("debug"))
 
 
+def _emit_json(obj: object) -> None:
+    """Print ``obj`` as machine-readable JSON (the shared ``--json`` output path).
+
+    Anything ``json`` cannot encode natively (datetimes, Paths, enums) is rendered
+    with ``str`` so a report never fails to print because of one field type.
+    """
+    import json
+
+    console.print_json(json.dumps(obj, default=str))
+
+
 class SortedGroup(TyperGroup):
     """Typer group that lists subcommands in alphabetical order in --help."""
 
