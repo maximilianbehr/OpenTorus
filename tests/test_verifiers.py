@@ -6,6 +6,7 @@ and the absence of a backend is reported honestly. No real Lean/Coq is required.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from opentorus.config import default_config
@@ -125,7 +126,16 @@ def test_verify_tempfile_readable_by_other_uids(tmp_path: Path) -> None:
     # they are persisted verbatim in the PROOF-* artifact).
     from opentorus.research.verifiers.backends import Lean4Backend
 
-    backend = Lean4Backend('sh -c \'stat -c "%a" "$(dirname "$1")"; stat -c "%a" "$1"\' sh')
+    # `stat -c` is GNU-only; BSD stat on macOS spells it `-f "%OLp"`, which is how this
+    # test first broke the macOS job. Ask Python for the mode instead — same assertion,
+    # no platform dialect.
+    probe = (
+        "import os,sys;"
+        "p=sys.argv[1];"
+        "print(oct(os.stat(os.path.dirname(p)).st_mode)[-3:]);"
+        "print(oct(os.stat(p).st_mode)[-3:])"
+    )
+    backend = Lean4Backend(f'"{sys.executable}" -c "{probe}"')
     result = backend.verify("theorem t : VALID := rfl")
     assert result.available is True
     assert "755" in result.output  # tempdir traversable by the container uid

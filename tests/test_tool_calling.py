@@ -686,15 +686,20 @@ def test_an_environment_name_split_by_a_space_still_resolves() -> None:
         resolve_environment(ot, "nope")
 
 
-def test_a_timed_out_command_says_the_limit_is_the_callers() -> None:
+def test_a_timed_out_command_says_the_limit_is_the_callers(tmp_path: Path) -> None:
     """ "Timed out after 120s" reads as a verdict on the command, not on its budget.
 
     Ten such runs across seven dossiers, spanning three days, and not one of them then
     raised the limit — 120s is the tool's default, which the message never said.
     """
+    import sys
+
     from opentorus.tools.shell import run_shell
 
-    result = run_shell("sleep 5", cwd="/tmp", timeout=1)
+    # Portable across the CI matrix: `sleep` is not a Windows command and "/tmp" is not
+    # a Windows directory, which is how this test first broke the Windows job.
+    sleeper = f'"{sys.executable}" -c "import time; time.sleep(30)"'
+    result = run_shell(sleeper, cwd=str(tmp_path), timeout=1)
 
     assert result.timed_out and result.exit_code == 124
     assert "caller-supplied limit" in result.stderr
