@@ -70,6 +70,9 @@ _logger = logging.getLogger("opentorus")
 # Kinds whose ``artifact_created`` should be followed by a verification request: the
 # workspace ``PROOF-*`` ledger already carries a backend verdict (recorded too).
 _LEDGER_PROOF_KIND = "proof"
+# The snapshot kind of a ``THMREF-*`` (``snapshot_artifacts`` and the librarian agree);
+# recorded as ``theorem_reference_created`` rather than a generic ``artifact_created``.
+_THEOREM_REFERENCE_KIND = "theorem_reference"
 
 
 class UsageCollector:
@@ -358,6 +361,16 @@ class WorkerExecutor:
             )
 
         for ref in ec.new_refs:
+            if ref.kind == _THEOREM_REFERENCE_KIND:
+                # A THMREF has its own typed event (paper and review status travel with
+                # it) so a replay can tell "the librarian found a candidate" from any
+                # other artifact; the reducer files both under the same artifact ref.
+                emit(
+                    ev.EventType.theorem_reference_created,
+                    self._theorem_reference_payload(ref.artifact_id),
+                    refs=[ref.artifact_id],
+                )
+                continue
             emit(
                 ev.EventType.artifact_created,
                 ref.model_copy(
@@ -500,6 +513,18 @@ class WorkerExecutor:
                 branch_id=branch.branch_id,
             )
             run.store.write_branch_card(run.snap.branches[branch.branch_id])
+
+    def _theorem_reference_payload(self, ref_id: str) -> ev.TheoremReferenceCreatedPayload:
+        """The typed payload for a THMREF ref, read from the theorem ledger (a reference
+        that vanished between the worker and the recording keeps its id and defaults)."""
+        from opentorus.research.theorems import store as thm_store
+
+        thm = thm_store.get_reference(self.ot_dir, ref_id)
+        if thm is None:
+            return ev.TheoremReferenceCreatedPayload(theorem_reference_id=ref_id)
+        return ev.TheoremReferenceCreatedPayload(
+            theorem_reference_id=thm.id, paper_id=thm.paper_id, review_status=thm.review_status
+        )
 
     def _record_verifications(self, emit: Callable[..., None], ec: ExecuteContext) -> None:
         """``verification_requested`` + ``verification_recorded`` for every workspace

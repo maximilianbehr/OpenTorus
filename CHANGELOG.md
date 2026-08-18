@@ -199,8 +199,32 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   and `examples/README.md` updated; `tests/test_docs_consistency.py` pins that the
   README's documentation list resolves, that no doc uses a Mermaid fence, and that the
   campaign docs state that a campaign can finish without solving the problem.
+- **The campaign example drivers set `campaign.branch_step_budget` from
+  `OPENTORUS_BRANCH_STEPS`** (default 40) next to `permissions.mode trusted`, and name the
+  knob in their header alongside `OPENTORUS_MAX_STEPS`, so a run can give each branch
+  more than the shipped default of 10 model turns without hand-editing `config.yaml`
+  (the two drivers that already set it are unchanged apart from the header).
 
 ### Changed
+- **A prover on a branch whose relation to the root is not `equivalent` can only write
+  exploration sketches, and the tool gate enforces it.** A special-case branch's model
+  called `proof_write` with the default primary scope, refined the dossier's one primary
+  sketch in place and re-proposed the proof branch's obligations as its own; now such a
+  call is rewritten to `scope=exploration` with the branch objective as
+  `connection_to_dossier` (a note records every rewrite), the obligations come from the
+  exploration sketch the branch itself wrote, and `PRIMARY_RELATIONS` is `{equivalent}`
+  -- a sufficient condition, a necessary condition or a counterexample route is its own
+  statement until settlement says otherwise.
+- **The librarian parses unread local papers and extracts theorem candidates before it
+  assesses coverage.** Drivers `paper add` PDFs that stay unparsed, so the literature
+  branch used to finish in one step with zero `THMREF-*` and every category `unknown`;
+  the worker now reads registered-but-unparsed local PDFs offline (`papers.read_paper`,
+  bounded to 10 per work item, long PDFs skipped, failures noted), runs the heuristic
+  extractor on every parsed paper without references (candidates attributed to the
+  problem, each recorded as `theorem_reference_created`), and only then assesses
+  coverage. Extracted candidates carry category hints (`extraction.infer_categories`:
+  label family and statement vocabulary), which is what lets a candidate raise a category
+  to `partial` -- never `adequate`, which still needs an accepted reference.
 - **`prove` and `research` lease their provider through the pool** (`proof_development`
   and `narration`), so a configured route is the model that answers and every turn's
   usage row names the actual provider and model; with routing disabled the pool yields

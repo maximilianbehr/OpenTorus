@@ -35,7 +35,8 @@ from opentorus.providers.pool import ProviderPool, TaskClass
 from opentorus.tools.registry import ToolRegistry
 from opentorus.usage import read_usage
 from support.campaign import make_workspace
-from support.providers import ScriptedProvider, message
+from support.pdf import register_unparsed_paper
+from support.providers import ScriptedProvider, message, tool_call
 
 
 def _ctx(pid: str, **overrides: object) -> WorkerContext:
@@ -167,7 +168,72 @@ def test_librarian_offline_returns_branch_done_with_coverage(tmp_path: Path) -> 
     assert result.usage.steps == 1
     assert result.insufficient_categories  # a fresh dossier covers nothing
     assert any("partial" in n for n in result.notes)
+    assert result.artifacts_created == []  # no papers: nothing to parse or extract
+    assert any("parsed 0 local paper(s)" in n for n in result.notes)
     assert DEFAULT_WORKERS[WorkerRole.librarian].role is WorkerRole.librarian
+
+
+def test_librarian_parses_local_papers_and_extracts_candidates(tmp_path: Path) -> None:
+    """An unparsed-but-parsable local paper is read (pypdf, offline), its numbered
+    results become candidate THMREFs attributed to the problem, and coverage moves
+    from ``unknown`` to at most ``partial`` for the hinted categories — never
+    ``adequate``, which needs review. A second run is idempotent."""
+    from opentorus.research.papers import get_paper, is_paper_parsed
+    from opentorus.research.theorems import store as thm_store
+    from opentorus.research.theorems.models import CoverageCategory, CoverageLevel
+
+    root, ot, pid = make_workspace(tmp_path)
+    paper_id = register_unparsed_paper(ot)
+    rt = _runtime(root, ot)
+    result = LibrarianWorker().run(_ctx(pid, role=WorkerRole.librarian), rt)
+    assert result.status == "branch_done", result
+    assert result.usage.steps == 1
+    paper = get_paper(ot, paper_id)
+    assert paper is not None and is_paper_parsed(ot, paper)
+    refs = thm_store.list_references(ot, problem_id=pid)
+    assert [r.theorem_label for r in refs] == ["Theorem 2.1", "Lemma 2.2"]
+    assert all(r.review_status == "candidate" and r.problem_id == pid for r in refs)
+    assert [(a.artifact_id, a.kind) for a in result.artifacts_created] == [
+        (r.id, "theorem_reference") for r in refs
+    ]
+    cov = thm_store.latest_coverage(ot, pid)
+    assert cov is not None and cov.id == result.coverage_ref
+    positive = cov.entries[CoverageCategory.strongest_known_positive_results.value]
+    tools = cov.entries[CoverageCategory.standard_tools_lemmas.value]
+    assert positive.level is CoverageLevel.partial and positive.evidence_ids == [refs[0].id]
+    assert tools.level is CoverageLevel.partial and tools.evidence_ids == [refs[1].id]
+    assert all(e.level is not CoverageLevel.adequate for e in cov.entries.values())
+    assert "strongest_known_positive_results" not in result.insufficient_categories
+    assert "definitions_notation" in result.insufficient_categories
+    assert any(f"parsed 1 local paper(s): {paper_id}" in n for n in result.notes)
+    assert any("2 candidate theorem reference(s) extracted" in n for n in result.notes)
+    # idempotent: nothing new to parse or extract, coverage re-assessed
+    again = LibrarianWorker().run(_ctx(pid, role=WorkerRole.librarian), rt)
+    assert again.status == "branch_done" and again.artifacts_created == []
+    assert len(thm_store.list_references(ot, problem_id=pid)) == 2
+    assert again.coverage_ref == "COV-0002"
+
+
+def test_librarian_skips_unfetched_and_broken_papers_honestly(tmp_path: Path) -> None:
+    """A URL registration without a local file is left alone (no network), a local file
+    pypdf cannot read is a note rather than a failure, and coverage is still assessed."""
+    from opentorus.research.papers import acquire_paper, add_paper, papers_dir
+    from opentorus.research.sources.base import SourceRecord
+
+    root, ot, pid = make_workspace(tmp_path)
+    add_paper(ot, "https://arxiv.org/abs/2402.00002")  # unpinned, no local file
+    broken = acquire_paper(
+        ot,
+        SourceRecord(source="arxiv", title="Broken", arxiv_id="2403.00003"),
+        downloader=lambda _url: b"%PDF-not-really",
+    )
+    assert broken.local_path and not (papers_dir(ot) / broken.id / "structure.json").exists()
+    result = LibrarianWorker().run(_ctx(pid, role=WorkerRole.librarian), _runtime(root, ot))
+    assert result.status == "branch_done"
+    assert result.artifacts_created == []
+    assert any(f"{broken.id}: parse failed" in n for n in result.notes)
+    assert any("1 registered paper(s) have no local full text" in n for n in result.notes)
+    assert result.coverage_ref == "COV-0001"
 
 
 def _obligation(**overrides: object) -> Obligation:
@@ -346,6 +412,138 @@ def test_prover_bootstraps_a_sketch_and_proposes_obligations_under_mock(tmp_path
     assert result3.failure_signature.strategy_class == "proof_sketch"
     assert result3.failure_signature.tool_or_solver == "proof_write"
     assert len(dstore.list_proof_attempts(ot, pid)) == 2
+
+
+def _scripted_runtime(root: Path, ot: Path, provider: ScriptedProvider) -> WorkerRuntime:
+    config = default_config()
+    return WorkerRuntime(
+        root=root,
+        ot_dir=ot,
+        config=config,
+        pool=ProviderPool(config, ot_dir=ot, factory=lambda _cfg: provider),
+        clock=StepClock(),
+    )
+
+
+def _primary_proof_write(pid: str, *, scope: str | None = "primary") -> dict[str, object]:
+    """A ``proof_write`` call the way a model that ignores the branch relation makes it:
+    about the dossier statement, with a gap, and (unless ``scope`` is None) primary."""
+    args: dict[str, object] = {
+        "problem_id": pid,
+        "title": "Induction on n",
+        "theorem": "For every n >= 1, the property P(n) holds.",
+        "main_proof": (
+            "We argue by induction on n. The base case n = 1 holds by inspection of the "
+            "property P(1). For the step from n to n + 1 we need [GAP-1] a monotonicity "
+            "lemma for the property P(n) that is not yet justified."
+        ),
+        "gaps": ["[GAP-1] monotonicity of P(n) in n"],
+    }
+    if scope is not None:
+        args["scope"] = scope
+    return args
+
+
+@pytest.mark.parametrize("asked_scope", ["primary", None])
+def test_special_case_prover_can_only_write_exploration_sketches(
+    tmp_path: Path, asked_scope: str | None
+) -> None:
+    """The gate, not the prompt, keeps a non-primary branch off the dossier's primary
+    sketch: a scripted model that calls ``proof_write(scope=primary)`` (or omits the
+    scope, whose default is primary) still produces an exploration-scoped PROOF, the
+    primary sketch is byte-identical afterwards, and every obligation is tied to the
+    new exploration proof — never to the primary's gaps."""
+    from opentorus.campaign.workers.prover import ProverWorker
+    from opentorus.research.dossier import claims as claim_ops
+    from opentorus.research.dossier import store as dstore
+
+    root, ot, pid = make_workspace(tmp_path)
+    primary = claim_ops.add_proof_attempt(
+        ot,
+        pid,
+        title="Primary sketch",
+        body=(
+            "## Theorem\nFor every n >= 1, the property P(n) holds.\n\n## Main proof\n"
+            "The property P(n) follows from [GAP-1] the general lemma."
+        ),
+        gaps=["[GAP-1] the general lemma"],
+    )
+    primary_file = dstore.dossier_dir(ot, pid) / primary.body_path
+    primary_body_before = primary_file.read_text(encoding="utf-8")
+    provider = ScriptedProvider(
+        [tool_call("proof_write", _primary_proof_write(pid, scope=asked_scope)), message("done")]
+    )
+    rt = _scripted_runtime(root, ot, provider)
+    ctx = _branch_ctx(
+        pid,
+        WorkerRole.prover,
+        branch_id="BRANCH-0002",
+        work_item_id="WI-0002",
+        session_id="CAMPAIGN-0001:BRANCH-0002:WI-0002",
+        branch_objective="Special cases of PROBLEM-0001: restrict to n <= 10 and n prime.",
+        root_relation="special-case",
+        strategy_key="special_cases",
+    )
+    result = ProverWorker().run(ctx, rt)
+    assert result.status == "completed", result
+    proofs = {p.id: p for p in dstore.list_proof_attempts(ot, pid)}
+    assert set(proofs) == {"PROOF-0001", "PROOF-0002"}
+    assert proofs["PROOF-0001"].scope == "primary"
+    assert proofs["PROOF-0001"].updated_at == primary.updated_at
+    assert primary_file.read_text(encoding="utf-8") == primary_body_before
+    new = proofs["PROOF-0002"]
+    assert new.scope == "exploration"
+    body = (dstore.dossier_dir(ot, pid) / new.body_path).read_text(encoding="utf-8")
+    assert "Special cases of PROBLEM-0001" in body  # the branch bridge was added
+    assert [r.artifact_id for r in result.artifacts_created] == ["PROOF-0002"]
+    assert result.obligations
+    for ob in result.obligations:
+        assert ob.source_proof_id == "PROOF-0002"
+        assert ob.supporting_artifacts == ["PROOF-0002"]
+        assert ob.root_relation.value == "special-case"
+        assert "general lemma" not in ob.statement  # never the primary's gap
+    assert any("rewritten to scope=exploration" in n for n in result.notes)
+    assert any("bootstrap used: False" in n for n in result.notes)  # the model's own call
+    assert dstore.list_status_changes(ot, pid) == []
+
+
+def test_equivalent_prover_keeps_writing_the_primary_sketch(tmp_path: Path) -> None:
+    """The gate is inert on an equivalent-relation proof branch: its scripted
+    ``proof_write(scope=primary)`` refines the dossier's primary sketch as before and
+    the obligations hang off that primary."""
+    from opentorus.campaign.workers.prover import ProverWorker
+    from opentorus.research.dossier import store as dstore
+
+    root, ot, pid = make_workspace(tmp_path)
+    provider = ScriptedProvider(
+        [tool_call("proof_write", _primary_proof_write(pid, scope="primary")), message("done")]
+    )
+    rt = _scripted_runtime(root, ot, provider)
+    ctx = _branch_ctx(
+        pid,
+        WorkerRole.prover,
+        branch_objective="Prove P(n) for every n by induction.",
+        root_relation="equivalent",
+        strategy_key="proof_sketch",
+    )
+    result = ProverWorker().run(ctx, rt)
+    assert result.status == "completed", result
+    proofs = dstore.list_proof_attempts(ot, pid)
+    assert [(p.id, p.scope) for p in proofs] == [("PROOF-0001", "primary")]
+    assert [r.artifact_id for r in result.artifacts_created] == ["PROOF-0001"]
+    assert result.obligations and all(o.source_proof_id == "PROOF-0001" for o in result.obligations)
+    assert all(o.root_relation.value == "equivalent" for o in result.obligations)
+    assert not any("rewritten" in n for n in result.notes)
+    # a second primary write from the same branch refines PROOF-0001 in place
+    provider2 = ScriptedProvider(
+        [tool_call("proof_write", _primary_proof_write(pid, scope="primary")), message("done")]
+    )
+    ctx2 = ctx.model_copy(
+        update={"branch_artifact_ids": ("PROOF-0001",), "work_item_id": "WI-0002"}
+    )
+    result2 = ProverWorker().run(ctx2, _scripted_runtime(root, ot, provider2))
+    assert result2.status == "completed", result2
+    assert [p.id for p in dstore.list_proof_attempts(ot, pid)] == ["PROOF-0001"]
 
 
 def test_falsifier_scaffold_search_records_experiment_but_no_evidence(tmp_path: Path) -> None:

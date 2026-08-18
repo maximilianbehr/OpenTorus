@@ -254,6 +254,49 @@ def test_heuristic_extraction_creates_located_candidates(tmp_path: Path) -> None
     assert len(store.list_references(ot, paper_id=pid)) == 3
 
 
+def test_heuristic_candidates_carry_category_hints_and_stay_partial(tmp_path: Path) -> None:
+    """A candidate is filed under a coverage category read off its label family and
+    statement (Theorem -> strongest positive, Lemma/Proposition -> tools, a stated
+    non-existence -> negative, a named counterexample -> counterexamples), so coverage
+    can show ``partial`` for it; ``adequate`` still needs review."""
+    from opentorus.research.theorems.coverage import assess_coverage
+    from opentorus.research.theorems.extraction import infer_categories
+    from opentorus.research.theorems.models import CoverageCategory, CoverageLevel
+
+    ot = _ot(tmp_path)
+    pid = _paper(ot)
+    refs = extract_heuristic(ot, pid, problem_id="PROBLEM-0001")
+    assert [[c.value for c in r.categories] for r in refs] == [
+        ["strongest_known_positive_results"],
+        ["standard_tools_lemmas"],
+        ["standard_tools_lemmas"],
+    ]
+    assert infer_categories("Theorem 3", "There is no Hadamard matrix of order 6.") == [
+        CoverageCategory.known_negative_results
+    ]
+    assert infer_categories("Corollary 4", "The Petersen graph is a counterexample.") == [
+        CoverageCategory.known_counterexamples
+    ]
+    assert infer_categories("Proposition 5", "There is no such group.") == [
+        CoverageCategory.standard_tools_lemmas
+    ]
+    cov = assess_coverage(ot, "PROBLEM-0001", persist=False)
+    positive = cov.entries[CoverageCategory.strongest_known_positive_results.value]
+    assert positive.level is CoverageLevel.partial and positive.evidence_ids == [refs[0].id]
+    tools = cov.entries[CoverageCategory.standard_tools_lemmas.value]
+    assert tools.level is CoverageLevel.partial and sorted(tools.evidence_ids) == sorted(
+        r.id for r in refs[1:]
+    )
+    assert all(e.level is not CoverageLevel.adequate for e in cov.entries.values())
+    # review replaces the hint: an accepted, re-classified reference is what makes adequate
+    store.set_review_status(
+        ot, refs[0].id, "accepted", "checked", categories=["equivalent_formulations"]
+    )
+    cov2 = assess_coverage(ot, "PROBLEM-0001", persist=False)
+    assert cov2.entries["equivalent_formulations"].level is CoverageLevel.adequate
+    assert cov2.entries[positive.category.value].level is CoverageLevel.missing
+
+
 def test_heuristic_extraction_needs_parsed_text(tmp_path: Path) -> None:
     ot = _ot(tmp_path)
     from opentorus.research.papers import add_paper

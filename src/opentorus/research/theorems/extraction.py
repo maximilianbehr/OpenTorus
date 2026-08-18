@@ -6,6 +6,12 @@ and excerpted from the source. The heuristic extractor is deterministic and
 offline; the LLM extractor asks a model for structure but still validates each
 proposed locator against the local corpus and never trusts a label the corpus
 does not contain. Neither can promote a reference — that is ``theorem review``.
+
+Every candidate also carries *category hints* (:func:`infer_categories`): a coverage
+category read off the label family and the statement's own vocabulary, so a
+candidate shows up as ``partial`` coverage of that category instead of no coverage
+at all. A hint is never more than a hint — ``adequate`` needs review, and review
+replaces the hints with a human classification.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from opentorus.research.theorems.locators import (
     validate_locator,
 )
 from opentorus.research.theorems.models import (
+    CoverageCategory,
     ExtractionMethod,
     SourceLocator,
     TheoremReference,
@@ -60,6 +67,20 @@ _CONCLUSION_LEAD = re.compile(
     r"\b(?:then|we\s+have(?:\s+that)?|it\s+follows(?:\s+that)?)\b\s*[:,]?\s*", re.I
 )
 _TITLE_AFTER_LABEL = re.compile(r"^\s*\(([^)]{1,120})\)")
+
+# Category hints. A statement that names a counterexample, or whose conclusion is a
+# non-existence / failure, is filed under the negative categories; every other
+# Theorem / Corollary is a known positive result of the local literature and a Lemma /
+# Proposition is a tool. Deliberately shallow: the hint decides which coverage row a
+# candidate appears in (at most ``partial``), nothing about the root problem.
+_COUNTEREXAMPLE_HINT = re.compile(r"\bcounter-?examples?\b", re.I)
+_NEGATIVE_HINT = re.compile(
+    r"\b(?:there\s+(?:is|are|exists?)\s+no\b|does\s+not\s+(?:hold|exist|admit|have)\b|"
+    r"do\s+not\s+(?:hold|exist|admit|have)\b|cannot\b|fails?\s+(?:to|for)\b|"
+    r"is\s+(?:false|not\s+true)\b|impossible\b|no\s+such\b)",
+    re.I,
+)
+_TOOL_FAMILIES = frozenset({"lemma", "proposition"})
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -131,6 +152,27 @@ def parse_statement(context: str, label: str) -> dict[str, Any]:
     }
 
 
+def infer_categories(label: str, statement: str = "") -> list[CoverageCategory]:
+    """Coverage category hints for a candidate with ``label`` and ``statement`` text.
+
+    ``Lemma`` / ``Proposition`` -> ``standard_tools_lemmas``; ``Theorem`` /
+    ``Corollary`` -> ``known_counterexamples`` when the statement names a
+    counterexample, ``known_negative_results`` when it states a non-existence or a
+    failure, else ``strongest_known_positive_results``. Pure and deterministic; the
+    result is what makes a candidate count as *partial* coverage of that category.
+    """
+    keyword, _number = parse_label(label)
+    family = (keyword or "").lower()
+    if family in _TOOL_FAMILIES:
+        return [CoverageCategory.standard_tools_lemmas]
+    text = statement or ""
+    if _COUNTEREXAMPLE_HINT.search(text):
+        return [CoverageCategory.known_counterexamples]
+    if _NEGATIVE_HINT.search(text):
+        return [CoverageCategory.known_negative_results]
+    return [CoverageCategory.strongest_known_positive_results]
+
+
 def _build_reference(
     *,
     paper_id: str,
@@ -145,6 +187,7 @@ def _build_reference(
 ) -> TheoremReference:
     parsed = parse_statement(context, label) if context else {}
     llm = llm_fields or {}
+    statement = str(llm.get("statement") or parsed.get("statement") or "")
     return TheoremReference(
         paper_id=paper_id,
         locator=SourceLocator(
@@ -154,11 +197,12 @@ def _build_reference(
         title=str(llm.get("title") or parsed.get("title") or ""),
         location_hash=location_hash(context) if context else "",
         excerpt=clip_excerpt(context) if context else "",
-        normalized_statement=str(llm.get("statement") or parsed.get("statement") or ""),
+        normalized_statement=statement,
         assumptions=list(llm.get("assumptions") or parsed.get("assumptions") or []),
         quantifiers=list(llm.get("quantifiers") or parsed.get("quantifiers") or []),
         conclusion=str(llm.get("conclusion") or parsed.get("conclusion") or ""),
         problem_id=problem_id,
+        categories=infer_categories(label, statement),
         extraction_method=extraction_method,
         extracting_model=llm.get("extracting_model"),
         routing_decision_id=llm.get("routing_decision_id"),

@@ -14,7 +14,7 @@
 #
 # Prerequisites: `opentorus` on PATH; Docker; a tool-calling model (defaults to
 # a local Ollama server on :11434; override with OPENTORUS_MODEL / OPENTORUS_BASE_URL; the campaign budget with
-# OPENTORUS_BRANCHES / OPENTORUS_MAX_STEPS / OPENTORUS_MAX_WALL_SECONDS).
+# OPENTORUS_BRANCHES / OPENTORUS_MAX_STEPS / OPENTORUS_BRANCH_STEPS / OPENTORUS_MAX_WALL_SECONDS).
 # WARNING: step 1 runs `rm -rf .opentorus` in this directory.
 # Usage: ./second_neighborhood.sh [PROBLEM-ID]   (defaults to PROBLEM-0001)
 # ============================================================================
@@ -37,6 +37,7 @@ opentorus config set agent.style autonomous
 opentorus config set agent.max_steps inf
 opentorus config set agent.prove_gap_fill_max_steps inf
 opentorus config set permissions.mode trusted
+opentorus config set campaign.branch_step_budget "${OPENTORUS_BRANCH_STEPS:-40}"
 opentorus config set agent.prove_require_instance_work true  # campaign gate: hold clean completion until instance work exists
 
 # --- 3. Numerical experiment environment ------------------------------------

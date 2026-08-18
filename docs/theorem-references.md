@@ -115,6 +115,14 @@ is split), `for all/every/each`, `there exists/for some` -> `quantifiers`, text
 after `then`/`we have`/`it follows` -> `conclusion`. Re-running is idempotent
 (dedupe by paper + label). It raises when the paper is not parsed.
 
+Every candidate (heuristic or LLM) also carries *category hints*
+(`extraction.infer_categories(label, statement)`): `Lemma` / `Proposition` ->
+`standard_tools_lemmas`; `Theorem` / `Corollary` -> `known_counterexamples` when
+the statement names a counterexample, `known_negative_results` when it states a
+non-existence or failure, else `strongest_known_positive_results`. The hint only
+decides which coverage row the candidate appears in (at most `partial`); review
+(`--category`) replaces it, and `adequate` still needs an accepted reference.
+
 `extraction.extract_with_llm(ot_dir, paper_id, problem_id=None, pool=None,
 provider=None, config=None)` asks a model (task class `theorem_extraction`
 through the provider pool when available, else the given/configured provider)
@@ -180,7 +188,8 @@ persist=True)` derives one entry per category:
 1. a human override (`theorem coverage --set`) wins;
 2. accepted references tagged with the category -> `adequate`, or `conflicting`
    when two of them are linked by `contradicts`;
-3. candidate references only -> `partial`;
+3. candidate references only -> `partial` (extraction files each candidate under
+   a hinted category, so this row is reachable before any review);
 4. dossier facts (related papers with a `paper_artifact` -> original problem
    source, known results -> strongest positive results, legacy `THM-*` ->
    standard tools) -> at most `partial`;

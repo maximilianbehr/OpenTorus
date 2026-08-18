@@ -91,10 +91,10 @@ EXECUTE -> CRITIQUE -> VERIFY -> UPDATE_GRAPH -> REALLOCATE.
 |---|---|---|
 | INGEST | reads `statement.md`, pins its sha256 as the first artifact reference, notes when the statement changed since `campaign.yaml` was written | `artifact_created` (kind `problem_statement`) |
 | NORMALIZE | builds the `NormalizedProblem` every worker sees -- statement, target scope (`scope.classify_target`), recorded assumptions and definitions, the primary claim id -- from dossier facts only | `problem_normalized` |
-| MAP_LITERATURE | the librarian derives a category coverage map (`theorems.coverage.assess_coverage`, at most `partial` from dossier facts) | `coverage_assessed` (`COV-NNNN`, insufficient and critical categories) |
+| MAP_LITERATURE | derives the initial category coverage map (`theorems.coverage.assess_coverage`, at most `partial` from dossier facts and candidate references); parsing local papers and extracting candidates is the literature branch's librarian work item | `coverage_assessed` (`COV-NNNN`, insufficient and critical categories) |
 | GENERATE_PORTFOLIO | strategist proposals (LLM JSON with a real provider, the mode's template otherwise), de-duplication, cap, activation; one dossier `Approach` (`APPR-*`) per accepted branch whose strategy is one of the eight dossier templates | `branch_proposed`, `branch_rejected` (`REPEATED_STRATEGY` / `PORTFOLIO_CAP` / `ROOT_RELATION_REQUIRED`), `branch_activated`, `artifact_created`, `budget_consumed` (strategist turns) |
 | SCHEDULE | scores every runnable branch and picks one work item; refuses to re-run a recorded failure unchanged (`retry_refused` and `branch_suspended`); activates a queued branch when nothing else is runnable; hands over to SYNTHESIZE when nothing at all is | `work_item_created`, `work_item_scheduled` (with the full `ScoreBreakdown`), `retry_refused` / `retry_allowed`, `branch_suspended` |
-| EXECUTE | runs the scheduled work item through its worker inside its own context and budget; the campaign-wide governance caps are checked first (usage ledger, `campaign_id`-scoped) | `worker_started`, `worker_completed` / `worker_failed`, `artifact_created`, `obligation_created`, `failure_signature_recorded`, `budget_consumed`, `verification_recorded` |
+| EXECUTE | runs the scheduled work item through its worker inside its own context and budget; the campaign-wide governance caps are checked first (usage ledger, `campaign_id`-scoped) | `worker_started`, `worker_completed` / `worker_failed`, `artifact_created` (`theorem_reference_created` for a `THMREF-*`), `obligation_created`, `failure_signature_recorded`, `budget_consumed`, `verification_recorded` |
 | CRITIQUE | the critic reviews the round's new claims and proof attempts (`agent.review.review_target` + the hostile referee); downgrades are recommended, never applied | `review_requested`, `review_recorded` |
 | VERIFY | the verifier-coordinator asks `proof_tree.settlement.can_close_obligation` for every open obligation and proposes closures **only** for accepted artifacts | `obligation_closed` |
 | UPDATE_GRAPH | mirrors new artifact references and obligations as campaign proof-tree nodes | `proof_node_created` / `proof_node_updated` |
@@ -157,9 +157,16 @@ The proof-tree validator turns a special-case or relaxation node with a
 `closes` / `verifies` / `refutes` edge into the root into an error
 (`special_case_root_closing`), and the plain tree view marks every non-settling
 relation with a subset glyph so a closed special-case obligation can never be
-read as the root being settled. A special-case branch's prover writes
-*exploration* sketches with a bridge to the primary answer, never the dossier's
-primary answer itself.
+read as the root being settled. Only an `equivalent` branch's prover writes the
+dossier's one primary sketch; a prover on any other branch (special case,
+relaxation, sufficient, necessary, supporting, unknown, ...) writes *exploration*
+sketches with a bridge to the primary answer, and this is enforced by the
+prover's tool gate rather than by prompt text: a `proof_write` call from such a
+branch with `scope` missing or `scope=primary` is rewritten to
+`scope=exploration` with the branch objective as `connection_to_dossier`, so a
+model that ignores the instruction still cannot refine the primary in place. The
+obligations such a prover proposes are derived from the exploration sketch it
+wrote (and carry the branch's relation), never from the primary's gaps.
 
 ## Worker roles
 
@@ -170,12 +177,12 @@ output.
 | role | task class | what it does | tools |
 |---|---|---|---|
 | strategist | `campaign_strategy` | proposes the portfolio (JSON) or falls back to the template | no tool loop: one routed model turn |
-| prover | `proof_development` | bounded `prove` loop; writes a `PROOF-*` sketch; every explicit gap becomes an obligation proposal | dossier tools + `proof_write`, `proof_submit`, `exp_new`, `exp_run`, known-result / related-paper adds |
+| prover | `proof_development` | bounded `prove` loop; writes a `PROOF-*` sketch (primary scope only on an `equivalent` branch; every other relation is gate-coerced to `scope=exploration` with a bridge); every explicit gap of the sketch *it* wrote becomes an obligation proposal | dossier tools + `proof_write`, `proof_submit`, `exp_new`, `exp_run`, known-result / related-paper adds |
 | falsifier | `counterexample_search` | designs and runs counterexample searches (`EXP-*`); a witness is strong contradicting evidence, status untouched | dossier tools + `exp_new`, `exp_run` |
 | numerical-experimenter | `numerical_experiment_design` | numerical / validated-numerics experiments; bounds evidence | dossier tools + `exp_new`, `exp_run` |
 | symbolic-experimenter | `symbolic_experiment_design` | sympy certificates via the verifier ledger | dossier tools + `exp_new`, `exp_run`, `proof_submit` |
 | formalizer | `formalization` | Lean / Coq / SMT submissions; `tool_unavailable` when no formal backend is enabled | dossier tools + `proof_submit`, `proof_write` |
-| librarian | `literature_synthesis` | coverage assessment (never above `partial`) | dossier tools + `paper_add`, known-result / related-paper adds |
+| librarian | `literature_synthesis` | offline and bounded: parses registered-but-unread local PDFs (`papers.read_paper`, at most 10 per work item, long PDFs skipped, failures noted), extracts heuristic `THMREF-*` candidates from every parsed paper without any (attributed to the problem, recorded as `theorem_reference_created`), then assesses coverage (candidates and dossier facts never above `partial`) | dossier tools + `paper_add`, known-result / related-paper adds |
 | critic | `adversarial_critique` | reviews the round's new claims and proof attempts; runs the referee | no tool loop (deterministic) |
 | verifier-coordinator | `verification_support` | closure proposals for accepted artifacts only | no tool loop (deterministic) |
 | synthesizer | `final_synthesis` | `progress.md` and the dossier report | no tool loop (deterministic) |
@@ -298,7 +305,7 @@ so a resume months later runs under the same rules.
 | `campaign.max_wall_seconds` | `0` | wall-clock budget for the whole campaign; 0 = unlimited (`--max-wall-seconds`) |
 | `campaign.token_budget` | `0` | tokens across all workers; 0 = unlimited (`--token-budget`) |
 | `campaign.cost_budget` | `0.0` | USD across all workers; 0 = unlimited (`--cost-budget`) |
-| `campaign.branch_step_budget` | `10` | model turns per branch before it is exhausted |
+| `campaign.branch_step_budget` | `10` | model turns per branch before it is exhausted (the example drivers set it from `OPENTORUS_BRANCH_STEPS`, default 40) |
 | `campaign.require_literature_mapping` | `true` | keep a literature branch while critical coverage is insufficient |
 | `campaign.require_root_relation` | `true` | every branch must declare its relation to the root |
 | `campaign.persist_every_event` | `true` | rewrite `snapshot.json` after every event (`false` = at phase boundaries only) |

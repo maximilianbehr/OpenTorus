@@ -100,6 +100,11 @@ def _summarize(event: ev.CampaignEvent) -> str:
         return f"{p.get('work_item_id')} {p.get('status', p.get('message', ''))}".strip()
     if t == ev.EventType.artifact_created:
         return f"{p.get('artifact_id')} ({p.get('kind')})"
+    if t == ev.EventType.theorem_reference_created:
+        return (
+            f"{p.get('theorem_reference_id')} ({p.get('paper_id') or 'paper ?'}, "
+            f"{p.get('review_status', 'candidate')})"
+        )
     if t == ev.EventType.budget_consumed:
         return f"{p.get('scope')} {p.get('ref')}: steps={p.get('steps')}"
     if t == ev.EventType.budget_exhausted:

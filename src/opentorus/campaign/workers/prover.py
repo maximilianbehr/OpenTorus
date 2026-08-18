@@ -10,16 +10,27 @@ scaffold sketch with an explicit gap. Later attempts on the same branch run in
 gap-fill mode: no bootstrap, a session gate that only opens once ``proof_write`` was
 called again, and the standard gap-fill hint.
 
+Scope is enforced by the tool gate, not by prompt text: only a branch whose relation
+to the root is ``equivalent`` writes the dossier's one primary sketch. Every other
+branch (special case, relaxation, sufficient, necessary, supporting, unknown, ...) has
+its ``proof_write`` calls rewritten to ``scope=exploration`` with a bridge naming the
+branch objective (:func:`scope_gate`) — a real run showed a special-case prover
+refining ``PROOF-0001`` in place and re-proposing the proof branch's obligations,
+because the model ignored the instruction and the default scope is ``primary``.
+
 What comes back is honest by construction: every explicit gap of the new/updated
 PROOF attempt (``nl_proof.explicit_gaps``) is proposed as an obligation whose closure
 modes name the artifact classes that could discharge it; a gap-free sketch proposes
 one whole-proof obligation instead (a sketch without gaps is still a sketch until a
-referee or a formal backend accepts it). No ``proof_write`` in the whole budget is a
-``model_no_progress`` failure signature, never a silent "completed".
+referee or a formal backend accepts it). The obligations of a non-primary branch are
+derived from the exploration sketch *it* wrote, never from the primary. No
+``proof_write`` in the whole budget is a ``model_no_progress`` failure signature,
+never a silent "completed".
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from opentorus.campaign.failures import build_failure_signature
@@ -48,24 +59,30 @@ GAP_CLOSURE_MODES: list[ClosureMode] = [
     ClosureMode.exact_symbolic_certificate,
 ]
 
-# Branches whose proof *is* an answer to the dossier problem write the dossier's one
-# primary sketch; every other relation (special case, obstruction, relaxation, …)
-# writes an exploration-scoped sketch with an explicit bridge, so it can never be
-# mistaken for — or silently overwrite — the primary answer.
-PRIMARY_RELATIONS: frozenset[RootRelation] = frozenset(
-    {
-        RootRelation.equivalent,
-        RootRelation.sufficient,
-        RootRelation.necessary,
-        RootRelation.counterexample_route,
-    }
-)
+# Only a branch whose target *is* the root problem writes the dossier's one primary
+# sketch. A sufficient condition, a necessary condition or a counterexample route is
+# still its own statement (settling it needs a verified reduction, a converse or an
+# accepted witness — see proof_tree.settlement), so its sketch is exploration-scoped
+# with an explicit bridge: it can never be mistaken for — or silently overwrite — the
+# primary answer, and its gaps never duplicate the proof branch's obligations.
+PRIMARY_RELATIONS: frozenset[RootRelation] = frozenset({RootRelation.equivalent})
+
+# The tool's own threshold for ``connection_to_dossier`` (``proof_write`` says
+# ">=60 chars"); a shorter bridge gets the branch bridge appended before the call.
+MIN_BRIDGE_CHARS = 60
 
 GAP_FILL_HINT = (
     "This branch already holds a primary proof_write with open [GAP-n] markers — the "
     "work item is NOT complete until proof_write(scope=primary) is called again to fill "
     "or shrink the gaps. Read the latest PROOF-*, use paper_read / exp_run as needed, then "
     "call proof_write. A chat summary does not finish this work item."
+)
+EXPLORATION_GAP_FILL_HINT = (
+    "This branch already holds an exploration proof_write with open [GAP-n] markers — the "
+    "work item is NOT complete until proof_write(scope=exploration, connection_to_dossier="
+    "...) is called again to fill or shrink the gaps of THIS branch's sketch. Read the "
+    "latest exploration PROOF-* of this branch, use paper_read / exp_run as needed, then "
+    "call proof_write. Do not touch the dossier's primary sketch."
 )
 
 
@@ -81,7 +98,8 @@ def branch_instructions(ctx: WorkerContext) -> str:
         lines.append(
             "This branch is NOT the dossier's primary answer: write proof_write with "
             "scope=exploration and connection_to_dossier stating how this branch bears on "
-            "the root problem; never scope=primary here."
+            "the root problem; never scope=primary here (a primary write from this branch "
+            "is rewritten to scope=exploration by the tool gate)."
         )
     if ctx.assumption_context:
         lines.append("Assumption context (state every one you use):")
@@ -134,28 +152,83 @@ def bootstrap_args(ctx: WorkerContext) -> dict[str, object]:
                 statement=ctx.root_problem.statement,
             )
         )
-    objective = ctx.branch_objective.strip() or f"{ctx.root_relation.value} route for {pid}"
     args = dict(
         bootstrap_proof_write_args(
-            pid, f"{ctx.root_relation.value} sketch for {pid}", statement=objective
+            pid, f"{ctx.root_relation.value} sketch for {pid}", statement=branch_objective(ctx)
         )
     )
     args["scope"] = "exploration"
-    statement = ctx.root_problem.statement.strip() or ctx.root_problem.title or pid
-    # The relevance check wants the bridge to name the dossier problem itself, so the
-    # statement is quoted verbatim alongside the relation.
-    args["connection_to_dossier"] = (
-        f"Campaign branch {ctx.branch_id or '(none)'} relates to the dossier problem "
-        f"\"{statement}\" as '{ctx.root_relation.value}': {objective} — settling it does not "
-        "settle the root problem by itself."
-    )
+    args["connection_to_dossier"] = connection_text(ctx)
     return args
 
 
-def _proof_body(ot_dir: Path, body_path: str | None) -> str:
+def branch_objective(ctx: WorkerContext) -> str:
+    """The branch objective, or a relation-named stand-in when the strategist left it empty."""
+    pid = ctx.root_problem.problem_id
+    return ctx.branch_objective.strip() or f"{ctx.root_relation.value} route for {pid}"
+
+
+def connection_text(ctx: WorkerContext) -> str:
+    """The ``connection_to_dossier`` bridge for a non-primary branch's exploration sketch.
+
+    The relevance check wants the bridge to name the dossier problem itself, so the
+    statement is quoted verbatim alongside the relation and the branch objective; the
+    closing clause states what the relation means for the root, so the sketch cannot be
+    read as the dossier answer.
+    """
+    pid = ctx.root_problem.problem_id
+    statement = ctx.root_problem.statement.strip() or ctx.root_problem.title or pid
+    return (
+        f"Campaign branch {ctx.branch_id or '(none)'} relates to the dossier problem "
+        f"\"{statement}\" as '{ctx.root_relation.value}': {branch_objective(ctx)} — settling "
+        "it does not settle the root problem by itself."
+    )
+
+
+def scope_gate(
+    ctx: WorkerContext,
+    inner: Callable[[str, dict], str | None],
+    *,
+    coercions: list[str],
+) -> Callable[[str, dict], str | None]:
+    """Wrap ``inner`` so a non-primary branch can only write exploration sketches.
+
+    The gate receives the live argument dict of the call the loop is about to execute
+    (the loop validates and runs exactly this dict), so rewriting ``scope`` and the
+    bridge *here* is the coercion — the model's text is not trusted to remember the
+    instruction, and a blocked call would only cost a smaller model more turns. Every
+    rewrite is appended to ``coercions`` (the scope the model asked for) so the worker
+    can report it. A primary-relation branch gets ``inner`` back unchanged.
+    """
+    if ctx.root_relation in PRIMARY_RELATIONS:
+        return inner
+
+    def gate(name: str, args: dict) -> str | None:
+        if name == "proof_write":
+            asked = str(args.get("scope") or "").strip().lower()
+            coerced = asked != "exploration"
+            if coerced:
+                args["scope"] = "exploration"
+                coercions.append(asked or "(missing)")
+            bridge = str(args.get("connection_to_dossier") or "").strip()
+            if coerced or len(bridge) < MIN_BRIDGE_CHARS:
+                # Keep whatever the model said and add the branch bridge, which quotes
+                # the statement verbatim so the tool's relevance check passes.
+                args["connection_to_dossier"] = "\n\n".join(
+                    part for part in (bridge, connection_text(ctx)) if part
+                )
+        return inner(name, args)
+
+    return gate
+
+
+def _proof_body(ot_dir: Path, problem_id: str, body_path: str | None) -> str:
+    """The sketch's markdown (``body_path`` is relative to the dossier directory)."""
+    from opentorus.research.dossier.store import dossier_dir
+
     if not body_path:
         return ""
-    path = ot_dir / body_path
+    path = dossier_dir(ot_dir, problem_id) / body_path
     return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
@@ -197,8 +270,11 @@ class ProverWorker:
             extra=branch_instructions(ctx),
             formal_backends=formal_backends(rt.config),
         )
-        gate = prove_tool_gate(pid, deliverable_done=lambda: False)
         primary = ctx.root_relation in PRIMARY_RELATIONS
+        coercions: list[str] = []
+        gate = scope_gate(
+            ctx, prove_tool_gate(pid, deliverable_done=lambda: False), coercions=coercions
+        )
         if not prior:
             loop = bounded_loop(
                 ctx,
@@ -221,23 +297,42 @@ class ProverWorker:
                 lease=lease,
                 tool_gate=gate,
                 session_gate=_proof_written,
-                session_recovery_hint=lambda: GAP_FILL_HINT,
+                session_recovery_hint=lambda: (
+                    GAP_FILL_HINT if primary else EXPLORATION_GAP_FILL_HINT
+                ),
             )
         loop.run(prompt)
         after = {p.id: p for p in store.list_proof_attempts(rt.ot_dir, pid)}
         changed = sorted(
             p_id for p_id, p in after.items() if p_id not in before or before[p_id] != p.updated_at
         )
+        # A non-primary branch's obligations come from the sketch *it* wrote. The gate
+        # keeps proof_write off the primary, so a changed primary here means some other
+        # route touched it — that is not this branch's progress and must not seed its
+        # obligations from the proof branch's gaps.
+        own = [p_id for p_id in changed if primary or after[p_id].scope == "exploration"]
         turns = max(1, loop.steps_run)
         decision_id = lease.decision.decision_id
-        if not changed:
+        coercion_notes = (
+            [
+                f"{len(coercions)} proof_write call(s) rewritten to scope=exploration "
+                f"(asked: {', '.join(coercions)}); a {ctx.root_relation.value} branch never "
+                "writes the primary sketch"
+            ]
+            if coercions
+            else []
+        )
+        if not own:
             return WorkerResult(
                 status="failed",
                 error_category="model_no_progress",
                 message=f"no proof_write in {turns} model turn(s)",
                 usage=CostTotals(steps=turns),
                 routing_decision_id=decision_id,
-                notes=[f"{turns} turn(s), {loop.tool_calls_this_run} tool call(s), no proof_write"],
+                notes=[
+                    f"{turns} turn(s), {loop.tool_calls_this_run} tool call(s), no proof_write",
+                    *coercion_notes,
+                ],
                 failure_signature=build_failure_signature(
                     role=self.role,
                     strategy_class=strategy,
@@ -245,16 +340,23 @@ class ProverWorker:
                     tool_or_solver="proof_write",
                     error_category="model_no_progress",
                     counterargument=(
-                        "gap-fill turns produced no proof_write"
-                        if prior
-                        else "no proof_write and no bootstrap"
+                        "only the primary sketch changed; a "
+                        f"{ctx.root_relation.value} branch must write scope=exploration"
+                        if changed
+                        else (
+                            "gap-fill turns produced no proof_write"
+                            if prior
+                            else "no proof_write and no bootstrap"
+                        )
                     ),
                     verifier_backends=formal_backends(rt.config),
                 ),
             )
-        newest_id = max(changed, key=lambda i: (after[i].updated_at, i))
+        newest_id = max(own, key=lambda i: (after[i].updated_at, i))
         proof = after[newest_id]
-        gaps = explicit_gaps(gaps=list(proof.gaps), body=_proof_body(rt.ot_dir, proof.body_path))
+        gaps = explicit_gaps(
+            gaps=list(proof.gaps), body=_proof_body(rt.ot_dir, pid, proof.body_path)
+        )
         known = {ob.statement.strip().lower() for ob in ctx.open_obligations}
         obligations: list[ObligationProposal] = []
         for n, gap in enumerate(gaps, start=1):
@@ -287,7 +389,7 @@ class ProverWorker:
             status="completed",
             artifacts_created=[
                 ArtifactRef(artifact_id=p_id, kind="proof_attempt", branch_id=ctx.branch_id)
-                for p_id in changed
+                for p_id in own
             ],
             obligations=obligations,
             usage=CostTotals(steps=turns),
@@ -296,15 +398,21 @@ class ProverWorker:
                 f"{proof.id} ({proof.status}, scope {proof.scope}) with {len(gaps)} open gap(s); "
                 f"{len(obligations)} new obligation(s) proposed",
                 f"{turns} model turn(s), bootstrap used: {loop.bootstrap_used}",
+                *coercion_notes,
             ],
         )
 
 
 __all__ = [
+    "EXPLORATION_GAP_FILL_HINT",
     "GAP_CLOSURE_MODES",
     "GAP_FILL_HINT",
+    "MIN_BRIDGE_CHARS",
     "PRIMARY_RELATIONS",
     "ProverWorker",
     "bootstrap_args",
     "branch_instructions",
+    "branch_objective",
+    "connection_text",
+    "scope_gate",
 ]

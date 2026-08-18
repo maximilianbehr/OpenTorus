@@ -168,6 +168,40 @@ def test_mock_exploration_campaign_runs_to_completed(tmp_path: Path) -> None:
     assert (campaign_dir(ot, pid, record.id) / "branches" / "BRANCH-0001.md").is_file()
 
 
+def test_librarian_candidates_are_recorded_as_theorem_reference_events(tmp_path: Path) -> None:
+    """A registered-but-unparsed local PDF is parsed by the literature branch; each
+    heuristic THMREF candidate is a ``theorem_reference_created`` event (paper and
+    review status in the payload) and a ``theorem_reference`` artifact ref on the
+    literature branch — never an accepted reference, never a claim status."""
+    from opentorus.research.theorems import store as thm_store
+    from support.pdf import register_unparsed_paper
+
+    root, ot, pid = make_workspace(tmp_path)
+    paper_id = register_unparsed_paper(ot)
+    engine = make_engine(root, ot)
+    record = engine.start(pid, mode="exploration")
+    events, diags = open_campaign(ot, record.id).read_events()
+    assert not diags
+    created = [e for e in events if e.type == "theorem_reference_created"]
+    assert [e.payload["theorem_reference_id"] for e in created] == ["THMREF-0001", "THMREF-0002"]
+    assert all(e.payload["paper_id"] == paper_id for e in created)
+    assert all(e.payload["review_status"] == "candidate" for e in created)
+    assert all(e.role is WorkerRole.librarian and e.branch_id for e in created)
+    assert not any(
+        e.type == "artifact_created" and e.payload.get("kind") == "theorem_reference"
+        for e in events
+    )
+    snap = _snapshot(ot, record.id)
+    refs = [r for r in snap.artifact_refs if r.kind == "theorem_reference"]
+    assert [r.artifact_id for r in refs] == ["THMREF-0001", "THMREF-0002"]
+    literature = next(b for b in snap.branches.values() if b.kind is BranchKind.literature)
+    assert refs[0].branch_id == literature.branch_id
+    assert all(r.review_status == "candidate" for r in thm_store.list_references(ot))
+    assert dstore.list_status_changes(ot, pid) == []
+    # the log replays to the same snapshot
+    assert reducer.reduce(events).model_dump(mode="json") == snap.model_dump(mode="json")
+
+
 def test_pause_resume_stop_preserve_reasons(tmp_path: Path) -> None:
     root, ot, pid = make_workspace(tmp_path)
     engine = make_engine(root, ot)
