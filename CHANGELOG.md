@@ -221,6 +221,13 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   resume` is the signal that the endpoint is back. The first live resume had re-paused
   on the very three failures that paused it, and a mock resume with a working registry
   suspended every branch and completed the campaign without trying once.
+- **`model.keep_alive` keeps an Ollama model resident between a worker's calls.** Ollama
+  unloads a model five minutes after its last request; a campaign worker often pauses
+  longer than that (an experiment runs, a paper is parsed) and the next call then pays a
+  cold reload — 25 minutes for a 31B model on a cluster's network filesystem, observed
+  as a stall in the routed stress run. The new Ollama-only key (`"30m"`, `"2h"`, `"-1"`
+  = until the server stops; also accepted in `models.profiles.<name>`) is forwarded
+  verbatim on chat and embedding requests. Unset keeps the server's default.
 - **A desktop notification that times out is a courtesy that failed, not an error.**
   `send_notification` now swallows `subprocess.TimeoutExpired` (a slow PowerShell toast
   on a Windows CI runner escaped and failed an unrelated agent-loop test) along with the

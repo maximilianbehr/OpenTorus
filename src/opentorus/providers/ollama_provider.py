@@ -65,6 +65,8 @@ def build_ollama_chat_body(
         "options": ollama_options(config, tools_enabled=bool(tools)),
         "messages": to_ollama_messages(messages),
     }
+    if config.model.keep_alive is not None:
+        body["keep_alive"] = config.model.keep_alive
     if tools:
         body["tools"] = to_function_tools(tools)
     if tool_choice is not None and tools:

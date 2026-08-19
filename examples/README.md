@@ -156,7 +156,11 @@ description of the workflow, and prerequisites.
   server (port 11434); override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL`, or
   set `model.provider` / `model.name` / `model.base_url` to your own provider with
   `opentorus config set …`. The default `mock` provider is an offline smoke test
-  only. Which model to pick is measured, not guessed — see below.
+  only. Which model to pick is measured, not guessed — see below. On a remote
+  Ollama server with slow model storage (a cluster's network filesystem), also set
+  `opentorus config set model.keep_alive 45m`: a worker that pauses longer than
+  Ollama's five-minute default between calls otherwise pays a cold reload — 25
+  minutes for a 31B model, observed as a stall.
 
 ---
 

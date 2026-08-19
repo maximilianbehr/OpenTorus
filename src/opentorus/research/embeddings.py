@@ -104,13 +104,17 @@ class OllamaEmbedder:
     def __init__(self, config: Config, model_name: str) -> None:
         self.model_name = model_name
         self._host = (config.model.base_url or _OLLAMA_DEFAULT_HOST).rstrip("/")
+        self._keep_alive = config.model.keep_alive
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         trimmed = _truncate(texts)
         out: list[list[float]] = []
         for start in range(0, len(trimmed), _ENCODE_BATCH):
             batch = trimmed[start : start + _ENCODE_BATCH]
-            payload = json.dumps({"model": self.model_name, "input": batch}).encode("utf-8")
+            body: dict[str, object] = {"model": self.model_name, "input": batch}
+            if self._keep_alive is not None:
+                body["keep_alive"] = self._keep_alive
+            payload = json.dumps(body).encode("utf-8")
             request = urllib.request.Request(
                 f"{self._host}/api/embed",
                 data=payload,

@@ -26,7 +26,7 @@ available as the implicit profile `default`; `models.profiles` adds more, and
 | key | meaning |
 |---|---|
 | `models.default_profile` | `null` (the `model:` block) or the name of a profile below |
-| `models.profiles.<name>` | every `ModelConfig` field -- `provider`, `name`, `temperature`, `base_url`, `timeout_seconds`, `num_ctx`, `top_p`, `top_k`, `seed`, `num_predict`, `max_tokens`, `verify_tool_calling` -- plus two profile-only keys |
+| `models.profiles.<name>` | every `ModelConfig` field -- `provider`, `name`, `temperature`, `base_url`, `timeout_seconds`, `num_ctx`, `top_p`, `top_k`, `seed`, `num_predict`, `max_tokens`, `keep_alive`, `verify_tool_calling` -- plus two profile-only keys |
 | `models.profiles.<name>.capabilities` | declared capabilities (list; see below). Needed for tool calling on Ollama models, which the provider kind cannot guarantee |
 | `models.profiles.<name>.local_only` | `true` / `false` overrides the local-vs-cloud classification (`null` = derive it from provider kind and `base_url`) |
 
