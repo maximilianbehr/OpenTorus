@@ -108,7 +108,7 @@ opentorus --verbose prove "${TARGET}" --disprove --min-papers 2
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
-opentorus problem report "${TARGET}" --lint
+opentorus problem report "${TARGET}" --lint || true   # advisory: warnings are findings to read, not a reason to skip the verdict
 opentorus problem export "${TARGET}" --pdf
 
 echo
