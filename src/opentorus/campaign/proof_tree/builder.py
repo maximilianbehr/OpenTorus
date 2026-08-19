@@ -685,6 +685,71 @@ class _Builder:
                 elif _PROOF_ID.match(key):
                     self.want(eid, key, "depends_on", "evidence drawn from this proof attempt")
 
+    def build_workspace_evidence(self) -> None:
+        """Workspace-ledger evidence (``EVIDENCE-*`` in ``evidence.jsonl``).
+
+        The falsifier and numerical workers record their bounded searches through the
+        workspace stack (``record_search_evidence``), exactly like the research loop
+        does, so their evidence never reaches the dossier's ``evidence/index.jsonl``.
+        A tree that read only the dossier ledger reported those campaign artifacts as
+        ``missing_ref`` — the first real routed run had two. Anything attributed to
+        this problem, or referenced by the campaign, is a node here.
+        """
+        from opentorus.research.evidence import list_evidence
+
+        entries = self.read_list("evidence.jsonl", lambda: list_evidence(self.ot_dir))
+        for e in entries:
+            eid = _up(e.id)
+            if eid in self.nodes:
+                continue
+            attributed = e.problem_id == self.pid or eid in self.attribution
+            if not attributed:
+                continue
+            claim = _up(e.claim_id)
+            branch = self.branch_of(eid)
+            extra: dict[str, object] = {
+                "evidence_type": e.source_type,
+                "direction": e.direction,
+                "strength": e.strength,
+                "claim_id": claim,
+                "source_id": e.source_id,
+                "limitations": list(e.limitations),
+                "ledger": "workspace",
+            }
+            prov = self.provenance(eid)
+            if prov:
+                extra["campaign"] = prov
+            parents = [claim] if self.has(claim) else ([branch] if branch else [])
+            supporting = [_up(e.source_id)] if e.source_id else []
+            if (
+                self.add_node(
+                    ProofNode(
+                        node_id=eid,
+                        kind=ProofNodeKind.evidence,
+                        title=f"{e.source_type} evidence ({e.strength})",
+                        statement=e.summary,
+                        status=e.direction,
+                        parents=parents,
+                        supporting_artifacts=supporting,
+                        created_at=e.created_at,
+                        source="workspace",
+                        extra=extra,
+                    )
+                )
+                is None
+            ):
+                continue
+            if self.has(claim):
+                self.want(eid, claim, "parent")
+                if e.direction == "supports":
+                    self.want(eid, claim, "supports")
+                elif e.direction == "contradicts":
+                    self.want(eid, claim, "contradicts")
+            elif branch:
+                self.want(eid, branch, "parent")
+            if e.source_id and _EXP_ID.match(_up(e.source_id)):
+                self.want(eid, _up(e.source_id), "depends_on", "evidence from this experiment")
+
     def build_proof_attempts(self) -> None:
         from opentorus.research.dossier import store
         from opentorus.research.dossier.models import ProofAttempt
@@ -1285,6 +1350,7 @@ class _Builder:
             self.build_obligations,
             self.build_claims,
             self.build_evidence,
+            self.build_workspace_evidence,
             self.build_proof_attempts,
             self.build_verifier_ledger,
             self.build_experiments,

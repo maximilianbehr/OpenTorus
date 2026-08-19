@@ -583,3 +583,56 @@ def test_a_worker_exception_is_a_failed_item_and_a_phase_crash_pauses_with_the_e
     result = engine.resume("CAMPAIGN-0001")
     assert result.resumed
     assert _snapshot(ot, "CAMPAIGN-0001").status is CampaignStatus.completed
+
+
+def test_provider_outage_pauses_the_campaign_instead_of_burning_every_branch(
+    tmp_path: Path,
+) -> None:
+    """A resumed real campaign once burned fifty work items in ten minutes against a
+    dead Ollama socket. Now a worker exception is a *signed* failure
+    (``provider_unavailable`` for provider/transport errors), the retry gate refuses
+    the unchanged retry, and three consecutive provider failures pause the campaign
+    with a PROVIDER_UNAVAILABLE reason — resumable once the endpoint is back."""
+    from opentorus.campaign.engine import PROVIDER_OUTAGE_STREAK
+    from opentorus.errors import ProviderError
+
+    root, ot, pid = make_workspace(tmp_path)
+
+    class _DeadProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, ctx: WorkerContext, rt: object) -> WorkerResult:
+            self.calls += 1
+            raise ProviderError("Could not reach Ollama at http://localhost:1 (Connection refused)")
+
+    from opentorus.campaign.workers import DEFAULT_WORKERS
+
+    dead = _DeadProvider()
+    registry = {
+        **DEFAULT_WORKERS,
+        WorkerRole.prover: dead,
+        WorkerRole.falsifier: dead,
+        WorkerRole.formalizer: dead,
+    }
+    engine = make_engine(root, ot, worker_registry=registry)
+    record = engine.start(pid, mode="prove-or-refute", branches=4, max_steps=60)
+    snap = _snapshot(ot, record.id)
+    assert snap.status is CampaignStatus.paused
+    assert (snap.pause_reason or "").startswith("PROVIDER_UNAVAILABLE")
+    failed = [wi for wi in snap.work_items.values() if wi.status.value == "failed"]
+    assert failed and all(wi.failure_signature_id for wi in failed)
+    assert all(
+        snap.failure_signatures[wi.failure_signature_id].error_category  # type: ignore[index]
+        == "provider_unavailable"
+        for wi in failed
+    )
+    # far fewer than the budget: the breaker fired after a short streak
+    assert dead.calls <= PROVIDER_OUTAGE_STREAK + 3
+    assert snap.budget.steps_used < 60
+    assert open_campaign(ot, record.id).verify_replay().matches
+    # the outage is over: resume continues from REALLOCATE with a working registry
+    engine2 = make_engine(root, ot)
+    result = engine2.resume(record.id)
+    assert result.resumed
+    assert _snapshot(ot, record.id).status in {CampaignStatus.completed, CampaignStatus.paused}

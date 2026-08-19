@@ -160,6 +160,10 @@ ErrorCategory = Literal[
     "budget",
     "timeout",
     "model_no_progress",
+    # The provider (or the network to it) failed — an operational condition, not a
+    # mathematical dead end. Three of these in a row pause the campaign instead of
+    # letting every model-driven branch burn its budget against a dead endpoint.
+    "provider_unavailable",
     "other",
 ]
 DiagnosticKind = Literal[

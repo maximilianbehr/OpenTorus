@@ -207,6 +207,12 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
 
 ### Changed
 
+- **A provider outage pauses a campaign; it no longer burns every branch's budget.** A
+  worker that raises now fails with a *signed* failure (`provider_unavailable` for
+  provider/transport errors, `other` otherwise), so the retry gate refuses the unchanged
+  retry and the branch is suspended; three consecutive provider failures pause the whole
+  campaign with a `PROVIDER_UNAVAILABLE` reason, resumable once the endpoint is back. A
+  resumed real campaign had burned fifty work items in ten minutes against a dead socket.
 - **A container-backed experiment that outruns its timeout is stopped, not orphaned.**
   A timeout (or a Ctrl-C) used to kill only the `docker run`/`podman run` client; the
   container kept running — twelve orphaned experiment containers were still burning CPU
