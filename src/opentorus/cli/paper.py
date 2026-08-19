@@ -101,10 +101,17 @@ def paper_list() -> None:
 
 @paper_app.command("fetch")
 def paper_fetch(
-    identifier: str = typer.Argument(..., help="A DOI (10.x/...) or arXiv id (e.g. 2401.01234)."),
+    identifier: str = typer.Argument(
+        ...,
+        help=(
+            "A DOI (10.x/...), an arXiv id (e.g. 2401.01234), or a full https://arxiv.org/… / "
+            "https://doi.org/… URL."
+        ),
+    ),
 ) -> None:
     """Fetch full text for a DOI/arXiv id, cache as PAPER-*, and parse a reading note."""
     from opentorus.research.egress import EgressBlocked
+    from opentorus.research.identifiers import IdentifierError, normalize_paper_identifier
     from opentorus.research.papers import acquire_paper, describe_fetched_paper
     from opentorus.research.sources.base import SourceRecord
     from opentorus.research.sources.crossref import API as CROSSREF_API
@@ -115,9 +122,16 @@ def paper_fetch(
     email = config.tools.literature.contact_email
     guard = _build_egress_guard(base, config)
 
-    ident = identifier.strip()
+    # Normalise exactly like the agent's paper_fetch tool: a pasted abs/pdf/doi.org URL
+    # is the common input, and building the download URL from it produced
+    # ``https://arxiv.org/pdf/https://arxiv.org/abs/…`` (a 404) before this.
     try:
-        if ident.startswith("10."):
+        kind, ident = normalize_paper_identifier(identifier)
+    except IdentifierError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    try:
+        if kind == "doi":
             guard.authorize(CROSSREF_API)
             record = CrossrefSource(contact_email=email).lookup_doi(ident)
             if record is None:

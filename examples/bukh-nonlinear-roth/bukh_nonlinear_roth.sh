@@ -56,10 +56,13 @@ opentorus env prepare python-sci --file docker/Dockerfile
 # --- 4. Source papers (audit-verified ids only) ------------------------------
 # All four are RELATED polynomial-progression results (x, x+y, x+y^2 and
 # x, x+P1(y), x+P2(y)); none of them treats Bukh's pattern.
-opentorus paper add https://arxiv.org/abs/1707.05977
-opentorus paper add https://arxiv.org/abs/1709.00080
-opentorus paper add https://arxiv.org/abs/1608.05448
-opentorus paper add https://arxiv.org/abs/1909.00309
+# `paper fetch` downloads and parses the (audit-verified) arXiv sources so the
+# campaign's literature branch has local text from its first visit; a failed
+# download degrades to a metadata-only registration (never a hard stop).
+opentorus paper fetch https://arxiv.org/abs/1707.05977
+opentorus paper fetch https://arxiv.org/abs/1709.00080
+opentorus paper fetch https://arxiv.org/abs/1608.05448
+opentorus paper fetch https://arxiv.org/abs/1909.00309
 
 # --- 5. Problem statement & dossier -----------------------------------------
 cat > notes.md << 'NOTES'

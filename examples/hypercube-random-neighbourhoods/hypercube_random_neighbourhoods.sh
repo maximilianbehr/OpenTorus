@@ -59,11 +59,14 @@ DOCKERFILE
 opentorus env prepare python-sci --file docker/Dockerfile
 
 # --- 4. Source papers (audit-verified ids only) ------------------------------
-opentorus paper add https://arxiv.org/abs/2508.03961
-opentorus paper add https://arxiv.org/abs/1511.00583
-opentorus paper add https://arxiv.org/abs/2102.07342
-opentorus paper add https://arxiv.org/abs/1907.04117
-opentorus paper add https://arxiv.org/abs/2508.01937
+# `paper fetch` downloads and parses the (audit-verified) arXiv sources so the
+# campaign's literature branch has local text from its first visit; a failed
+# download degrades to a metadata-only registration (never a hard stop).
+opentorus paper fetch https://arxiv.org/abs/2508.03961
+opentorus paper fetch https://arxiv.org/abs/1511.00583
+opentorus paper fetch https://arxiv.org/abs/2102.07342
+opentorus paper fetch https://arxiv.org/abs/1907.04117
+opentorus paper fetch https://arxiv.org/abs/2508.01937
 
 # --- 5. Problem statement & dossier -----------------------------------------
 cat > notes.md << 'NOTES'

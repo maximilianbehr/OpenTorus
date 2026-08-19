@@ -61,10 +61,13 @@ opentorus env prepare python-sci --file docker/Dockerfile
 # DOI 10.37236/1370) is journal-only and is cited in the notes; the arXiv
 # entries below are the survey/toolkit and the paper that restates the
 # conjecture.
-opentorus paper add https://arxiv.org/abs/0711.1400
-opentorus paper add https://arxiv.org/abs/1410.6601
-opentorus paper add https://arxiv.org/abs/1208.3831
-opentorus paper add https://arxiv.org/abs/1411.0002
+# `paper fetch` downloads and parses the (audit-verified) arXiv sources so the
+# campaign's literature branch has local text from its first visit; a failed
+# download degrades to a metadata-only registration (never a hard stop).
+opentorus paper fetch https://arxiv.org/abs/0711.1400
+opentorus paper fetch https://arxiv.org/abs/1410.6601
+opentorus paper fetch https://arxiv.org/abs/1208.3831
+opentorus paper fetch https://arxiv.org/abs/1411.0002
 
 # --- 5. Problem statement & dossier -----------------------------------------
 cat > notes.md << 'NOTES'

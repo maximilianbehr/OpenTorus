@@ -99,12 +99,16 @@ GENERAL_CONJECTURE_REFUTED resolve the campaign.
 ## Driver skeleton (deltas from the existing examples)
 
 Standard blocks (fresh workspace, model config with `timeout_seconds 2400`,
-docker env, audit-verified `paper add` ids only) plus, after `problem new`:
+docker env, audit-verified `paper fetch` sources only — fetch downloads and parses the PDF so the campaign's literature branch has local text; `paper add` merely registers) plus, after `problem new`:
 
 ```bash
 opentorus problem claim "${TARGET}" --type CONJECTURE --statement "<statement>"
 opentorus problem verdict "${TARGET}" --set-primary CLAIM-0001
-opentorus --verbose prove "${TARGET}" --min-papers <N>
+opentorus --verbose campaign start "${TARGET}" --mode prove-or-refute --branches 4 --max-steps 200
+CAMPAIGN="$(opentorus campaign list --problem "${TARGET}" --json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)[-1]["campaign_id"])')"
+opentorus campaign status "${CAMPAIGN}"; opentorus campaign tree "${CAMPAIGN}"
+opentorus campaign verify "${CAMPAIGN}"        # replay the event log against the snapshot
 opentorus problem report "${TARGET}"
 opentorus problem report "${TARGET}" --lint
 opentorus problem verdict "${TARGET}"          # scope check + terminal classification
