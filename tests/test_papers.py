@@ -201,3 +201,30 @@ def test_describe_fetched_paper_handles_missing_access_note(tmp_path: Path) -> N
     line = describe_fetched_paper(base, paper)
     assert "None" not in line
     assert "full text not accessible" in line
+
+
+def test_paper_fetch_cli_normalises_a_full_arxiv_url(tmp_path: Path, monkeypatch) -> None:
+    """``paper fetch https://arxiv.org/abs/2002.01682`` must fetch ``2002.01682`` — the
+    raw URL used to be spliced into the download URL (a 404). The download itself is
+    stubbed: only the identifier handed to acquire_paper is under test."""
+    from typer.testing import CliRunner
+
+    from opentorus.cli import app
+    from opentorus.research import papers as papers_mod
+    from opentorus.research.sources.base import SourceRecord
+
+    base = _ws(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, str | None] = {}
+
+    def _fake_acquire(ot_dir, record: SourceRecord, **kwargs):  # noqa: ANN001, ANN202
+        seen["arxiv_id"] = record.arxiv_id
+        return papers_mod.add_paper(ot_dir, f"https://arxiv.org/abs/{record.arxiv_id}")
+
+    monkeypatch.setattr("opentorus.research.papers.acquire_paper", _fake_acquire)
+    result = CliRunner().invoke(app, ["paper", "fetch", "https://arxiv.org/abs/2002.01682"])
+    assert result.exit_code == 0, result.output
+    assert seen["arxiv_id"] == "2002.01682"
+    bad = CliRunner().invoke(app, ["paper", "fetch", "not-an-identifier"])
+    assert bad.exit_code == 1 and "Unrecognized paper identifier" in bad.output
+    assert base.is_dir()

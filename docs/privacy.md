@@ -9,8 +9,12 @@ configure an external model or network source.
 - **Per-project**: everything under `.opentorus/` in your repository —
   configuration, session transcripts, the action log, memory, claims, evidence,
   the artifact graph, experiments, papers, datasets, repos, reports, the index,
-  and the estimated usage/cost ledger. It is plain JSONL/YAML you can read,
-  diff, and delete.
+  the campaign event logs under each dossier, the theorem-reference ledgers, the
+  estimated usage/cost ledger, the **routing ledger** (`usage/routing.jsonl`:
+  which model profile was leased for which task class, and why) and the doctor's
+  capability probe cache. It is plain JSONL/YAML you can read, diff, and delete.
+  Both ledgers are local-only records; nothing reads them off the machine, and
+  credentials appear in them by environment-variable *name* only.
 - **Cross-workspace** (opt-in): the knowledge base in `~/.opentorus/kb/`
   (overridable via `OPENTORUS_KB_DIR`). Only artifacts you explicitly *promote*
   land here, with their provenance retained.
@@ -35,6 +39,12 @@ is sent — and the privacy filter applies:
   notice so you can see what the policy covers.
 - A pre-egress **DLP scan** inspects outbound payloads and **fails closed** when
   it detects secrets or PII (`DlpBlocked`), before anything leaves the machine.
+- With model routing, the DLP scan (and the cost estimate) follow the provider
+  that is **leased** for the task, not the workspace default: a cloud profile
+  routed for one task class under a local default is screened and priced as a
+  cloud call. A campaign worker's turns go to whichever profile its task class
+  routes to; the routing ledger records each choice. Read-only views (`campaign
+  status`, `tree`, the optional dashboard) contact no provider at all.
 
 ## Network egress (literature & data)
 

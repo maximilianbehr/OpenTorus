@@ -1,8 +1,20 @@
-"""Workspace health checks for ``opentorus doctor``."""
+"""Workspace health checks for ``opentorus doctor``.
+
+Every check is one :class:`CheckResult`; ``ok=False`` means *misconfiguration or a
+broken workspace* (a route naming an unknown profile, an unwritable dossier dir, a
+provider that cannot answer). An absent optional backend or extra is reported as
+``ok=True`` with an informational detail — "none installed" is a fact about the
+machine, not a fault, and doctor must stay green on a fresh mock workspace.
+Secrets are never printed: credentials are reported by environment-variable
+*name* and presence only.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import functools
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from opentorus.config import Config, load_config
@@ -18,9 +30,46 @@ class CheckResult:
     name: str
     ok: bool
     detail: str
+    # Structured payload for ``doctor --json`` (the tables the one-line detail summarises).
+    data: dict[str, object] = field(default_factory=dict)
 
 
-def run_doctor(root: Path, ot_dir: Path, config: Config) -> list[CheckResult]:
+def _run_with_deadline(target: Callable[[], object], seconds: float) -> tuple[bool, object]:
+    """Run ``target`` on a daemon thread; returns ``(finished, result_or_exception)``.
+
+    Doctor is the command users run precisely when an endpoint is broken, so no
+    probe may hang it: an accept-then-stall server is reported as a timeout.
+    """
+    outcome: list[object] = []
+
+    def _work() -> None:
+        try:
+            outcome.append(target())
+        except Exception as exc:  # noqa: BLE001 — surfaced to the caller as a value
+            outcome.append(exc)
+
+    thread = threading.Thread(target=_work, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if not outcome:
+        return False, None
+    return True, outcome[0]
+
+
+def run_doctor(
+    root: Path,
+    ot_dir: Path,
+    config: Config,
+    *,
+    capabilities: bool = False,
+    probe: bool = False,
+) -> list[CheckResult]:
+    """All health checks. ``capabilities`` adds per-profile capability tables and
+    route fallback availability; ``probe`` additionally probes each non-mock profile
+    online for tool calling and caches the result. ``probe`` implies
+    ``capabilities``: a probe whose findings are not shown would silently do
+    nothing, which is exactly what ``doctor --probe`` used to do."""
+    capabilities = capabilities or probe
     results: list[CheckResult] = []
 
     if (root / ".opentorus").is_dir():
@@ -67,8 +116,6 @@ def run_doctor(root: Path, ot_dir: Path, config: Config) -> list[CheckResult]:
                     probe_outcome.append(provider_supports_tool_calling(provider_obj, config))
                 except Exception as probe_exc:  # noqa: BLE001
                     probe_outcome.append((None, f"probe request failed: {probe_exc}"))
-
-            import threading
 
             thread = threading.Thread(target=_probe, daemon=True)
             thread.start()
@@ -210,10 +257,290 @@ def run_doctor(root: Path, ot_dir: Path, config: Config) -> list[CheckResult]:
     except Exception as exc:  # noqa: BLE001
         results.append(CheckResult("execution", False, str(exc)))
 
+    results.extend(_routing_checks(ot_dir, config, capabilities=capabilities, probe=probe))
+    results.append(_formal_systems_check(config))
+    results.append(_dashboard_check())
+    results.append(_paper_parsing_check())
+    results.append(_dossier_state_check(ot_dir))
+    results.append(_version_check())
     return results
 
 
-def doctor_for_cwd() -> tuple[Path | None, Path | None, list[CheckResult]]:
+def _routing_checks(
+    ot_dir: Path, config: Config, *, capabilities: bool, probe: bool
+) -> list[CheckResult]:
+    """``profiles``, ``routes`` and ``credentials`` — configuration-only unless
+    ``probe`` is set (then each non-mock profile is probed with a hard deadline)."""
+    try:
+        from opentorus.providers.pool import build_pool
+
+        pool = build_pool(config, ot_dir)
+        profile_reports, route_reports = pool.describe()
+    except Exception as exc:  # noqa: BLE001
+        detail = f"could not evaluate model profiles: {exc}"
+        return [
+            CheckResult("profiles", False, detail),
+            CheckResult("routes", False, detail),
+            CheckResult("credentials", False, detail),
+        ]
+
+    probe_notes: dict[str, str] = {}
+    if capabilities and probe:
+        probe_notes = _probe_profiles(ot_dir, config, pool.profiles())
+        # Re-read so the reports reflect the freshly cached probes.
+        pool = build_pool(config, ot_dir)
+        profile_reports, route_reports = pool.describe()
+
+    # profiles -------------------------------------------------------------------
+    problems = [f"{r.name}: {p}" for r in profile_reports for p in r.problems]
+    parts: list[str] = []
+    for report in profile_reports:
+        cred = ""
+        if report.credential_env_var:
+            state = "set" if report.credential_present else "missing"
+            cred = f", {report.credential_env_var} {state}"
+        caps = f", capabilities: {', '.join(report.capabilities) or '-'}" if capabilities else ""
+        note = f", {probe_notes[report.name]}" if report.name in probe_notes else ""
+        marker = " (default)" if report.is_default else ""
+        parts.append(f"{report.name}{marker}={report.provider}/{report.model}{cred}{caps}{note}")
+    detail = f"{len(profile_reports)} profile(s): " + "; ".join(parts)
+    if problems:
+        detail += " — problems: " + "; ".join(problems)
+    results = [
+        CheckResult(
+            "profiles",
+            not problems,
+            detail,
+            {
+                "profiles": [r.model_dump(mode="json") for r in profile_reports],
+                "probe_notes": probe_notes,
+            },
+        )
+    ]
+
+    # routes ---------------------------------------------------------------------
+    routing = config.governance.routing
+    # A report synthesised for an undefined ``models.default_profile`` is not a
+    # known profile: routes that end in it must be flagged, even though acquire
+    # falls back to the implicit ``default`` at run time.
+    known_profiles = {r.name for r in profile_reports if r.source != "models.default_profile"}
+    unknown_routes = [
+        f"{r.task_class} → {', '.join(n for n in r.candidates if n not in known_profiles)}"
+        for r in route_reports
+        if any(n not in known_profiles for n in r.candidates)
+    ]
+    if not routing.enabled:
+        detail = f"routing disabled: every task class uses '{pool.default_profile_name()}'"
+    else:
+        configured = [r for r in route_reports if len(r.candidates) > 1]
+        detail = (
+            f"routing enabled: {len(routing.task_routes)} task_routes, "
+            f"{len(routing.task_models)} legacy task_models; "
+            f"{len(configured)} task class(es) with a non-default route"
+        )
+        if not routing.task_routes and not routing.task_models:
+            detail += " (none configured — edit config.yaml; `config set` cannot write mappings)"
+    if capabilities and routing.enabled:
+        with_fallback = sum(1 for r in route_reports if r.fallback_ok)
+        detail += f"; fallback available for {with_fallback}/{len(route_reports)} task classes"
+    if unknown_routes:
+        detail += (
+            " — unknown profile in route(s): "
+            + "; ".join(unknown_routes)
+            + " (edit config.yaml; `config set` cannot write mappings)"
+        )
+    results.append(
+        CheckResult(
+            "routes",
+            not unknown_routes,
+            detail,
+            {
+                "enabled": routing.enabled,
+                "routes": [r.model_dump(mode="json") for r in route_reports],
+            },
+        )
+    )
+
+    # credentials ----------------------------------------------------------------
+    reachable = {n for r in route_reports for n in r.candidates}
+    needed = sorted({r.credential_env_var for r in profile_reports if r.credential_env_var})
+    missing = sorted(
+        {
+            r.credential_env_var
+            for r in profile_reports
+            if r.credential_env_var and not r.credential_present and r.name in reachable
+        }
+    )
+    unrouted_missing = sorted(
+        {
+            r.credential_env_var
+            for r in profile_reports
+            if r.credential_env_var
+            and not r.credential_present
+            and r.name not in reachable
+            and r.credential_env_var not in missing
+        }
+    )
+    if not needed:
+        detail = "no provider credentials required (local/mock profiles only)"
+    elif not missing:
+        detail = f"present: {', '.join(needed)}"
+        if unrouted_missing:
+            detail += f"; missing for unrouted profile(s): {', '.join(unrouted_missing)}"
+    else:
+        detail = f"missing: {', '.join(missing)} (export it or add a .env entry)"
+    results.append(
+        CheckResult(
+            "credentials",
+            not missing,
+            detail,
+            {"required": needed, "missing": missing, "missing_unrouted": unrouted_missing},
+        )
+    )
+    return results
+
+
+def _probe_profiles(ot_dir: Path, config: Config, profiles: dict) -> dict[str, str]:
+    """Online tool-calling probes for every non-mock profile (``--capabilities --probe``)."""
+    from opentorus.providers.capabilities import (
+        CapabilityCache,
+        default_cache_path,
+        probe_and_cache,
+    )
+    from opentorus.providers.pool import profile_config
+    from opentorus.providers.registry import get_provider
+
+    cache = CapabilityCache(default_cache_path(ot_dir))
+    notes: dict[str, str] = {}
+    for name, profile in profiles.items():
+        if profile.provider.lower() == "mock":
+            continue
+        probe_one = functools.partial(
+            lambda prof: probe_and_cache(get_provider(profile_config(config, prof)), prof, cache),
+            profile,
+        )
+        finished, outcome = _run_with_deadline(probe_one, _PROBE_TIMEOUT_SECONDS)
+        if not finished:
+            notes[name] = f"probe timed out after {_PROBE_TIMEOUT_SECONDS}s"
+        elif isinstance(outcome, Exception):
+            notes[name] = f"probe failed: {outcome}"
+        else:
+            caps = list(getattr(outcome, "capabilities", []))
+            reason = getattr(outcome, "note", None) or "no verdict"
+            notes[name] = (
+                f"probe confirmed: {', '.join(caps)}" if caps else f"probe inconclusive: {reason}"
+            )
+    return notes
+
+
+def _formal_systems_check(config: Config) -> CheckResult:
+    """Formal proof backends: enabled-and-installed vs enabled-but-absent (informational)."""
+    try:
+        from opentorus.research.verifiers.registry import available_verifiers
+        from opentorus.tools.research import enabled_verifier_backends
+
+        ready = sorted(available_verifiers(config))
+        enabled = enabled_verifier_backends(config)
+        absent = [name for name in enabled if name not in ready]
+        detail = f"available: {', '.join(ready)}" if ready else "none installed (formal proof off)"
+        if absent:
+            detail += f"; enabled but not installed: {', '.join(absent)}"
+        return CheckResult("formal-systems", True, detail, {"available": ready, "enabled": enabled})
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("formal-systems", False, str(exc))
+
+
+def _dashboard_check() -> CheckResult:
+    """The optional Textual dashboard: installed or not, both are fine."""
+    import importlib.util
+
+    installed = importlib.util.find_spec("textual") is not None
+    if installed:
+        return CheckResult("dashboard", True, "textual installed", {"textual": True})
+    return CheckResult(
+        "dashboard",
+        True,
+        "textual not installed (optional; the campaign dashboard needs it: "
+        "pip install 'opentorus[dashboard]')",
+        {"textual": False},
+    )
+
+
+def _paper_parsing_check() -> CheckResult:
+    """PDF text extraction (core dependency) plus optional page rendering / OCR helpers."""
+    import importlib.util
+
+    from opentorus.research.pdf_text import ocr_tools_available, pdftoppm_available
+
+    pypdf_ok = importlib.util.find_spec("pypdf") is not None
+    render = pdftoppm_available()
+    ocr = ocr_tools_available()
+    parts = [
+        "pypdf " + ("ok" if pypdf_ok else "missing"),
+        "pdftoppm " + ("ok" if render else "absent (page rendering off)"),
+        "tesseract " + ("ok" if ocr else "absent (OCR fallback off)"),
+    ]
+    return CheckResult(
+        "paper-parsing",
+        pypdf_ok,
+        "; ".join(parts),
+        {"pypdf": pypdf_ok, "pdftoppm": render, "ocr": ocr},
+    )
+
+
+def _dossier_state_check(ot_dir: Path) -> CheckResult:
+    """Dossier store writable; count problems and any campaign directories."""
+    import os
+
+    problems_dir = ot_dir / "problems"
+    if not problems_dir.exists():
+        return CheckResult(
+            "dossier-state",
+            True,
+            "no dossiers yet (problems/ is created by `opentorus problem new`)",
+            {"problems": 0, "campaigns": 0, "writable": True},
+        )
+    if not problems_dir.is_dir() or not os.access(problems_dir, os.W_OK):
+        return CheckResult(
+            "dossier-state",
+            False,
+            f"{problems_dir} is not a writable directory",
+            {"problems": 0, "campaigns": 0, "writable": False},
+        )
+    dossiers = sorted(p.name for p in problems_dir.iterdir() if p.is_dir())
+    campaigns = sorted(
+        c.name
+        for d in problems_dir.iterdir()
+        if (d / "campaigns").is_dir()
+        for c in (d / "campaigns").iterdir()
+        if c.is_dir()
+    )
+    detail = f"{len(dossiers)} dossier(s), {len(campaigns)} campaign(s); problems/ writable"
+    return CheckResult(
+        "dossier-state",
+        True,
+        detail,
+        {"problems": len(dossiers), "campaigns": len(campaigns), "writable": True},
+    )
+
+
+def _version_check() -> CheckResult:
+    import platform
+
+    from opentorus import __version__
+
+    python = platform.python_version()
+    return CheckResult(
+        "version",
+        True,
+        f"opentorus {__version__} · python {python}",
+        {"opentorus": __version__, "python": python},
+    )
+
+
+def doctor_for_cwd(
+    *, capabilities: bool = False, probe: bool = False
+) -> tuple[Path | None, Path | None, list[CheckResult]]:
     cwd = Path.cwd().resolve()
     root = resolve_cli_workspace_root(cwd)
     if root is None:
@@ -227,4 +554,4 @@ def doctor_for_cwd() -> tuple[Path | None, Path | None, list[CheckResult]]:
 
     config_path = ot_dir / "config.yaml"
     config = load_config(config_path) if config_path.is_file() else default_config()
-    return root, ot_dir, run_doctor(root, ot_dir, config)
+    return root, ot_dir, run_doctor(root, ot_dir, config, capabilities=capabilities, probe=probe)

@@ -4,42 +4,81 @@ The loop is provider-agnostic: it persists the user turn, asks the provider for
 the next action, and either returns a message or routes a tool call through the
 registry. Tool results are appended to the session and logged as actions. A step
 cap prevents runaway loops.
+
+Since the control-plane extraction this module is a *facade*: the guards live in
+:mod:`opentorus.agent.control.policies` as pure objects, provider turns and tool
+execution in :class:`opentorus.agent.control.turn_runner.TurnRunner`, and the
+prove/literature hint texts in :mod:`opentorus.agent.control.legacy`. Every name a
+caller or test reached for on ``AgentLoop`` — the constructor parameters, the
+private counters, the guard constants imported from this module — keeps working
+here by delegation, and every message a run produces is byte-identical.
 """
 
 from __future__ import annotations
 
-import itertools
-import json
 import logging
-import math
-import re
 import time
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
 
-from opentorus.actions import log_action
 from opentorus.agent.context import build_messages
+from opentorus.agent.control import legacy as _legacy_texts
+from opentorus.agent.control.events import RunEvent, RunEventSink, RunStopped, TurnStarted
+from opentorus.agent.control.legacy import LegacyCallbackPolicySet
+from opentorus.agent.control.models import (
+    PolicyAction,
+    PolicyContext,
+    PolicyDecision,
+    ReasonCode,
+    RoutingProvenance,
+)
+from opentorus.agent.control.policies.anti_loop import (
+    _ACQUISITION_MIN,
+    _ACQUISITION_RATIO,
+    _ACQUISITION_TOOLS,
+    _IDENTICAL_FAILURE_WARN,
+    _MAX_CACHED_RESERVES,
+    _MAX_CHAT_ONLY_STALL,
+    _MAX_DELIVERABLE_RETRIES,
+    _MAX_IDENTICAL_FAILURES,
+    _MAX_TOOL_PARSE_RETRIES,
+    _MAX_UNCHANGED_ERROR_ATTEMPTS,
+    _MAX_UNCHANGED_ERROR_STOP,
+    _REPEAT_GUARD_EXEMPT,
+    _REPEAT_GUARD_TOOLS,
+    _SEARCH_STREAK_NEUTRAL,
+    _SEARCH_STREAK_TOOLS,
+    _SEARCH_STREAK_WARN,
+    _VOLATILE_IN_ERRORS,
+    AcquisitionGuard,
+    ChatOnlyStallGuard,
+    RepeatCallGuard,
+    ToolFailureTracker,
+    stable_error_key,
+    tool_sig,
+)
+from opentorus.agent.control.policies.budget import (
+    GovernanceBudgetPolicy,
+    StepCapPolicy,
+    WallClockPolicy,
+)
+from opentorus.agent.control.policies.deliverables import DeliverablePolicy
+from opentorus.agent.control.turn_runner import (
+    LLMRequestCallback,
+    LLMResponseCallback,
+    StatusCallback,
+    TurnRunner,
+    _shell_command_likely_edits,
+)
+from opentorus.agent.control.workflow import CompositePolicySet, WorkflowPolicySet
 from opentorus.agent.prompts import TOOL_PARSE_RECOVERY
 from opentorus.agent.session import SessionMessage, append_message
-from opentorus.agent.task_bootstrap import bootstrap_tool_for_task, recovery_hint_for_task
-from opentorus.approvals import EXTERNAL_SESSION_KEY
 from opentorus.config import Config, OperatingStyle
 from opentorus.errors import OpenTorusError, ProviderError, is_recoverable_tool_parse_error
-from opentorus.permissions.policy import (
-    PermissionDecision,
-    evaluate_command,
-    evaluate_external_tool,
-    evaluate_write,
-)
-from opentorus.providers.base import BaseProvider, ProviderResponse
-from opentorus.tools.base import (
-    Tool,
-    ToolCall,
-    coerce_tool_args,
-    normalize_arg_keys,
-    validate_tool_args,
-)
+from opentorus.permissions.policy import PermissionDecision
+from opentorus.providers.base import BaseProvider
+from opentorus.tools.base import Tool
 from opentorus.tools.registry import ToolRegistry
 
 # A confirmation callback receives the decision, a human-readable description
@@ -49,180 +88,49 @@ ConfirmCallback = Callable[[PermissionDecision, str, str | None], bool]
 
 _logger = logging.getLogger(__name__)
 
-_MAX_TOOL_PARSE_RETRIES = 3
-_MAX_DELIVERABLE_RETRIES = 5
-# Backstop against a model that keeps replying in prose instead of calling tools
-# (common with reasoning models). After this many consecutive chat-only turns with
-# no tool executed, stop instead of cycling to the step ceiling — important during
-# gap-fill, where the deliverable bootstrap does not re-fire and caps may be inf.
-_MAX_CHAT_ONLY_STALL = 8
+# Historical names, kept importable from this module (tests and callers use them).
+_stable_error_key = stable_error_key
+_tool_sig = tool_sig
+# The prove/literature recovery hints moved to control/legacy.py verbatim; the old
+# private names resolve to the very same strings.
+_PROVE_RECOVERY_HINT = _legacy_texts.PROVE_RECOVERY_HINT
+_PROVE_GAPS_RECOVERY_HINT = _legacy_texts.PROVE_GAPS_RECOVERY_HINT
+_PROVE_RECOVERY_HINT_AFTER_TOOLS = _legacy_texts.PROVE_RECOVERY_HINT_AFTER_TOOLS
+_LIT_RECOVERY_HINT = _legacy_texts.LIT_RECOVERY_HINT
+_LIT_RECOVERY_HINT_AFTER_TOOLS = _legacy_texts.LIT_RECOVERY_HINT_AFTER_TOOLS
 
-# Backstop against a model that re-issues the SAME failing tool call and gets the
-# SAME error back, forever. A tool call that ran but failed still counted as
-# "progress" (it reset the chat-only streak), so with max_steps=inf an unwinnable
-# tool rejection cycled indefinitely (observed: 60 identical proof_write rejections,
-# 41 minutes, ~5M prompt tokens). From the WARN threshold on, the error is annotated
-# with an explicit do-not-repeat instruction; at the stop threshold the run ends
-# honestly. Streak = consecutive identical (tool, args, error) triples; any change
-# to the call, a different error, or a success of that call resets it.
-_IDENTICAL_FAILURE_WARN = 3
-_MAX_IDENTICAL_FAILURES = 6
-# Distinct argument sets that may produce one identical error before the model is told
-# the arguments are not what is wrong. Calibrated on the recorded runs: the two
-# pathological ones reach 11 and 9, every healthy one reaches 1.
-_MAX_UNCHANGED_ERROR_ATTEMPTS = 4
-# …and a ceiling, because the warning alone changed nothing. A prove run rewrote its
-# run_shell command 20 times and got the identical "not available during prove" block
-# every time; the nudge fired from the fourth on and the model kept going for another
-# sixteen turns. The consecutive-failure ladder cannot stop this — the arguments differ,
-# so its streak resets on every call. Calibrated across 19 recorded workspaces: the
-# median run reaches 1 distinct argument set per error, only three exceed 6 (at 20, 11
-# and 9), so 8 stops every pathological run without touching a healthy one.
-_MAX_UNCHANGED_ERROR_STOP = 8
-
-# Tokens the *system* mints per call, which make two reports of one and the same error
-# look like two different errors. A verifier rejection carries a fresh artifact id, a
-# fresh temp path, and a source position that shifts by a line whenever the model edits
-# anything — so keying the unchanged-error guard on the raw text made it structurally
-# unable to fire for proof_submit. Observed: 20 Coq rejections in one run, 11 of them
-# the identical `Syntax error: '.' expected after [command]`, and not one guard.
-# Only the guard's *key* is normalized; the model still sees the verbatim message.
-_VOLATILE_IN_ERRORS = (
-    (re.compile(r"(?:/private)?/(?:tmp|var/folders)/[^\s\"',;)]+"), "<tmp>"),
-    (
-        re.compile(r"\b(?:PROOF|EXP|CLAIM|EVID|PAPER|SRC|FIG|DATASET|REPO|TASK|ACTION)-\d+\b"),
-        "<id>",
-    ),
-    (re.compile(r"\bline \d+, characters \d+-\d+"), "line <n>, characters <n>"),
-    (re.compile(r"\b(?:line|Line)s? \d+(?:-\d+)?"), "line <n>"),
-    (re.compile(r":\d+:\d+(?=:|\b)"), ":<n>:<n>"),
-)
-
-
-def _stable_error_key(text: str) -> str:
-    """Strip per-call noise so the same error keys the same way twice."""
-    for pattern, placeholder in _VOLATILE_IN_ERRORS:
-        text = pattern.sub(placeholder, text)
-    return text
-
-
-_PROVE_RECOVERY_HINT = (
-    "This prove session requires a deliverable tool call — not a chat reply. "
-    "Call proof_write(problem_id=…, scope=primary) with theorem restating the dossier, "
-    "main_proof, and [GAP-n] markers."
-)
-
-_PROVE_GAPS_RECOVERY_HINT = (
-    "Primary proof_write exists but recorded gap(s) remain — this prove run is NOT complete. "
-    "Read the latest PROOF-* and relevant PAPER-* notes; use paper_read, lit_search, "
-    "paper_fetch, or exp_run as needed; then proof_write(scope=primary) to fill [GAP-n] "
-    "or shrink the gap list. Do NOT reply with a summary until gaps are closed or you "
-    "document a blocker in memory_add(kind=decisions)."
-)
-
-_PROVE_RECOVERY_HINT_AFTER_TOOLS = (
-    "This prove session is NOT complete. You used other tools but a primary proof_write "
-    "is still mandatory. Call proof_write(scope=primary): restate the dossier in "
-    "`theorem`, then main_proof with [GAP-n]. "
-    "Speculative side threads (e.g. Fredholm, alternative formulations) belong in "
-    "scope=exploration with connection_to_dossier — they do NOT finish the run alone. "
-    "claim_new, and evidence_add alone do not finish a prove run."
-)
-
-_LIT_RECOVERY_HINT = (
-    "Literature phase requires tool calls — not a chat reply. "
-    "Read the problem statement, run one lit_search with its technical terms only, "
-    "then paper_fetch directly relevant hits. Do NOT call proof_write yet."
-)
-
-_LIT_RECOVERY_HINT_AFTER_TOOLS = (
-    "Literature phase is NOT complete. "
-    "Use lit_search, paper_fetch, and paper_read as needed; "
-    "when papers are [parsed], add memory_add(kind=observations) with PAPER-* refs. "
-    "Do NOT call proof_write or end with a summary yet."
-)
-
-# Literature search/fetch tools are never repeat-blocked — their results can change,
-# so only the step budget limits usage. paper_read is NOT exempt: reading an
-# already-parsed note is idempotent, so a repeat is re-served from cache (see below).
-# ``status`` is also never repeat-blocked: it reports the live inventory the agent
-# legitimately re-polls after writing artifacts, so it is re-run, not hard-blocked.
-_REPEAT_GUARD_EXEMPT = frozenset({"lit_search", "paper_fetch", "paper_list", "status"})
-
-_REPEAT_GUARD_TOOLS = frozenset({"glob_files", "read_file", "list_files", "status", "paper_read"})
-
-# A re-read of an already-read path is served from the read cache and logged ok=True,
-# so that a compacted-away file can be recovered. That makes it look like progress to
-# every other guard: the chat-only streak resets, and neither failure tracker sees it
-# because nothing failed. It was also unbounded — two runs re-read one and the same
-# statement.md 24 and 25 times, burning a full model round-trip each time while doing
-# nothing. Half of the recorded workspaces (12 of 24) exceed three repeats; the ordinary
-# ones stop at five calls, the pathological ones run to 25. So the first few re-serves
-# stay, and past that the call fails instead — which finally feeds the identical-failure
-# tracker and ends the run honestly.
-_MAX_CACHED_RESERVES = 4
-
-# Search-spam nudge: three real runs died in a loop of consecutive lit_search /
-# web_search calls that never fetched or read anything (11 searches in one run).
-# Search tools are rightly exempt from the repeat guards (results change), so from
-# the WARN threshold on, each further consecutive search carries an explicit
-# stop-searching instruction. Any substantive tool resets the streak; inventory
-# polls (paper_list/status/memory_list) are neutral.
-_SEARCH_STREAK_TOOLS = frozenset({"lit_search", "web_search"})
-_SEARCH_STREAK_NEUTRAL = frozenset({"paper_list", "status", "memory_list"})
-_SEARCH_STREAK_WARN = 4
-
-# The streak alone measures the wrong thing. A run that goes
-# search, search, fetch, search, search, fetch … resets the counter on every fetch and
-# never trips it, while doing nothing with what it collects. Observed in a real run
-# (marcus-de-oliveira): 115 actions — 39 web_search, 33 lit_search, 31 paper_fetch, but
-# only 5 paper_read and zero proof_write. It was stopped by the no-progress window, not
-# by this guard. paper_fetch is acquisition, not processing: it puts a file on disk and
-# tells the model nothing.
-#
-# So the ratio is tracked as well: acquisition against everything substantive that is
-# not acquisition. Processing is deliberately the complement rather than a list, so a
-# newly added tool counts as work by default instead of silently inflating the ratio.
-_ACQUISITION_TOOLS = frozenset({"lit_search", "web_search", "paper_fetch", "fetch_url"})
-# Calibrated against twelve recorded runs rather than guessed. Their end-of-run ratios
-# separate cleanly: the pathological run sits at 21.2x, every healthy one between 0.2x
-# and 1.6x — so 4.0 has a wide margin on both sides. The minimum matters just as much:
-# at 12 the check also fires on three healthy runs, because early literature work is
-# legitimately acquisition-heavy before anything has been read. At 15 it fires on
-# exactly one run of the twelve, the one that collected 106 items and read 5.
-_ACQUISITION_MIN = 15
-_ACQUISITION_RATIO = 4.0
-
-
-def _tool_sig(name: str, args: dict) -> str:
-    return f"{name}:{json.dumps(args, sort_keys=True, default=str)}"
-
-
-# A status callback reports what the loop is doing so the UI can show progress.
-# ``phase`` is "model" (the model is deciding) or "tool" (a tool is running);
-# ``detail`` carries the tool name for the "tool" phase.
-StatusCallback = Callable[[str, str | None], None]
-LLMRequestCallback = Callable[[list[SessionMessage], list[dict] | None], None]
-LLMResponseCallback = Callable[["ProviderResponse"], None]
-
-_SHELL_EDIT = re.compile(
-    r"(?<![\w-])(?:>|>>|tee|mv|cp|rm|mkdir|touch|chmod|install|make|cargo)\b",
-    re.I,
-)
-
-
-def _shell_command_likely_edits(command: str) -> bool:
-    """Heuristic: does a run_shell argv likely modify the workspace?"""
-    cmd = command.strip()
-    if not cmd:
-        return False
-    if _SHELL_EDIT.search(cmd):
-        return True
-    if re.match(r"python(?:3)?\s+\S+", cmd):
-        return True
-    if re.match(r"bash\s+\S+", cmd):
-        return True
-    return False
+__all__ = [
+    "AgentLoop",
+    "ConfirmCallback",
+    "LLMRequestCallback",
+    "LLMResponseCallback",
+    "StatusCallback",
+    "_ACQUISITION_MIN",
+    "_ACQUISITION_RATIO",
+    "_ACQUISITION_TOOLS",
+    "_IDENTICAL_FAILURE_WARN",
+    "_LIT_RECOVERY_HINT",
+    "_LIT_RECOVERY_HINT_AFTER_TOOLS",
+    "_MAX_CACHED_RESERVES",
+    "_MAX_CHAT_ONLY_STALL",
+    "_MAX_DELIVERABLE_RETRIES",
+    "_MAX_IDENTICAL_FAILURES",
+    "_MAX_TOOL_PARSE_RETRIES",
+    "_MAX_UNCHANGED_ERROR_ATTEMPTS",
+    "_MAX_UNCHANGED_ERROR_STOP",
+    "_PROVE_GAPS_RECOVERY_HINT",
+    "_PROVE_RECOVERY_HINT",
+    "_PROVE_RECOVERY_HINT_AFTER_TOOLS",
+    "_REPEAT_GUARD_EXEMPT",
+    "_REPEAT_GUARD_TOOLS",
+    "_SEARCH_STREAK_NEUTRAL",
+    "_SEARCH_STREAK_TOOLS",
+    "_SEARCH_STREAK_WARN",
+    "_VOLATILE_IN_ERRORS",
+    "_shell_command_likely_edits",
+    "_stable_error_key",
+    "_tool_sig",
+]
 
 
 class AgentLoop:
@@ -250,6 +158,12 @@ class AgentLoop:
         deliverable_complete: Callable[[], bool] | None = None,
         tool_gate: Callable[[str, dict], str | None] | None = None,
         stall_check: Callable[[], str | None] | None = None,
+        *,
+        event_sink: RunEventSink | None = None,
+        routing: RoutingProvenance | None = None,
+        usage_tags: dict[str, str] | None = None,
+        policies: WorkflowPolicySet | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> None:
         self.root = root
         self.ot_dir = ot_dir
@@ -265,49 +179,70 @@ class AgentLoop:
         self.on_llm_response = on_llm_response
         self.stream_llm = stream_llm
         self.on_thinking = on_thinking
-        self.deliverable_bootstrap = deliverable_bootstrap
-        self.session_gate = session_gate
-        self._session_recovery_hint = session_recovery_hint
-        self._pre_deliverable_gate = pre_deliverable_gate
-        self._pre_deliverable_gate_detail = pre_deliverable_gate_detail
-        self._deliverable_complete = deliverable_complete
-        self._tool_gate = tool_gate
-        # State that must be usable before (and across) run(). The streak counters
-        # below are deliberately reset per run(); these are not.
-        self.steps_run = 0
-        self._last_tool_ok = True
-        self._fail_streak = 0
-        self._fail_streak_key: str | None = None
-        self._fail_streak_tool: str | None = None
-        self._search_streak = 0
-        self._acquisition_calls = 0
-        self._processing_calls = 0
-        # (tool, error) -> the distinct argument sets that produced it. Catches a model
-        # that keeps changing the call without addressing what the error actually says.
-        self._error_signatures: dict[str, set[str]] = {}
-        self._unchanged_error_stop: str | None = None
-        # (tool, args, error) -> how often it failed, consecutive or not. Deliberately
-        # NOT reset per run(): the prove loop runs several phases against one loop, and
-        # a wall hit in the literature phase is still a wall in the proof phase.
-        self._failure_counts: dict[str, int] = {}
-        # Optional caller-supplied stall detector, probed once per step like the
-        # budget gate. Returning a message ends the run honestly with that text —
-        # the seam that lets a phase without a deliverable yet (e.g. the prove
-        # draft phase) enforce its own no-progress window even when caps are inf.
-        self._stall_check = stall_check
-        self._required_deliverable_tool = (
-            deliverable_bootstrap[0] if deliverable_bootstrap is not None else None
+        # What this run must produce, and how the model is nudged toward it.
+        self._deliverable = DeliverablePolicy(
+            deliverable_bootstrap,
+            session_gate,
+            session_recovery_hint,
+            pre_deliverable_gate,
+            pre_deliverable_gate_detail,
+            deliverable_complete,
         )
-        self._deliverable_satisfied = False
-        # Set when a write/command tool runs successfully, so callers know the
-        # workspace may have changed and verification is warranted.
-        self.edited = False
-        # Accumulated (path, old_content, new_content) for file edits the agent
-        # made, recorded as a patch artifact at the end of the run.
-        self._pending_edits: list[tuple[str, str, str]] = []
+        # The old callback kwargs (tool gate, caller-supplied stall detector) become the
+        # first member of the policy set; a caller's own set stacks behind them.
+        self._legacy = LegacyCallbackPolicySet(
+            tool_gate=tool_gate,
+            stall_check=stall_check,
+            session_gate=session_gate,
+            deliverable_complete=deliverable_complete,
+        )
+        members: list[WorkflowPolicySet] = [self._legacy]
+        if policies is not None:
+            members.append(policies)
+        self._policies = CompositePolicySet(members)
+        # Guards: pure objects the loop delegates to. The identical-failure memory and
+        # the unchanged-error ledger deliberately survive across run() calls (see
+        # ToolFailureTracker); the per-run counters are reset in run().
+        self._tracker = ToolFailureTracker()
+        self._repeat_guard = RepeatCallGuard()
+        self._acquisition = AcquisitionGuard()
+        self._chat_only = ChatOnlyStallGuard()
+        self.event_sink = event_sink
+        self.routing = routing
+        self.usage_tags = dict(usage_tags or {})
+        self.should_stop = should_stop
+        self._runner = TurnRunner(
+            root,
+            ot_dir,
+            provider,
+            registry,
+            config,
+            session_id=self.session_id,
+            confirm=confirm,
+            on_text=on_text,
+            on_status=on_status,
+            on_llm_request=on_llm_request,
+            on_llm_response=on_llm_response,
+            stream_llm=stream_llm,
+            on_thinking=on_thinking,
+            policies=self._policies,
+            deliverable=self._deliverable,
+            repeat_guard=self._repeat_guard,
+            failure_tracker=self._tracker,
+            acquisition_guard=self._acquisition,
+            event_sink=event_sink,
+            routing=routing,
+            usage_tags=usage_tags,
+            should_stop=should_stop,
+        )
+        # State that must be usable before (and across) run().
+        self.steps_run = 0
         self._task_id: str | None = None
-        self.tool_calls_this_run: int = 0
-        self.tools_used_this_run: list[str] = []
+        self.model_tool_calls = 0
+        self.bootstrap_used = False
+        self.hit_max_steps = False
+
+    # --- delegating surface (compatibility) -----------------------------------------------
 
     @property
     def _style(self) -> OperatingStyle:
@@ -316,6 +251,293 @@ class AgentLoop:
     @property
     def _review(self) -> bool:
         return self.config.agent.mode == "review"
+
+    # deliverable policy
+    @property
+    def deliverable_bootstrap(self) -> tuple[str, dict] | None:
+        return self._deliverable.bootstrap
+
+    @deliverable_bootstrap.setter
+    def deliverable_bootstrap(self, value: tuple[str, dict] | None) -> None:
+        self._deliverable.bootstrap = value
+
+    @property
+    def session_gate(self) -> Callable[[], bool] | None:
+        return self._deliverable.session_gate
+
+    @session_gate.setter
+    def session_gate(self, value: Callable[[], bool] | None) -> None:
+        self._deliverable.session_gate = value
+        self._legacy.session_gate = value
+
+    @property
+    def _session_recovery_hint(self) -> Callable[[], str] | None:
+        return self._deliverable.session_recovery_hint
+
+    @_session_recovery_hint.setter
+    def _session_recovery_hint(self, value: Callable[[], str] | None) -> None:
+        self._deliverable.session_recovery_hint = value
+
+    @property
+    def _pre_deliverable_gate(self) -> Callable[[], bool] | None:
+        return self._deliverable.pre_deliverable_gate
+
+    @_pre_deliverable_gate.setter
+    def _pre_deliverable_gate(self, value: Callable[[], bool] | None) -> None:
+        self._deliverable.pre_deliverable_gate = value
+
+    @property
+    def _pre_deliverable_gate_detail(self) -> Callable[[], str] | None:
+        return self._deliverable.pre_deliverable_gate_detail
+
+    @_pre_deliverable_gate_detail.setter
+    def _pre_deliverable_gate_detail(self, value: Callable[[], str] | None) -> None:
+        self._deliverable.pre_deliverable_gate_detail = value
+
+    @property
+    def _deliverable_complete(self) -> Callable[[], bool] | None:
+        return self._deliverable.deliverable_complete
+
+    @_deliverable_complete.setter
+    def _deliverable_complete(self, value: Callable[[], bool] | None) -> None:
+        self._deliverable.deliverable_complete = value
+        self._legacy.deliverable_complete = value
+
+    @property
+    def _deliverable_satisfied(self) -> bool:
+        return self._deliverable.satisfied
+
+    @_deliverable_satisfied.setter
+    def _deliverable_satisfied(self, value: bool) -> None:
+        self._deliverable.satisfied = value
+
+    @property
+    def _required_deliverable_tool(self) -> str | None:
+        return self._deliverable.required_tool
+
+    # legacy callbacks
+    @property
+    def _tool_gate(self) -> Callable[[str, dict], str | None] | None:
+        return self._legacy.tool_gate
+
+    @_tool_gate.setter
+    def _tool_gate(self, value: Callable[[str, dict], str | None] | None) -> None:
+        self._legacy.tool_gate = value
+
+    @property
+    def _stall_check(self) -> Callable[[], str | None] | None:
+        return self._legacy.stall_check
+
+    @_stall_check.setter
+    def _stall_check(self, value: Callable[[], str | None] | None) -> None:
+        self._legacy.stall_check = value
+
+    # runner counters
+    @property
+    def tool_calls_this_run(self) -> int:
+        return self._runner.tool_calls_this_run
+
+    @tool_calls_this_run.setter
+    def tool_calls_this_run(self, value: int) -> None:
+        self._runner.tool_calls_this_run = value
+
+    @property
+    def tools_used_this_run(self) -> list[str]:
+        return self._runner.tools_used_this_run
+
+    @tools_used_this_run.setter
+    def tools_used_this_run(self, value: list[str]) -> None:
+        self._runner.tools_used_this_run = value
+
+    @property
+    def edited(self) -> bool:
+        return self._runner.edited
+
+    @edited.setter
+    def edited(self, value: bool) -> None:
+        self._runner.edited = value
+
+    @property
+    def _pending_edits(self) -> list[tuple[str, str, str]]:
+        return self._runner.pending_edits
+
+    @_pending_edits.setter
+    def _pending_edits(self, value: list[tuple[str, str, str]]) -> None:
+        self._runner.pending_edits = value
+
+    # failure tracker
+    @property
+    def _last_tool_ok(self) -> bool:
+        return self._tracker.last_tool_ok
+
+    @_last_tool_ok.setter
+    def _last_tool_ok(self, value: bool) -> None:
+        self._tracker.last_tool_ok = value
+
+    @property
+    def _fail_streak(self) -> int:
+        return self._tracker.identical.streak
+
+    @_fail_streak.setter
+    def _fail_streak(self, value: int) -> None:
+        self._tracker.identical.streak = value
+
+    @property
+    def _fail_streak_key(self) -> str | None:
+        return self._tracker.identical.streak_key
+
+    @_fail_streak_key.setter
+    def _fail_streak_key(self, value: str | None) -> None:
+        self._tracker.identical.streak_key = value
+
+    @property
+    def _fail_streak_tool(self) -> str | None:
+        return self._tracker.identical.streak_tool
+
+    @_fail_streak_tool.setter
+    def _fail_streak_tool(self, value: str | None) -> None:
+        self._tracker.identical.streak_tool = value
+
+    @property
+    def _failure_counts(self) -> dict[str, int]:
+        return self._tracker.identical.failure_counts
+
+    @_failure_counts.setter
+    def _failure_counts(self, value: dict[str, int]) -> None:
+        self._tracker.identical.failure_counts = value
+
+    @property
+    def _error_signatures(self) -> dict[str, set[str]]:
+        return self._tracker.unchanged.error_signatures
+
+    @_error_signatures.setter
+    def _error_signatures(self, value: dict[str, set[str]]) -> None:
+        self._tracker.unchanged.error_signatures = value
+
+    @property
+    def _unchanged_error_stop(self) -> str | None:
+        stop = self._tracker.unchanged.stop
+        return None if stop is None else stop.message
+
+    # acquisition guard
+    @property
+    def _search_streak(self) -> int:
+        return self._acquisition.search_streak
+
+    @_search_streak.setter
+    def _search_streak(self, value: int) -> None:
+        self._acquisition.search_streak = value
+
+    @property
+    def _acquisition_calls(self) -> int:
+        return self._acquisition.acquisition_calls
+
+    @_acquisition_calls.setter
+    def _acquisition_calls(self, value: int) -> None:
+        self._acquisition.acquisition_calls = value
+
+    @property
+    def _processing_calls(self) -> int:
+        return self._acquisition.processing_calls
+
+    @_processing_calls.setter
+    def _processing_calls(self, value: int) -> None:
+        self._acquisition.processing_calls = value
+
+    # repeat guard
+    @property
+    def _tool_sigs_ok(self) -> set[str]:
+        return self._repeat_guard.tool_sigs_ok
+
+    @_tool_sigs_ok.setter
+    def _tool_sigs_ok(self, value: set[str]) -> None:
+        self._repeat_guard.tool_sigs_ok = value
+
+    @property
+    def _read_fail_paths(self) -> set[str]:
+        return self._repeat_guard.read_fail_paths
+
+    @_read_fail_paths.setter
+    def _read_fail_paths(self, value: set[str]) -> None:
+        self._repeat_guard.read_fail_paths = value
+
+    @property
+    def _read_cache(self) -> dict[str, str]:
+        return self._repeat_guard.read_cache
+
+    @_read_cache.setter
+    def _read_cache(self, value: dict[str, str]) -> None:
+        self._repeat_guard.read_cache = value
+
+    @property
+    def _reserve_counts(self) -> dict[str, int]:
+        return self._repeat_guard.reserve_counts
+
+    @_reserve_counts.setter
+    def _reserve_counts(self, value: dict[str, int]) -> None:
+        self._repeat_guard.reserve_counts = value
+
+    # --- delegating methods (compatibility) ---------------------------------------------
+
+    def _note_tool_success(self, sig: str) -> None:
+        """Reset the identical-failure streak when the streaking call finally succeeds."""
+        self._tracker.note_success(sig)
+
+    def _note_unchanged_error(self, name: str, sig: str, content: str) -> str:
+        """Warn when new arguments keep producing the *same* error."""
+        return self._tracker.unchanged.note(name, sig, content)
+
+    def _acquisition_nudge(self, name: str) -> str | None:
+        """Tell a collecting-but-not-reading run to stop collecting."""
+        return self._acquisition.nudge(name)
+
+    def _note_tool_failure(self, name: str, sig: str, content: str) -> str:
+        """Track an identical failing (tool, args, error) triple; annotate from WARN on."""
+        return self._tracker.note_failure(name, sig, content)
+
+    def _identical_failure_stop(self) -> str | None:
+        """Return an honest stop message once either dead-end cap is reached."""
+        return self._tracker.stop_message()
+
+    def _wall_clock_stop(self, run_started: float) -> str | None:
+        """Stop once the run has spent its wall-clock budget."""
+        limit = self.config.agent.max_wall_seconds
+        if limit is None or limit <= 0:
+            return None
+        decision = WallClockPolicy(limit).check(time.monotonic() - run_started, self.steps_run)
+        return None if decision is None else decision.message
+
+    def _budget_stop(self) -> str | None:
+        """Return a stop message if a configured budget cap is reached, else None."""
+        decision = GovernanceBudgetPolicy(self.ot_dir, self.config, self.session_id).check()
+        return None if decision is None else decision.message
+
+    def _screen_outbound(self, messages) -> str | None:  # noqa: ANN001
+        """Pre-egress DLP: block a cloud send that would leak secrets/PII (else None)."""
+        decision = self._runner.screen_outbound(messages)
+        return None if decision is None else decision.message
+
+    def _record_usage(self, messages, response, elapsed: float) -> None:  # noqa: ANN001
+        """Record a usage/cost entry for one provider turn."""
+        self._runner.record_usage(messages, response, elapsed)
+
+    def _read_path(self, user_path: str) -> str | None:
+        return self._runner._read_path(user_path)
+
+    def _evaluate(self, tool: Tool, args: dict) -> PermissionDecision | None:
+        """Return a permission decision for a write/command tool, or None for reads."""
+        return self._runner.evaluate(tool, args)
+
+    def _enforce(self, name: str, args: dict, decision: PermissionDecision) -> str | None:
+        """Apply a permission decision. Returns a message if the call must not run."""
+        return self._runner.enforce(name, args, decision)
+
+    def _run_tool(self, name: str, args: dict, call_id: str) -> str:
+        """Execute one tool call and return the text handed back to the model."""
+        self._runner.planned_task_id = self._task_id
+        return self._runner.execute_tool(name, args, call_id).content
+
+    # --- run ---------------------------------------------------------------------------------
 
     def _append(self, message: SessionMessage) -> None:
         message.metadata.setdefault("session_id", self.session_id)
@@ -326,37 +548,68 @@ class AgentLoop:
             self.on_status(phase, detail)
 
     def _session_ready(self) -> bool:
-        if self._deliverable_satisfied:
-            if self._deliverable_complete is not None and not self._deliverable_complete():
-                return False
-            return True
-        if self.session_gate is not None and self.session_gate():
-            return True
-        return False
+        return self._deliverable.session_ready()
+
+    def _context(self, run_started: float) -> PolicyContext:
+        return PolicyContext(
+            steps_run=self.steps_run,
+            tool_calls_this_run=self.tool_calls_this_run,
+            elapsed_seconds=time.monotonic() - run_started,
+            last_tool_ok=self._last_tool_ok,
+            deliverable_satisfied=self._deliverable_satisfied,
+            session_id=self.session_id,
+        )
+
+    def _emit(self, event: RunEvent) -> None:
+        """Hand an event to the sink without letting a sink failure end the run.
+
+        ``events.RunEventSink`` says a sink never raises; the loop enforces it because
+        it — not the sink — would otherwise lose the final answer.
+        """
+        if self.event_sink is None:
+            return
+        try:
+            self.event_sink.emit(event)
+        except Exception as exc:  # noqa: BLE001 — a sink must never abort the loop
+            _logger.debug("Event sink raised on %s: %s", type(event).__name__, exc)
+
+    def _emit_stop(self, decision: PolicyDecision) -> None:
+        self._emit(RunStopped(step=self.steps_run, session_id=self.session_id, decision=decision))
+
+    def _provider_kind(self) -> str:
+        """The provider *kind* actually answering (``ollama``, ``openai``, ...).
+
+        A routed lease is built from a profile, so the provider's own ``config`` is
+        authoritative; a bare provider's ``name`` comes next; the workspace
+        ``config.model.provider`` (the default profile) is the last resort. Deciding
+        Ollama-only behaviour from the default profile would mis-drive a leased
+        provider of another kind.
+        """
+        provider_cfg = getattr(getattr(self.provider, "config", None), "model", None)
+        kind = getattr(provider_cfg, "provider", None) if provider_cfg is not None else None
+        if not kind:
+            kind = getattr(self.provider, "name", None)
+        if not kind:
+            kind = self.config.model.provider
+        return str(kind)
+
+    def _stop_run(self, decision: PolicyDecision) -> str:
+        """Record a policy stop: append the message as the assistant turn, emit, log."""
+        self._append(SessionMessage(role="assistant", content=decision.message))
+        _logger.info("%s", decision.message)
+        self._emit_stop(decision)
+        return decision.message
 
     def run(self, task: str) -> str:
         """Run one task to completion and return the final assistant message."""
         self._append(SessionMessage(role="user", content=task))
-        self._pending_edits = []
-        self.tool_calls_this_run = 0
-        self.tools_used_this_run = []
-        self._tool_sigs_ok: set[str] = set()
-        self._read_fail_paths: set[str] = set()
-        # Identical-failure backstop state — see _MAX_IDENTICAL_FAILURES. Declared in
-        # __init__ (so the object is usable before run()); reset here per run.
-        self._fail_streak = 0
-        self._last_tool_ok = True
-        self._fail_streak_key = None
-        self._fail_streak_tool = None
-        # Consecutive lit_search/web_search calls without substantive work between.
-        self._search_streak = 0
-        # Run totals behind the acquisition/processing ratio (see _ACQUISITION_RATIO).
-        self._acquisition_calls = 0
-        self._processing_calls = 0
-        # Content of successful read_file calls, so a repeated read can be re-served
-        # (its content may have been compacted out of context) instead of blocked.
-        self._read_cache: dict[str, str] = {}
-        self._reserve_counts: dict[str, int] = {}
+        # Per-run reset of the counters and the per-run guard state. The identical-
+        # failure memory and the unchanged-error ledger survive on purpose (see the
+        # tracker); the failure *streak*, the search streak, the acquisition totals,
+        # the read cache and the repeat signatures start fresh.
+        self._runner.reset_run()
+        self._runner.planned_task_id = self._task_id
+        self._chat_only.reset()
         # Tool calls the model produced on its own, excluding bootstrap fallbacks.
         # Lets callers detect a model that never tool-calls (vs. one that hiccuped).
         self.model_tool_calls = 0
@@ -373,37 +626,42 @@ class AgentLoop:
         planned_task = get_task(self.ot_dir, self._task_id) if self._task_id else None
 
         result_text = "Reached the maximum number of steps without a final answer."
+        stop_decision: PolicyDecision | None = None
         tool_parse_retries = 0
         deliverable_retries = 0
         recovery_hint: str | None = None
-        chat_only_streak = 0
-        last_chat_only: str | None = None
         run_started = time.monotonic()
         # ``max_steps = inf`` means truly unbounded: run until the deliverable is
         # done, the no-progress stall guard trips, or the user interrupts (Ctrl-C).
         # A finite max_steps is a hard cap.
-        step_iter: Iterable[int] = (
-            itertools.count() if math.isinf(self.max_steps) else range(int(self.max_steps))
-        )
-        for _ in step_iter:
+        for _ in StepCapPolicy(self.max_steps).steps():
             self.steps_run += 1
+            self._runner.step = self.steps_run
+            self._emit(TurnStarted(step=self.steps_run, session_id=self.session_id))
+            # External cancellation (a campaign engine pausing, a caller's Ctrl-C proxy):
+            # honoured before spending anything on this step.
+            cancel = self._runner.check_cancel()
+            if cancel is not None:
+                result_text = self._stop_run(cancel)
+                stop_decision = cancel
+                break
             # Hard budget gate: stop cleanly before spending more on the next turn.
-            budget_stop = self._budget_stop()
-            if budget_stop is not None:
-                self._append(SessionMessage(role="assistant", content=budget_stop))
-                result_text = budget_stop
+            budget = GovernanceBudgetPolicy(self.ot_dir, self.config, self.session_id).check()
+            if budget is not None:
+                self._append(SessionMessage(role="assistant", content=budget.message))
+                result_text = budget.message
+                stop_decision = budget
+                self._emit_stop(budget)
                 break
-            wall_stop = self._wall_clock_stop(run_started)
-            if wall_stop is not None:
-                self._append(SessionMessage(role="assistant", content=wall_stop))
-                result_text = wall_stop
-                _logger.info("%s", wall_stop)
+            wall = self._wall_clock_decision(run_started)
+            if wall is not None:
+                result_text = self._stop_run(wall)
+                stop_decision = wall
                 break
-            stall_stop = self._stall_check() if self._stall_check is not None else None
-            if stall_stop is not None:
-                self._append(SessionMessage(role="assistant", content=stall_stop))
-                result_text = stall_stop
-                _logger.info("%s", stall_stop)
+            stall = self._policies.before_turn(self._context(run_started))
+            if stall.stops:
+                result_text = self._stop_run(stall)
+                stop_decision = stall
                 break
             messages = build_messages(
                 self.root,
@@ -416,40 +674,19 @@ class AgentLoop:
                 provider=self.provider,
             )
             recovery_hint = None
-            # Pre-egress DLP: never send secrets/PII to a cloud provider (no-op for a
-            # local/mock provider, whose payload does not leave the machine).
-            egress_stop = self._screen_outbound(messages)
-            if egress_stop is not None:
-                self._append(SessionMessage(role="assistant", content=egress_stop))
-                result_text = egress_stop
-                break
-            self._status("model")
-            started = time.monotonic()
             tool_choice: str | dict | None = None
             if (
-                (
-                    planned_task is not None
-                    or self.deliverable_bootstrap is not None
-                    or self.session_gate is not None
-                )
+                self._deliverable.needs_deliverable(planned_task)
                 and not self._session_ready()
                 and deliverable_retries > 0
-                and self.config.model.provider == "ollama"
+                and self._provider_kind() == "ollama"
             ):
                 tool_choice = "required"
             try:
-                if self.on_llm_request is not None:
-                    self.on_llm_request(messages, self.registry.specs())
-                response = self.provider.respond(
-                    messages,
-                    tools=self.registry.specs(),
-                    on_text=self.on_text,
-                    stream=self.stream_llm,
-                    tool_choice=tool_choice,
-                    on_thinking=self.on_thinking,
-                )
-                if self.on_llm_response is not None:
-                    self.on_llm_response(response)
+                # Pre-egress DLP runs first: never send secrets/PII to a cloud provider
+                # (no-op for a local/mock provider, whose payload does not leave the
+                # machine). Then the provider turn, then the usage ledger.
+                turn = self._runner.request(messages, tool_choice=tool_choice)
             except ProviderError as exc:
                 if tool_parse_retries < _MAX_TOOL_PARSE_RETRIES and is_recoverable_tool_parse_error(
                     exc
@@ -458,7 +695,14 @@ class AgentLoop:
                     self._append(SessionMessage(role="user", content=TOOL_PARSE_RECOVERY))
                     continue
                 raise
-            self._record_usage(messages, response, time.monotonic() - started)
+            if turn.stop is not None:
+                self._append(SessionMessage(role="assistant", content=turn.stop.message))
+                result_text = turn.stop.message
+                stop_decision = turn.stop
+                self._emit_stop(turn.stop)
+                break
+            response = turn.response
+            assert response is not None  # request() returns a response or a stop
 
             if response.kind == "message":
                 # Stall backstop: a model that keeps answering in chat (no tool call)
@@ -466,82 +710,32 @@ class AgentLoop:
                 # actually runs a tool; during gap-fill the bootstrap does not re-fire,
                 # so without this the loop would cycle to the step ceiling. Break early
                 # on a repeated identical reply once a sketch already exists.
-                content_norm = (response.content or "").strip()
-                in_gap_fill = (
-                    self._deliverable_satisfied
-                    and self._deliverable_complete is not None
-                    and not self._deliverable_complete()
+                chat_stall = self._chat_only.note_message(
+                    response.content,
+                    in_gap_fill=self._deliverable.in_gap_fill(),
+                    tool_calls_this_run=self.tool_calls_this_run,
                 )
-                chat_only_streak += 1
-                repeated = bool(content_norm) and content_norm == last_chat_only
-                last_chat_only = content_norm
-                if chat_only_streak >= _MAX_CHAT_ONLY_STALL or (repeated and in_gap_fill):
+                if chat_stall is not None:
                     if response.content.strip():
                         self._append(SessionMessage(role="assistant", content=response.content))
-                    if self.tool_calls_this_run == 0:
-                        # The model never called a single tool despite tools being
-                        # available — a strong sign it does not support tool calling,
-                        # which OpenTorus requires for every deliverable.
-                        result_text = (
-                            "Stopped: the model produced no tool calls at all despite tools "
-                            "being available — it likely does not support tool calling, which "
-                            "OpenTorus requires. Configure a tool-calling model (e.g. a recent "
-                            "OpenAI/Claude chat model, or `ollama pull qwen3`)."
-                        )
-                    else:
-                        result_text = (
-                            "Stopped: the model kept replying in chat without calling tools "
-                            "(no further progress). The dossier holds the current state."
-                        )
+                    result_text = chat_stall.message
+                    stop_decision = chat_stall
                     _logger.info("%s", result_text)
+                    self._emit_stop(chat_stall)
                     break
-                needs_deliverable = (
-                    planned_task is not None
-                    or self.deliverable_bootstrap is not None
-                    or self.session_gate is not None
+                missing_deliverable = (
+                    self._deliverable.needs_deliverable(planned_task) and not self._session_ready()
                 )
-                missing_deliverable = needs_deliverable and not self._session_ready()
                 if missing_deliverable:
                     if deliverable_retries < _MAX_DELIVERABLE_RETRIES:
                         deliverable_retries += 1
                         if response.content.strip():
                             self._append(SessionMessage(role="assistant", content=response.content))
-                        if planned_task is not None:
-                            recovery_hint = recovery_hint_for_task(
-                                planned_task, attempt=deliverable_retries
-                            )
-                        elif self.session_gate is not None:
-                            if self._session_recovery_hint is not None:
-                                recovery_hint = self._session_recovery_hint()
-                            elif self.tool_calls_this_run > 0:
-                                recovery_hint = _LIT_RECOVERY_HINT_AFTER_TOOLS
-                            else:
-                                recovery_hint = _LIT_RECOVERY_HINT
-                        elif (
-                            self._deliverable_satisfied
-                            and self._deliverable_complete is not None
-                            and not self._deliverable_complete()
-                        ):
-                            if self._session_recovery_hint is not None:
-                                recovery_hint = self._session_recovery_hint()
-                            else:
-                                recovery_hint = _PROVE_GAPS_RECOVERY_HINT
-                        elif self.tool_calls_this_run > 0:
-                            recovery_hint = _PROVE_RECOVERY_HINT_AFTER_TOOLS
-                        else:
-                            recovery_hint = _PROVE_RECOVERY_HINT
-                        continue
-                    boot = None
-                    if planned_task is not None:
-                        boot = bootstrap_tool_for_task(planned_task, self.root, self.ot_dir)
-                    elif self.deliverable_bootstrap is not None:
-                        gap_fill_in_progress = (
-                            self._deliverable_satisfied
-                            and self._deliverable_complete is not None
-                            and not self._deliverable_complete()
+                        recovery_hint = self._deliverable.recovery_hint(
+                            planned_task, deliverable_retries, self.tool_calls_this_run
                         )
-                        if not gap_fill_in_progress:
-                            boot = self.deliverable_bootstrap
+                        continue
+                    boot = self._deliverable.bootstrap_call(planned_task, self.root, self.ot_dir)
                     if boot is not None:
                         name, args = boot
                         if self.registry.get(name) is not None:
@@ -569,26 +763,17 @@ class AgentLoop:
                                     },
                                 )
                             )
-                            failure_stop = self._identical_failure_stop()
+                            failure_stop = self._tracker.stop_decision()
                             if failure_stop is not None:
-                                self._append(SessionMessage(role="assistant", content=failure_stop))
-                                result_text = failure_stop
-                                _logger.info("%s", failure_stop)
+                                result_text = self._stop_run(failure_stop)
+                                stop_decision = failure_stop
                                 break
-                            chat_only_streak = 0  # a tool ran → progress
-                            last_chat_only = None
+                            self._chat_only.reset()  # a tool ran → progress
                             continue
-                    elif (
-                        self._deliverable_satisfied
-                        and self._deliverable_complete is not None
-                        and not self._deliverable_complete()
-                    ):
+                    elif self._deliverable.in_gap_fill():
                         if response.content.strip():
                             self._append(SessionMessage(role="assistant", content=response.content))
-                        if self._session_recovery_hint is not None:
-                            recovery_hint = self._session_recovery_hint()
-                        else:
-                            recovery_hint = _PROVE_GAPS_RECOVERY_HINT
+                        recovery_hint = self._deliverable.gap_fill_hint()
                         continue
                 self._append(SessionMessage(role="assistant", content=response.content))
                 result_text = response.content
@@ -616,7 +801,11 @@ class AgentLoop:
                 )
             )
 
+            cancelled: PolicyDecision | None = None
             for nm, ar, cid in resolved:
+                cancelled = self._runner.check_cancel()
+                if cancelled is not None:
+                    break
                 self._status("tool", nm)
                 content = self._run_tool(nm, ar, cid)
                 self._append(
@@ -626,18 +815,32 @@ class AgentLoop:
                         metadata={"tool_call_id": cid, "name": nm, "ok": self._last_tool_ok},
                     )
                 )
-            failure_stop = self._identical_failure_stop()
-            if failure_stop is not None:
-                self._append(SessionMessage(role="assistant", content=failure_stop))
-                result_text = failure_stop
-                _logger.info("%s", failure_stop)
+            if cancelled is not None:
+                result_text = self._stop_run(cancelled)
+                stop_decision = cancelled
                 break
-            chat_only_streak = 0  # a tool ran → progress
-            last_chat_only = None
+            failure_stop = self._tracker.stop_decision()
+            if failure_stop is not None:
+                result_text = self._stop_run(failure_stop)
+                stop_decision = failure_stop
+                break
+            self._chat_only.reset()  # a tool ran → progress
         else:
             self.hit_max_steps = True
             self._append(SessionMessage(role="assistant", content=result_text))
+            stop_decision = PolicyDecision(
+                action=PolicyAction.STOP,
+                reason_code=ReasonCode.STEP_CAP_REACHED,
+                message=result_text,
+            )
+            self._emit_stop(stop_decision)
 
+        if stop_decision is None:
+            self._emit_stop(
+                PolicyDecision(
+                    action=PolicyAction.ALLOW, reason_code=ReasonCode.OK, message=result_text
+                )
+            )
         self._log_usage_total()
         self._record_patch(task)
         from opentorus.notifications import notify_turn_complete
@@ -649,280 +852,11 @@ class AgentLoop:
         )
         return result_text
 
-    def _note_tool_success(self, sig: str) -> None:
-        """Reset the identical-failure streak when the streaking call finally succeeds.
-
-        A success of a *different* tool does not reset it: a model that interleaves
-        harmless status polls with the same doomed call is still stuck.
-        """
-        if self._fail_streak_key is not None and self._fail_streak_key.startswith(f"{sig}\n"):
-            self._fail_streak = 0
-            self._fail_streak_key = None
-            self._fail_streak_tool = None
-
-    def _note_unchanged_error(self, name: str, sig: str, content: str) -> str:
-        """Warn when new arguments keep producing the *same* error.
-
-        Both other guards key on the whole (tool, args, error) triple, so a model that
-        rewrites its arguments each time never repeats one and slips past both — while
-        making the identical mistake. Found by the run digest on two recorded runs:
-        36 proof_write failures across 26 distinct argument sets, 11 of which returned
-        one and the same "PAPER-0001 does not contain a numbered result 2.2". The model
-        was busily editing the proof body and never touched the citation that was wrong.
-
-        Threshold calibrated against the recorded runs: the two pathological ones reach
-        11 and 9 distinct argument sets per error, every healthy run reaches 1.
-
-        The key is normalized first (see ``_stable_error_key``): a verifier stamps every
-        rejection with a fresh proof id, a fresh temp path and a shifting source
-        position, which otherwise made two reports of one error look like two errors and
-        left this guard dead on exactly the tool where circling costs the most.
-        """
-        error_key = f"{name}\n{_stable_error_key(content[:2000])}"
-        seen_sigs = self._error_signatures.setdefault(error_key, set())
-        seen_sigs.add(sig)
-        if len(seen_sigs) >= _MAX_UNCHANGED_ERROR_STOP and self._unchanged_error_stop is None:
-            self._unchanged_error_stop = (
-                f"Stopped: {name} failed {len(seen_sigs)} times with different arguments and "
-                "the identical error every time — the arguments were never what was wrong, "
-                "and rewriting them again cannot help. The failing calls and their error are "
-                "preserved in the session log; the dossier holds the current state."
-            )
-        if len(seen_sigs) < _MAX_UNCHANGED_ERROR_ATTEMPTS:
-            return content
-        return (
-            f"{content}\n\nYou have now called {name} {len(seen_sigs)} times with "
-            "different arguments and gotten this identical error every time. The "
-            "arguments are not the problem — the error is telling you something you "
-            "have not addressed yet. Read it literally and fix what it names, or record "
-            "the obstruction with memory_add(kind=decisions) and take another route."
-        )
-
-    def _acquisition_nudge(self, name: str) -> str | None:
-        """Tell a collecting-but-not-reading run to stop collecting.
-
-        Two patterns, one message. The *streak* catches the original failure mode —
-        consecutive searches that fetch nothing. The *ratio* catches the one the streak
-        cannot see, where a fetch between every pair of searches keeps resetting the
-        counter while nothing gets read. Only attached to an acquisition call, so a run
-        that has already turned to processing is never nagged.
-        """
-        if name not in _ACQUISITION_TOOLS:
-            return None
-        if name in _SEARCH_STREAK_TOOLS and self._search_streak >= _SEARCH_STREAK_WARN:
-            return (
-                f"\n\n[loop guard] This is consecutive search #{self._search_streak} "
-                "with nothing fetched or read in between. STOP searching: "
-                "paper_fetch the most relevant hit NOW and paper_read it, or proceed "
-                "to the deliverable — more searching adds no papers."
-            )
-        processing = self._processing_calls
-        if (
-            self._acquisition_calls >= _ACQUISITION_MIN
-            and self._acquisition_calls > _ACQUISITION_RATIO * max(processing, 1)
-        ):
-            return (
-                f"\n\n[loop guard] {self._acquisition_calls} searches/fetches so far against "
-                f"{processing} calls that did anything with the results. Collecting is not "
-                "progress: paper_read what you already have, then record what it gives you "
-                "(memory_add, claim_new) or write the deliverable. Fetching more will not "
-                "move the run forward."
-            )
-        return None
-
-    def _note_tool_failure(self, name: str, sig: str, content: str) -> str:
-        """Track an identical failing (tool, args, error) triple; annotate from WARN on."""
-        # Every failure path in _run_tool funnels through here, so this is the one place
-        # that has to mark the outcome. Compaction reads it to keep failed attempts
-        # verbatim instead of reducing them to a tool name in a comma list.
-        self._last_tool_ok = False
-        if name in _REPEAT_GUARD_EXEMPT:
-            return content
-        # Normalized for the same reason as the unchanged-error key: a fresh artifact id,
-        # temp path or source position in the message must not split one recurring
-        # failure into a string of unique ones that no threshold can ever reach.
-        key = f"{sig}\n{_stable_error_key(content[:2000])}"
-        # Run-lifetime memory, separate from the consecutive streak below. The streak
-        # only ever held ONE key, so a model alternating between two failing calls —
-        # A fails, B fails, A fails again — reset it every time and never tripped any
-        # guard. Counting every distinct failure for the whole run catches that, and
-        # tells the model it is circling rather than letting it rediscover the wall.
-        self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
-        seen = self._failure_counts[key]
-        revisited = seen > 1 and key != self._fail_streak_key
-        if key == self._fail_streak_key:
-            self._fail_streak += 1
-        else:
-            self._fail_streak_key = key
-            self._fail_streak = 1
-            self._fail_streak_tool = name
-        if revisited:
-            content = (
-                f"{content}\n\nYou already tried this exact call earlier in this run "
-                f"({seen} times now) and it failed the same way. Repeating it cannot "
-                "help. Change the arguments, use a different tool, or record the dead "
-                "end with memory_add(kind=decisions) and move on."
-            )
-        else:
-            content = self._note_unchanged_error(name, sig, content)
-        if self._fail_streak < _IDENTICAL_FAILURE_WARN:
-            return content
-        guard = (
-            f"\n\n[loop guard] This exact {name} call has now failed {self._fail_streak} "
-            "times with the identical error. Do NOT repeat it unchanged — change the "
-            "arguments to address the error above, take a different approach, or record "
-            "the blocker with memory_add(kind=decisions)."
-        )
-        remaining = _MAX_IDENTICAL_FAILURES - self._fail_streak
-        if remaining > 0:
-            guard += f" The run stops after {remaining} more identical failure(s)."
-        return content + guard
-
-    def _identical_failure_stop(self) -> str | None:
-        """Return an honest stop message once either dead-end cap is reached.
-
-        Two ladders end here. The streak counts an unchanged call repeated verbatim; the
-        unchanged-error ceiling counts one error surviving ever-changing arguments, which
-        the streak structurally cannot see because every new argument set resets it.
-        """
-        if self._unchanged_error_stop is not None:
-            return self._unchanged_error_stop
-        if self._fail_streak < _MAX_IDENTICAL_FAILURES:
-            return None
-        return (
-            f"Stopped: {self._fail_streak_tool} failed {self._fail_streak} times with "
-            "identical arguments and an identical error — no progress is possible without "
-            "changing the call. The failing call and its error are preserved in the "
-            "session log; the dossier holds the current state."
-        )
-
-    def _wall_clock_stop(self, run_started: float) -> str | None:
-        """Stop once the run has spent its wall-clock budget.
-
-        Every other guard — the chat-only streak, the identical-failure cap, the
-        no-progress windows — assumes turns come back. A single model call that hangs
-        satisfies none of them, and with ``max_steps: inf`` a run can repeat that
-        indefinitely; only the provider timeout ends each individual call. This is the
-        one bound that holds regardless of what the model does, so it is checked before
-        spending on the next turn rather than in the middle of one.
-        """
+    def _wall_clock_decision(self, run_started: float) -> PolicyDecision | None:
         limit = self.config.agent.max_wall_seconds
         if limit is None or limit <= 0:
             return None
-        elapsed = time.monotonic() - run_started
-        if elapsed < limit:
-            return None
-        return (
-            f"Stopped: this run reached its wall-clock budget of {limit:.0f}s "
-            f"(elapsed {elapsed:.0f}s) after {self.steps_run} model steps. Everything "
-            "recorded so far is preserved; re-run to continue from the artifacts, or "
-            "raise agent.max_wall_seconds."
-        )
-
-    def _budget_stop(self) -> str | None:
-        """Return a stop message if a configured budget cap is reached, else None."""
-        from opentorus.governance import BudgetExceeded, assert_within_budget
-
-        try:
-            assert_within_budget(self.ot_dir, self.config, session_id=self.session_id)
-        except BudgetExceeded as exc:
-            return f"[stopped] {exc}"
-        return None
-
-    def _screen_outbound(self, messages) -> str | None:  # noqa: ANN001
-        """Pre-egress DLP: block a cloud send that would leak secrets/PII (else None).
-
-        A local/mock provider never leaves the machine, so it is exempt; cloud sends
-        are screened when ``governance.dlp`` is enabled and fail closed.
-        """
-        import json
-
-        from opentorus.usage import is_local_provider
-
-        if not self.config.governance.dlp:
-            return None
-        if is_local_provider(getattr(self.provider, "name", "unknown"), self.config.model.base_url):
-            return None
-        from opentorus.governance import DlpBlocked, assert_egress_safe
-
-        try:
-            payload = json.dumps(messages, default=str)
-        except (TypeError, ValueError):
-            payload = str(messages)
-        try:
-            assert_egress_safe(payload, self.config)
-        except DlpBlocked as exc:
-            return (
-                f"[stopped] Pre-egress DLP blocked the request: {exc} Remove the secret/PII "
-                "from the conversation, or disable governance.dlp to override."
-            )
-        return None
-
-    def _record_usage(self, messages, response, elapsed: float) -> None:
-        """Record a usage/cost entry for one provider turn.
-
-        Prefers the provider's exact token counts (``response.usage``); falls back
-        to a local character-count estimate when the provider does not report them
-        (e.g. the offline mock).
-        """
-        from opentorus.agent.compaction import estimate_tokens, total_tokens
-        from opentorus.usage import UsageRecord, estimate_cost, format_usage_line, record_usage
-
-        provider_name = getattr(self.provider, "name", "unknown")
-        model = self.config.model.name
-        base_url = self.config.model.base_url
-        usage = getattr(response, "usage", None)
-        thinking_tokens = 0
-        if usage is not None:
-            prompt_tokens = usage.prompt_tokens
-            completion_tokens = usage.completion_tokens
-            thinking_tokens = usage.thinking_tokens
-            tokens_estimated = False
-        else:
-            prompt_tokens = total_tokens(messages)
-            # The model's output on a tool-call turn is the tool name + arguments
-            # JSON, not ``content`` (which is empty there) — count it so "out" is
-            # not always 0. A turn may carry several parallel tool calls; count
-            # every one, not just the first scalar call.
-            completion_text = response.content or ""
-            for call in response.iter_tool_calls():
-                completion_text += (call.tool_name or "") + json.dumps(
-                    call.tool_args or {}, default=str
-                )
-            completion_tokens = estimate_tokens(completion_text) if completion_text else 0
-            tokens_estimated = True
-        try:
-            record_usage(
-                self.ot_dir,
-                UsageRecord(
-                    session_id=self.session_id,
-                    provider=provider_name,
-                    model=model,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    thinking_tokens=thinking_tokens,
-                    latency_ms=round(elapsed * 1000),
-                    cost_usd=estimate_cost(
-                        provider_name, model, prompt_tokens, completion_tokens, base_url
-                    ),
-                    tokens_estimated=tokens_estimated,
-                ),
-            )
-        except OpenTorusError as exc:
-            _logger.debug("Failed to record usage for session %s: %s", self.session_id, exc)
-        # Per-step token/cost surfaces in verbose runs via the logger.
-        _logger.info(
-            "%s",
-            format_usage_line(
-                provider_name,
-                model,
-                prompt_tokens,
-                completion_tokens,
-                thinking_tokens=thinking_tokens,
-                tokens_estimated=tokens_estimated,
-                base_url=base_url,
-            ),
-        )
+        return WallClockPolicy(limit).check(time.monotonic() - run_started, self.steps_run)
 
     def _log_usage_total(self) -> None:
         """Log the run's cumulative input/output tokens and estimated cost."""
@@ -956,292 +890,3 @@ class AgentLoop:
         except OpenTorusError as exc:
             _logger.debug("Failed to record applied patch: %s", exc)
         self._pending_edits = []
-
-    def _read_path(self, user_path: str) -> str | None:
-        from opentorus.paths import resolve_workspace_path
-
-        try:
-            target = resolve_workspace_path(self.root, user_path)
-        except OpenTorusError:
-            return None
-        if not target.is_file():
-            return None
-        try:
-            return target.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return None
-
-    def _evaluate(self, tool: Tool, args: dict) -> PermissionDecision | None:
-        """Return a permission decision for a write/command tool, or None for reads."""
-        mode = self.config.permissions.mode
-        if tool.permission == "write":
-            return evaluate_write(
-                args.get("path", ""), mode, style=self._style, review=self._review
-            )
-        if tool.permission == "command":
-            return evaluate_command(
-                args.get("command", ""), mode, style=self._style, review=self._review
-            )
-        if tool.permission == "external":
-            return evaluate_external_tool(tool.name, mode, style=self._style, review=self._review)
-        return None
-
-    def _run_tool(self, name: str, args: dict, call_id: str) -> str:
-        # The signature is computed up front so EVERY rejection path below can feed
-        # the identical-failure tracker: a model hammering the same blocked call is
-        # exactly as stuck as one hammering a failing tool (forensics of the
-        # perfect-mirsky run found blocked/empty paths invisible to all guards).
-        # A model that writes "read_ file" meant read_file — no registered tool has
-        # whitespace in its name — so resolve before anything else keys on the name.
-        tool, name = self.registry.resolve(name)
-        sig = _tool_sig(name, args)
-        self._last_tool_ok = True
-        if tool is None:
-            log_action(self.ot_dir, name, ok=False, args=args, stderr_summary="unknown tool")
-            available = ", ".join(sorted(self.registry.names()))
-            return self._note_tool_failure(
-                name,
-                sig,
-                f"Unknown tool: '{name}'. It does not exist — do not call it again. "
-                f"Available tools: {available}. "
-                "To search files use glob_files/list_files; to read use read_file.",
-            )
-
-        if self._tool_gate is not None:
-            blocked = self._tool_gate(name, args)
-            if blocked is not None:
-                log_action(
-                    self.ot_dir,
-                    name,
-                    ok=False,
-                    args=args,
-                    stderr_summary=blocked[:500],
-                )
-                return self._note_tool_failure(name, sig, blocked)
-
-        if name == "read_file":
-            path = str(args.get("path", "")).strip()
-            if path and path in self._read_fail_paths:
-                message = (
-                    f"Blocked repeat read_file on missing file {path}. "
-                    "Use write_file with artifact IDs from status."
-                )
-                log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
-                return self._note_tool_failure(name, sig, message)
-        if (
-            name in _REPEAT_GUARD_TOOLS
-            and name not in _REPEAT_GUARD_EXEMPT
-            and sig in self._tool_sigs_ok
-        ):
-            if self._required_deliverable_tool:
-                # e.g. a prove run's deliverable is proof_write, not write_file —
-                # nudging toward write_file misdirects the agent during gap-fill.
-                deliverable = self._required_deliverable_tool
-            elif self._task_id:
-                from opentorus.research.tasks import get_task
-
-                task = get_task(self.ot_dir, self._task_id)
-                deliverable = (
-                    "write_file(path='analysis.md', …)"
-                    if task is not None and task.category == "report"
-                    else "write_file (e.g. analysis.md)"
-                )
-            else:
-                deliverable = "write_file (e.g. analysis.md)"
-            # read_file of a known path is idempotent retrieval, not exploration:
-            # its content may have been compacted out of context, so re-serve the
-            # cached content (with a nudge) rather than hard-blocking — which would
-            # otherwise strand the agent, unable to recover a file it already read.
-            if name in ("read_file", "paper_read") and sig in self._read_cache:
-                served = self._reserve_counts.get(sig, 0) + 1
-                self._reserve_counts[sig] = served
-                if served <= _MAX_CACHED_RESERVES:
-                    log_action(
-                        self.ot_dir,
-                        name,
-                        ok=True,
-                        args=args,
-                        stdout_summary="(re-served from read cache)",
-                    )
-                    return (
-                        f"(Already read this earlier in the run; re-showing the "
-                        f"cached content — then produce the deliverable: {deliverable}.)\n\n"
-                        f"{self._read_cache[sig]}"
-                    )
-                # Deliberately free of a per-call counter: a number that ticks up would
-                # make every one of these look like a new error and blind the very
-                # streak guard that is supposed to end the loop.
-                message = (
-                    f"{name} with these arguments has already been re-served from cache "
-                    "several times and the content has not changed. Re-reading it cannot "
-                    f"move this run forward: produce the deliverable ({deliverable}), or "
-                    "if something is missing, get it with a different call."
-                )
-                log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
-                return self._note_tool_failure(name, sig, message)
-            message = (
-                f"Blocked repeat {name} with the same arguments. "
-                f"Produce the deliverable now ({deliverable})."
-            )
-            log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
-            return self._note_tool_failure(name, sig, message)
-
-        # A model that JSON-encodes an argument one time too many sent the right value,
-        # only wrapped in a string. Re-read those before validating — the rejection text
-        # alone did not help: llama3.1:70b repeated the same mistake sixteen times with
-        # the required shape spelled out in every reply.
-        schema = getattr(tool, "input_schema", {}) or {}
-        # Repair split argument *names* before values: an unknown key passes
-        # validation silently and the argument simply never arrives.
-        repaired = normalize_arg_keys(schema, args)
-        # Keep the slip visible in the ledger: the repair happens before every
-        # log_action below, so recording only the fixed form would erase the signal
-        # that found this defect in the first place. The note goes to the *log*, never
-        # to the tool.
-        log_extra = (
-            {"_repaired_keys": sorted(set(args) - set(repaired))}
-            if set(args) != set(repaired)
-            else {}
-        )
-        args = coerce_tool_args(schema, repaired)
-        schema_error = validate_tool_args(schema, args)
-        if schema_error is not None:
-            message = f"Invalid arguments for {name}: {schema_error}"
-            log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=message[:500])
-            return self._note_tool_failure(name, sig, message)
-
-        decision = self._evaluate(tool, args)
-        if decision is not None:
-            blocked = self._enforce(name, args, decision)
-            if blocked is not None:
-                return self._note_tool_failure(name, sig, blocked)
-
-        is_file_edit = tool.permission == "write" and bool(args.get("path"))
-        old_content = self._read_path(args["path"]) if is_file_edit else None
-
-        call = ToolCall(id=call_id, name=name, args=args)
-        try:
-            result = tool.run(call)
-        except Exception as exc:  # noqa: BLE001 — tool bugs must not abort the agent loop
-            message = f"Tool {name} failed: {exc}"
-            log_action(
-                self.ot_dir,
-                name,
-                ok=False,
-                args=args,
-                permission_decision=decision.model_dump() if decision else None,
-                stderr_summary=message[:500],
-            )
-            return self._note_tool_failure(name, sig, message)
-        self._last_tool_ok = result.ok
-        self.tool_calls_this_run += 1
-        self.tools_used_this_run.append(name)
-        if name in _SEARCH_STREAK_TOOLS:
-            self._search_streak += 1
-        elif name not in _SEARCH_STREAK_NEUTRAL:
-            self._search_streak = 0
-        if name in _ACQUISITION_TOOLS:
-            self._acquisition_calls += 1
-        elif name not in _SEARCH_STREAK_NEUTRAL:
-            self._processing_calls += 1
-        if result.ok and name in _REPEAT_GUARD_TOOLS and name not in _REPEAT_GUARD_EXEMPT:
-            self._tool_sigs_ok.add(sig)
-        if name == "read_file":
-            path = str(args.get("path", "")).strip()
-            # Only a genuinely missing file is a "fail path"; a policy refusal of an
-            # existing protected artifact must not be mislabeled "missing" (which would
-            # wrongly steer the model to write_file).
-            if path and result.content.startswith("Not a file"):
-                self._read_fail_paths.add(path)
-            elif result.ok:
-                # Cache so a later repeat can be re-served instead of blocked.
-                self._read_cache[sig] = result.content
-        elif name == "paper_read" and result.ok:
-            # Idempotent retrieval of a parsed note: cache for re-serve on repeat.
-            self._read_cache[sig] = result.content
-        if result.ok and tool.permission == "write":
-            self.edited = True
-        elif result.ok and name in ("exp_run", "exp_new", "proof_write"):
-            self.edited = True
-            if (
-                self._required_deliverable_tool is not None
-                and name == self._required_deliverable_tool
-            ):
-                if self._pre_deliverable_gate is not None and not self._pre_deliverable_gate():
-                    detail = (
-                        self._pre_deliverable_gate_detail().strip()
-                        if self._pre_deliverable_gate_detail is not None
-                        else "Preconditions not met."
-                    )
-                    blocked = (
-                        f"Blocked proof_write: literature requirements not met ({detail}). "
-                        "Complete lit_search, paper_fetch, and memory_add "
-                        "(one observation per parsed paper) before drafting a proof."
-                    )
-                    log_action(
-                        self.ot_dir,
-                        name,
-                        ok=False,
-                        args=args,
-                        permission_decision=decision.model_dump() if decision else None,
-                        stderr_summary=blocked[:500],
-                    )
-                    # The gate detail names the current parsed-paper count, so the
-                    # failure key only stays identical while literature makes zero
-                    # progress — exactly when repeating proof_write is truly stuck.
-                    return self._note_tool_failure(name, sig, blocked)
-                if result.metadata.get("scope", "primary") == "primary":
-                    self._deliverable_satisfied = True
-        elif result.ok and tool.permission == "command":
-            command = str(args.get("command", ""))
-            if _shell_command_likely_edits(command):
-                self.edited = True
-        if result.ok and is_file_edit:
-            new_content = self._read_path(args["path"]) or ""
-            self._pending_edits.append((args["path"], old_content or "", new_content))
-        log_action(
-            self.ot_dir,
-            name,
-            ok=result.ok,
-            args={**args, **log_extra},
-            permission_decision=decision.model_dump() if decision else None,
-            stdout_summary=result.content[:500] if result.ok else None,
-            stderr_summary=None if result.ok else result.content[:500],
-        )
-        if result.ok:
-            self._note_tool_success(sig)
-            nudge = self._acquisition_nudge(name)
-            if nudge is not None:
-                return result.content + nudge
-            return result.content
-        return self._note_tool_failure(name, sig, result.content)
-
-    def _enforce(self, name: str, args: dict, decision: PermissionDecision) -> str | None:
-        """Apply a permission decision. Returns a message if the call must not run."""
-        if not decision.allowed:
-            log_action(
-                self.ot_dir,
-                name,
-                ok=False,
-                args=args,
-                permission_decision=decision.model_dump(),
-                stderr_summary=decision.reason,
-            )
-            return f"Blocked: {decision.reason}"
-        if decision.requires_confirmation:
-            description = args.get("command") or args.get("path") or name
-            tool = self.registry.get(name)
-            is_external = tool is not None and tool.permission == "external"
-            scope = EXTERNAL_SESSION_KEY if is_external else None
-            approved = self.confirm(decision, str(description), scope) if self.confirm else False
-            if not approved:
-                log_action(
-                    self.ot_dir,
-                    name,
-                    ok=False,
-                    args=args,
-                    permission_decision=decision.model_dump(),
-                    stderr_summary="not confirmed",
-                )
-                return f"Not run (requires confirmation): {decision.reason}"
-        return None

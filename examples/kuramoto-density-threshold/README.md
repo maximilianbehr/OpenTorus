@@ -37,7 +37,7 @@ Kuramoto conjecture (Conjecture 4) was **resolved** by McRae 2025 (Thm 3.2).
 `kuramoto_density_threshold.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with numpy/scipy/sympy/mpmath/networkx → four
 audit-verified papers → dossier → **driver-created primary claim** + `verdict
---set-primary` → `prove --min-papers 5` → report + lint → `problem verdict` → PDF.
+--set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 The instance program is the most certificate-friendly of the campaign set: twisted states
 $\theta_j = 2\pi kj/n$ on circulant graphs are exact equilibria whose Hessian eigenvalues

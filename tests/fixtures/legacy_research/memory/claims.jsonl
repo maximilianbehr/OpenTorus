@@ -1,0 +1,1 @@
+{"id":"CLAIM-0001","statement":"Is a(n) prime for every n?","problem_id":"PROBLEM-0001","status":"numerical_evidence","support":[],"dependencies":[],"counterexamples":[],"limitations":[],"allowed_usage":"May cite bounded numerical evidence (state the searched range); not a proof.","notes":"","created_at":"2026-08-18T15:46:40.084257Z","updated_at":"2026-08-18T15:46:40.196939Z"}

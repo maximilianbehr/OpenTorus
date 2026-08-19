@@ -33,7 +33,7 @@ a symbolic discriminant argument proves the $3\times3$ case for degree $\le 4$.
 `fisk_toeplitz_minors.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with sympy/mpmath/scipy → three audit-verified papers →
 dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 3` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 The instance program is exact: $T_3[p]$ over rationals, real-rootedness by Sturm
 sequences, random and adversarial root vectors across scales (the $r = 6$ failure suggests

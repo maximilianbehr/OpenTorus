@@ -34,7 +34,7 @@ bipartite counterexamples need $\ge 60$ vertices (Tranquilli,
 `erdos_gyarfas.sh` follows the campaign template: fresh workspace → config (timeout
 2400s) → container with **nauty** (geng/genbg, symlinked from the Debian
 `nauty-*` binaries) + networkx + python-sat → three audit-verified papers → dossier →
-**driver-created primary claim** + `verdict --set-primary` → `prove --min-papers 5` →
+**driver-created primary claim** + `verdict --set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) →
 report + lint → `problem verdict` → PDF.
 
 Dual track: the refutation side streams nauty-generated cubic and min-degree-3 graphs

@@ -39,7 +39,7 @@ its 2025 upper bound.
 `sign_matrix_discrepancy.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with numpy/sympy/python-sat/OR-Tools → three audit-verified
 papers → dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 3` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 The instance program is exact and cheap: exhaustive sign minima ($2^{n-1}$ integer
 matvecs), exhaustive maxima over all sign matrices for $n \le 5$, SAT/CP-guided record

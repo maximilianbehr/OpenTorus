@@ -7,6 +7,7 @@ files remain readable by older code paths during development.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from importlib.resources import files
@@ -17,6 +18,8 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 
 from opentorus.errors import ConfigError
+
+_logger = logging.getLogger("opentorus")
 
 CONFIG_FILENAME = "config.yaml"
 
@@ -90,6 +93,26 @@ class ModelConfig(BaseModel):
     # also reads Ollama /api/show). OpenTorus is useless without tool calling, so a model
     # that cannot is refused with a clear message. Set false to skip the check.
     verify_tool_calling: bool = True
+
+
+class ModelProfile(ModelConfig):
+    """A named model profile for per-task routing (``models.profiles``).
+
+    Every ``model:`` key is accepted, plus a declared capability list (used when the
+    provider kind alone cannot tell — e.g. tool calling on an Ollama model) and an
+    explicit ``local_only`` override of the local-vs-cloud classification.
+    """
+
+    capabilities: list[str] = Field(default_factory=list)
+    local_only: bool | None = None
+
+
+class ModelsConfig(BaseModel):
+    """Named model profiles. The ``model:`` block is always the implicit profile
+    ``default``; ``default_profile`` may name a profile to use instead."""
+
+    default_profile: str | None = None
+    profiles: dict[str, ModelProfile] = Field(default_factory=dict)
 
 
 class ProjectConfig(BaseModel):
@@ -407,14 +430,17 @@ class BudgetConfig(BaseModel):
 class RoutingConfig(BaseModel):
     """Policy model routing (Phase 24, M75), opt-in.
 
-    Maps a *task class* (planning, narration, proof, critique, default) to a model
-    name so cheaper models handle planning/narration and stronger ones handle
-    proofs/critique. Empty mappings fall back to ``model.name``. The chosen model
-    and task class are recorded per turn for transparency.
+    ``task_routes`` maps a *task class* (``proof_development``, ``narration``, …,
+    ``default``) to an ordered list of profile names from ``models.profiles``: the
+    first eligible profile answers, the rest are fallbacks. ``task_models`` is the
+    older form (task class → bare model name, run on the default profile's provider)
+    and is still honoured. Empty mappings fall back to the default profile. The
+    chosen profile and the model that actually answered are recorded per turn.
     """
 
     enabled: bool = False
     task_models: dict[str, str] = Field(default_factory=dict)
+    task_routes: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class GovernanceConfig(BaseModel):
@@ -430,8 +456,54 @@ class GovernanceConfig(BaseModel):
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
 
 
+CampaignMode = Literal["prove-or-refute", "exploration", "survey"]
+
+
+class SchedulerWeights(BaseModel):
+    """Multipliers for the campaign scheduler's documented scoring factors."""
+
+    novelty: float = 1.0
+    root_impact: float = 1.0
+    verifier_readiness: float = 1.0
+    dependency: float = 1.0
+    cost: float = 1.0
+    redundancy: float = 1.0
+    failure: float = 1.0
+
+
+class CampaignConfig(BaseModel):
+    """Defaults for ``opentorus campaign`` (the portfolio-based campaign engine).
+
+    Every 0-valued budget means "not configured / unlimited". CLI flags override
+    these per run; the engine snapshots the effective values into ``campaign.yaml``.
+    """
+
+    default_mode: CampaignMode = "exploration"
+    # Proposals kept after de-duplication (``--branches`` overrides).
+    initial_branches: int = 4
+    # Branches scheduled concurrently; the rest queue as ``proposed``.
+    max_active_branches: int = 3
+    # v1 executes sequentially; a larger value is capped to 1 with a diagnostic.
+    max_parallel_workers: int = 1
+    # Total model turns across all workers; 0 = not configured / unlimited.
+    max_steps: int = 50
+    max_wall_seconds: int = 0
+    token_budget: int = 0
+    cost_budget: float = 0.0
+    # Model turns per branch before it is exhausted.
+    branch_step_budget: int = 10
+    require_literature_mapping: bool = True
+    require_root_relation: bool = True
+    # Rewrite snapshot.json after every event (else at phase boundaries).
+    persist_every_event: bool = True
+    # Opt-in: ``opentorus research`` also records an exploration campaign.
+    record_research: bool = False
+    scheduler_weights: SchedulerWeights = Field(default_factory=SchedulerWeights)
+
+
 class Config(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
@@ -443,6 +515,7 @@ class Config(BaseModel):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     governance: GovernanceConfig = Field(default_factory=GovernanceConfig)
+    campaign: CampaignConfig = Field(default_factory=CampaignConfig)
 
     def to_yaml(self) -> str:
         return yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False)
@@ -513,11 +586,26 @@ def render_commented_config(base_text: str, data: dict) -> str:
     those keeps the inline field documentation (and any user-added comments or MCP
     blocks) intact across edits, instead of dumping bare comment-less YAML.
 
-    Scalar leaves present in ``data`` but absent from ``base_text`` are **appended
-    at the end of their (existing) parent section** instead of being dropped: a
-    config file written before a field existed must not silently lose that field
-    on the next ``config set`` — a real run spent its whole budget with a gate the
-    driver believed it had enabled.
+    Scalar leaves present in ``data`` but absent from ``base_text`` are **appended**
+    instead of being dropped: a config file written before a field existed must not
+    silently lose that field on the next ``config set`` — a real run spent its whole
+    budget with a gate the driver believed it had enabled. A leaf whose parent
+    section exists is appended at the end of that section. A leaf whose parent
+    mapping is missing altogether (an old file predating ``campaign:`` or
+    ``models:``, or a ``scheduler_weights:`` sub-mapping) is emitted together with
+    the missing intermediate keys, at the end of its nearest existing ancestor
+    section — a whole missing top-level section is appended at EOF as a block.
+    Container values (dicts/lists) that live *under* such a missing mapping are
+    emitted too (via indented ``yaml.safe_dump``): the file has no line for them
+    that could be preserved.
+
+    An **empty** one-line container (``profiles: {}``, ``mcp: []``) whose value in
+    ``data`` is non-empty is replaced by a proper block (the header line at the same
+    indent, the value below it via indented ``yaml.safe_dump``): the file has nothing
+    inside it worth preserving, and leaving the line alone would silently drop what
+    the caller set (``models.profiles``, ``routing.task_routes``). A *non-empty*
+    one-line container (``{a: 1}``, ``[x]``) is a hand-edit surface and is left
+    untouched; :func:`write_config` reports what that dropped.
     """
     out: list[str] = []
     stack: list[tuple[int, str]] = []  # (indent, key) of open mapping parents
@@ -525,6 +613,11 @@ def render_commented_config(base_text: str, data: dict) -> str:
     # Per mapping path: index (into out) of its last key line, and its child indent.
     section_last: dict[tuple[str, ...], int] = {(): -1}
     section_indent: dict[tuple[str, ...], int] = {(): 0}
+    # Indent of a mapping's own header line (fallback child indent = header + 2).
+    header_indent: dict[tuple[str, ...], int] = {}
+    # Paths whose value is a container written on one line (``{}``, ``[]``, flow
+    # style): left untouched, and nothing is ever appended *inside* them.
+    container_paths: set[tuple[str, ...]] = set()
     for line in base_text.splitlines():
         stripped = line.strip()
         match = _CONFIG_KEY_RE.match(line)
@@ -538,32 +631,117 @@ def render_commented_config(base_text: str, data: dict) -> str:
         for depth in range(len(path)):
             section_last[tuple(path[:depth])] = len(out)
         section_indent.setdefault(tuple(path[:-1]), indent)
-        # A key with no value (or only a comment) opens a nested mapping.
-        if value_part is None or value_part.startswith("#") or value_part.rstrip() in ("[]", "{}"):
-            if value_part is None or value_part.startswith("#"):
-                stack.append((indent, key))
+        # A key with no value (or only a comment) opens a nested mapping. Register the
+        # header itself as the section's last line so a section that has a header but
+        # no keys yet still counts as existing (leaves go right under the header).
+        if value_part is None or value_part.startswith("#"):
+            stack.append((indent, key))
+            header_indent[tuple(path)] = indent
+            section_last[tuple(path)] = len(out)
+            out.append(line)
+            continue
+        if value_part.rstrip() in ("[]", "{}"):
+            container_paths.add(tuple(path))
+            found, val = _lookup(data, path)
+            empty_kind = dict if value_part.rstrip() == "{}" else list
+            if found and isinstance(val, empty_kind) and val:
+                # The empty container has children now: render it as a block in place.
+                dumped = yaml.safe_dump(
+                    {key: val}, sort_keys=False, allow_unicode=True, default_flow_style=False
+                )
+                pad = match.group(1)
+                out.extend(
+                    pad + text if text else text for text in dumped.rstrip("\n").splitlines()
+                )
+                continue
             out.append(line)
             continue
         seen.add(tuple(path))
         found, val = _lookup(data, path)
         if not found or isinstance(val, (dict, list)):
+            if found:
+                container_paths.add(tuple(path))
             out.append(line)  # unknown key or a container value → leave untouched
             continue
         out.append(f"{match.group(1)}{key}: {_format_scalar(val)}")
-    # Append missing scalar leaves inside their existing parent section (deepest
-    # insertion points first, so earlier indices stay valid). A leaf whose parent
-    # section does not exist in the text is left to the caller's post-write check.
-    missing = [
-        leaf
-        for leaf in _scalar_leaves(data)
-        if leaf not in seen and leaf[:-1] in section_last and section_last[leaf[:-1]] >= 0
-    ]
-    for leaf in sorted(missing, key=lambda p: section_last[p[:-1]], reverse=True):
-        _, val = _lookup(data, list(leaf))
-        indent_str = " " * section_indent[leaf[:-1]]
-        out.insert(section_last[leaf[:-1]] + 1, f"{indent_str}{leaf[-1]}: {_format_scalar(val)}")
-    trailing = "\n" if base_text.endswith("\n") else ""
+
+    def child_indent(section: tuple[str, ...]) -> int:
+        if section in section_indent:
+            return section_indent[section]
+        return header_indent.get(section, -2) + 2
+
+    def exists(section: tuple[str, ...]) -> bool:
+        return section in section_last and section_last[section] >= 0
+
+    # Missing leaves whose parent section exists are appended as single lines; the
+    # others are grouped by the topmost missing mapping on their path and emitted as
+    # one YAML block under the nearest existing ancestor. Nothing is appended inside
+    # a one-line container (``profiles: {}``): that line stays as it is.
+    inserts: dict[int, list[str]] = {}  # insertion index -> lines, in data order
+    tail_blocks: list[list[str]] = []
+    block_roots: dict[tuple[str, ...], tuple[str, ...]] = {}  # missing root -> anchor
+    for leaf in _scalar_leaves(data):
+        if leaf in seen or any(leaf[:k] in container_paths for k in range(1, len(leaf))):
+            continue
+        parent = leaf[:-1]
+        if exists(parent):
+            _, val = _lookup(data, list(leaf))
+            line = f"{' ' * child_indent(parent)}{leaf[-1]}: {_format_scalar(val)}"
+            inserts.setdefault(section_last[parent] + 1, []).append(line)
+            continue
+        depth = len(parent)
+        while depth > 0 and not exists(parent[:depth]):
+            depth -= 1
+        block_roots.setdefault(leaf[: depth + 1], parent[:depth])
+    for root, anchor in block_roots.items():
+        _, subtree = _lookup(data, list(root))
+        dumped = yaml.safe_dump(
+            {root[-1]: subtree}, sort_keys=False, allow_unicode=True, default_flow_style=False
+        )
+        pad = " " * child_indent(anchor)
+        lines = [pad + text if text else text for text in dumped.rstrip("\n").splitlines()]
+        if anchor == ():
+            tail_blocks.append(lines)
+        else:
+            inserts.setdefault(section_last[anchor] + 1, []).extend(lines)
+    # Deepest insertion points first, so earlier indices stay valid.
+    for index in sorted(inserts, reverse=True):
+        out[index:index] = inserts[index]
+    for lines in tail_blocks:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(lines)
+    trailing = "\n" if base_text.endswith("\n") or (tail_blocks and out) else ""
     return "\n".join(out) + trailing
+
+
+def dropped_leaves(rendered: str, data: dict) -> list[str]:
+    """Dotted paths of scalar leaves in ``data`` that ``rendered`` does not carry.
+
+    ``render_commented_config`` leaves a non-empty one-line container alone, so a
+    value set under it never reaches the file. Re-parsing the rendered text and
+    comparing scalar leaves is the honest check: it names exactly what was lost
+    instead of assuming the render was complete.
+    """
+    try:
+        parsed = yaml.safe_load(rendered) or {}
+    except yaml.YAMLError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    # Compare what a *load* of the file yields, so a key the file merely omits (and
+    # that loads back as its default) is not reported as lost.
+    try:
+        parsed = Config.model_validate(parsed).model_dump(mode="json")
+    except Exception:  # noqa: BLE001 — an unloadable render still reports raw leaves
+        pass
+    dropped: list[str] = []
+    for leaf in _scalar_leaves(data):
+        _, wanted = _lookup(data, list(leaf))
+        found, actual = _lookup(parsed, list(leaf))
+        if not found or actual != wanted:
+            dropped.append(".".join(leaf))
+    return dropped
 
 
 def write_config(path: Path, config: Config) -> None:
@@ -571,10 +749,23 @@ def write_config(path: Path, config: Config) -> None:
 
     Scalar values are written into the existing commented ``config.yaml`` (or the
     annotated default template on first write), so the per-field comments survive
-    ``opentorus config set``.
+    ``opentorus config set``. A value that could not be written because it lives
+    under a hand-edited one-line container is reported by name (never silently
+    lost).
     """
     base_text = path.read_text(encoding="utf-8") if path.exists() else default_config_yaml()
-    path.write_text(render_commented_config(base_text, config.model_dump(mode="json")), "utf-8")
+    data = config.model_dump(mode="json")
+    rendered = render_commented_config(base_text, data)
+    path.write_text(rendered, "utf-8")
+    lost = dropped_leaves(rendered, data)
+    if lost:
+        _logger.warning(
+            "config: %d value(s) were not written to %s because they live under a one-line "
+            "container that was left as written (%s); edit that line by hand.",
+            len(lost),
+            path,
+            ", ".join(lost),
+        )
 
 
 def _coerce(value: str) -> object:

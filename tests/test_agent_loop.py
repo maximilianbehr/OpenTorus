@@ -177,3 +177,98 @@ def test_search_streak_nudge_after_consecutive_searches(tmp_path: Path) -> None:
     loop2.run("search then fetch")
     msgs2 = [m.content for m in read_messages(ot2) if m.role == "tool"]
     assert all("[loop guard]" not in m for m in msgs2)
+
+
+# --- ``tool_choice="required"`` follows the provider actually in use -----------------------
+
+
+class _ToolChoiceRecorder:
+    """Wraps a scripted provider and records the ``tool_choice`` of every request.
+
+    ``kind`` gives the wrapper the ``config`` a pool-built provider carries (its
+    profile's ``model.provider``); ``None`` leaves it a bare provider with a name only.
+    """
+
+    def __init__(self, provider, *, name: str, kind: str | None) -> None:  # noqa: ANN001
+        self._provider = provider
+        self.name = name
+        self.choices: list[str | dict | None] = []
+        if kind is not None:
+            cfg = default_config()
+            cfg.model.provider = kind  # type: ignore[assignment]
+            self.config = cfg
+
+    @property
+    def model_name(self):  # noqa: ANN201
+        return self._provider.model_name
+
+    def respond(self, messages, tools=None, on_text=None, **kwargs):  # noqa: ANN001, ANN003
+        self.choices.append(kwargs.get("tool_choice"))
+        return self._provider.respond(messages, tools, on_text, **kwargs)
+
+
+def _deliverable_run(
+    tmp_path: Path, *, provider_name: str, provider_kind: str | None, workspace_kind: str
+) -> tuple[AgentLoop, list[str | dict | None]]:
+    """Run a loop that needs a deliverable it never gets, so the retry nudge fires."""
+    from support.providers import ScriptedProvider, message, tool_call
+
+    init_workspace(tmp_path)
+    ot_dir = workspace_dir(tmp_path)
+    config = default_config()
+    config.model.provider = workspace_kind  # type: ignore[assignment]
+    config.permissions.mode = "trusted"  # type: ignore[assignment]
+    registry = build_default_registry(tmp_path, ot_dir, config)
+    scripted = ScriptedProvider(
+        [message("chat"), message("chat"), tool_call("status"), message("d")]
+    )
+    recorder = _ToolChoiceRecorder(scripted, name=provider_name, kind=provider_kind)
+    loop = AgentLoop(
+        tmp_path,
+        ot_dir,
+        recorder,  # type: ignore[arg-type]
+        registry,
+        config,
+        max_steps=6,
+        session_gate=lambda: False,
+    )
+    loop.run("produce something")
+    return loop, recorder.choices
+
+
+def test_tool_choice_required_is_decided_from_the_leased_providers_kind(tmp_path: Path) -> None:
+    """The workspace default profile is *not* Ollama, but the provider in use is a
+    routed Ollama lease (its own config says so): the deliverable retry forces a tool
+    call, exactly as it would for an Ollama default profile."""
+    loop, choices = _deliverable_run(
+        tmp_path, provider_name="ollama", provider_kind="ollama", workspace_kind="mock"
+    )
+    assert loop._provider_kind() == "ollama"
+    assert choices[0] is None  # first ask: no nudge
+    assert "required" in choices[1:]
+
+
+def test_tool_choice_required_is_not_forced_on_a_non_ollama_lease(tmp_path: Path) -> None:
+    """The mirror: the workspace default profile *is* Ollama, but the leased provider is
+    OpenAI — its kind wins, so ``tool_choice`` stays unforced."""
+    loop, choices = _deliverable_run(
+        tmp_path, provider_name="openai", provider_kind="openai", workspace_kind="ollama"
+    )
+    assert loop._provider_kind() == "openai"
+    assert len(choices) >= 2 and all(c is None for c in choices)
+
+
+def test_tool_choice_falls_back_to_the_provider_name_then_the_workspace_profile(
+    tmp_path: Path,
+) -> None:
+    """Without a provider ``config``, the provider ``name`` decides; without either,
+    the workspace ``model.provider`` (the pre-routing behaviour) still applies."""
+    loop, choices = _deliverable_run(
+        tmp_path, provider_name="ollama", provider_kind=None, workspace_kind="mock"
+    )
+    assert loop._provider_kind() == "ollama" and "required" in choices[1:]
+
+    loop, choices = _deliverable_run(
+        tmp_path / "w2", provider_name="", provider_kind=None, workspace_kind="ollama"
+    )
+    assert loop._provider_kind() == "ollama" and "required" in choices[1:]

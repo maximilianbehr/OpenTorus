@@ -36,7 +36,7 @@ conjectured only the odd/full statement — the "parity count" version is a misa
 `ryser_brualdi_stein.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with CP-SAT/python-sat/sympy → three audit-verified papers →
 dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 5` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 Dual track: the refutation side hunts (a) an odd-order square with no full transversal
 (order $\ge 11$; for a fixed square nonexistence is a finite exact-cover check — fully

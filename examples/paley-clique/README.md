@@ -38,7 +38,7 @@ $p$.
 `paley_clique.sh` follows the campaign template: fresh workspace → config (timeout
 2400s) → container with networkx/python-sat/scipy/cvxpy → four audit-verified papers →
 dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 5` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 The instance program is where a run can produce genuinely new certified facts: exact
 $\omega(G_p)$ for small primes; the 1-localization LP with an exact rational dual, giving

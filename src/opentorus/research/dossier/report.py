@@ -59,6 +59,15 @@ def honesty_context(ot_dir: Path, problem_id: str) -> tuple[bool, bool, bool]:
         or any(p.paper_artifact for p in store.list_related_papers(ot_dir, problem_id))
         or any(c.type == "REFERENCE_FACT" for c in claims)
     )
+    if not has_reference:
+        # A theorem-level reference (THMREF) licenses knowledge claims only once a
+        # human has accepted it; candidate/rejected references — including anything
+        # an LLM extracted — do not. Lazy import: the theorem ledger is optional.
+        from opentorus.research.theorems.store import list_references
+
+        has_reference = bool(
+            list_references(ot_dir, problem_id=problem_id, review_status="accepted")
+        )
     has_supported_theorem = any(
         c.type in ("THEOREM", "LEMMA_ATTEMPT")
         and c.status in ("supported", "verified", "formally_verified")

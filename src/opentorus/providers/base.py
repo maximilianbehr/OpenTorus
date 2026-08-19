@@ -91,6 +91,11 @@ class ProviderResponse(BaseModel):
     # True when the provider stopped at the token ceiling (stop/finish reason
     # "max_tokens"/"length"): the output is cut off, not a complete answer.
     truncated: bool = False
+    # The model id the API *reported* for this response, when it reports one. This is
+    # what the usage/routing ledgers record as ``actual_model``: a routed alias or a
+    # server-side default can differ from the configured name, and the ledger must
+    # say what answered, not what was asked for. ``None`` when the provider is silent.
+    model: str | None = None
 
     def iter_tool_calls(self) -> list[ToolCallRequest]:
         """Normalized list of tool calls to execute (handles the scalar fallback)."""
@@ -118,6 +123,25 @@ class BaseProvider(ABC):
     name: str = "base"
     # Whether ``respond`` emits text incrementally (vs. a single final chunk).
     supports_streaming: bool = False
+
+    @property
+    def model_name(self) -> str | None:
+        """The configured model id this instance talks to, or ``None`` if unknown.
+
+        Real providers keep their ``Config``; the routing pool builds each of them
+        from a profile-derived config, so ``self.config.model.name`` is the routed
+        model. Test doubles may simply assign ``self.model_name = "…"``.
+        """
+        override = self.__dict__.get("_model_name")
+        if override:
+            return str(override)
+        config = getattr(self, "config", None)
+        name = getattr(getattr(config, "model", None), "name", None)
+        return str(name) if name else None
+
+    @model_name.setter
+    def model_name(self, value: str | None) -> None:
+        self.__dict__["_model_name"] = value
 
     @abstractmethod
     def generate(

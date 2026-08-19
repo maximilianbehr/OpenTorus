@@ -1,0 +1,9 @@
+{
+  "question": "Is a(n) prime for every n?",
+  "slug": "is-a-n-prime-for-every-n",
+  "target_claim_id": "CLAIM-0001",
+  "progress_path": "research/is-a-n-prime-for-every-n/progress.md",
+  "completed_iterations": 2,
+  "status": "completed",
+  "stopped_reason": "iteration cap reached"
+}

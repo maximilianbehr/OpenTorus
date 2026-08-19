@@ -20,6 +20,9 @@ class MockProvider(BaseProvider):
 
     def __init__(self) -> None:
         self._fallback_seen = False
+        # Reported as ``model_name``: the mock has no Config, and the usage ledger
+        # (and the golden transcripts) know it as ``mock-default``.
+        self._model_name = "mock-default"
 
     def respond(
         self,

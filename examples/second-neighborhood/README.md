@@ -32,7 +32,7 @@ implies the Caccetta–Häggkvist case with min in- and out-degree $\ge n/3$.
 `second_neighborhood.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with **nauty** (geng/directg/gentourng) + networkx +
 python-sat + OR-Tools → three audit-verified papers → dossier → **driver-created primary
-claim** + `verdict --set-primary` → `prove --min-papers 5` → report + lint →
+claim** + `verdict --set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint →
 `problem verdict` → PDF.
 
 Dual track: the refutation side encodes "every vertex violates" as CP-SAT/SAT over the

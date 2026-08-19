@@ -36,7 +36,7 @@ verified" note (arXiv:2606.17922, unrefereed), part (b) open; "$4M-4$ necessary"
 `balan_wang_stability.sh` follows the campaign template: fresh workspace → config
 (timeout 2400s) → container with numpy/scipy/sympy/mpmath → three audit-verified papers →
 dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 5` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 Under full spark $\omega(A) = \min_{|S|=M}\sigma_M(A_S)$ — exactly computable for
 $M \le 10$ (at most 92,378 subsets), and each value is certifiable for rational $A$ (exact

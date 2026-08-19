@@ -35,6 +35,14 @@ Global flags work on every command:
   workflows fit `run` vs `--plan` vs `research`, see [examples/README.md](../examples/README.md).
 - `opentorus research "<question>"` — the autonomous, budgeted research loop
   (counterexample/evidence over local papers — not a general survey solver).
+  `--campaign` additionally records the run as an exploration campaign under the
+  attributed problem (opt-in; the research state files are unchanged either way).
+- `opentorus prove PROBLEM-XXXX` — one budgeted proof session on a dossier
+  (literature → draft → gap-fill).
+- `opentorus campaign start PROBLEM-XXXX` — a persistent, resumable portfolio
+  campaign on a dossier: several distinct branches, a scored scheduler,
+  failed-attempt memory, obligations closed only against accepted artifacts, an
+  append-only event log. See [campaign-engine.md](campaign-engine.md).
 
 ## Extracting problems from papers and markdown
 
@@ -68,13 +76,73 @@ Markdown extraction defaults to the **LLM** path.
 | Literature | `lit search/cite/link/gaps/doi`, `paper …` |
 | Datasets & code | `data fetch/list/link`, `repo clone/test/list` |
 | Knowledge & index | `index build/status/search`, `kb promote/query/stale` |
-| Research | `research`, `journal …`, `review run/list/resolve/gate` |
+| Research | `research [--campaign]`, `journal …`, `review run/list/resolve/gate` |
+| Campaigns | `campaign start/resume/status/pause/stop/list/verify/tree/dashboard/import-research` |
+| Theorem-level literature | `theorem extract/list/show/link/check/review/coverage` |
 | Integrity | `problem referee [--apply-downgrades] [--json]`, `check-algebra` |
 | Execution | `env list/verify/pin` |
 | Authoring | `problem report/export`, `paper compile`, `pack export/reproduce/notebook` |
 | Sessions | `replay last/session`, `export`, `import` |
-| Governance & cost | `usage`, `governance budget/scan`, `dashboard` |
+| Governance & cost | `usage`, `governance budget/scan`, `dashboard`, `doctor [--capabilities] [--probe] [--json]` |
 | Evaluation | `eval run`, `eval digest [PATH…] [--json]`, `eval record` |
+
+### `campaign …` — two statuses, always labelled
+
+```bash
+opentorus campaign start PROBLEM-0001 --mode prove-or-refute --branches 4 --max-steps 40
+opentorus campaign status CAMPAIGN-0001 [--json]
+opentorus campaign pause CAMPAIGN-0001 --reason "..."   # resumes at the phase it left
+opentorus campaign resume CAMPAIGN-0001                  # idempotent on a finished one
+opentorus campaign stop CAMPAIGN-0001 --reason "..."    # terminal; --reason required
+opentorus campaign list [--problem PROBLEM-0001] [--json]
+opentorus campaign verify CAMPAIGN-0001 [--json]         # replay the log vs snapshot.json
+opentorus campaign tree CAMPAIGN-0001 [--plain|--json|--dot] [--kind K] [--status S] [--depth N] [--out FILE]
+opentorus campaign dashboard CAMPAIGN-0001 [--live] [--plain|--json|--dot]   # needs opentorus[dashboard]
+opentorus campaign import-research "question" | --slug SLUG [--problem P] [--force]
+```
+
+`start` prints the campaign id on its own line first, then the summary. Every
+campaign command that reports state prints **two** statuses and labels them: the
+*campaign status* (orchestration — phase, budget, branches, work items) and the
+*problem status*, derived from accepted dossier artifacts exactly as
+`opentorus problem verdict` derives it. A completed campaign does not mean the
+problem is solved, and the CLI says so on `status`, `list`, `stop` and in the
+group help. Campaign ids are workspace-unique, so no command needs the problem id.
+`--json` emits the same records the text view renders.
+
+### `theorem …` — candidates until a human accepts them
+
+```bash
+opentorus theorem extract PAPER-0001 [--problem PROBLEM-0001] [--llm]
+opentorus theorem list [--problem P] [--paper PAPER-0001] [--status candidate|accepted|rejected] [--json]
+opentorus theorem show THMREF-0001 [--json]
+opentorus theorem link THMREF-0002 THMREF-0001 --relation implies [--rationale "..."]
+opentorus theorem check THMREF-0001 --problem PROBLEM-0001 --claim CLAIM-0003 [--json]
+opentorus theorem review THMREF-0001 --status accepted --note "..." [--category C] [--root-relation R] [--problem P]
+opentorus theorem coverage PROBLEM-0001 [--mode M] [--record] [--json] | --set CATEGORY LEVEL --evidence PAPER-0001
+```
+
+Extraction (heuristic or `--llm`) yields `candidate` references only; `theorem
+review --status accepted` is the sole path to `accepted`, and only accepted
+references license "it is known that" language in reports. `theorem check`
+exits `2` when the deterministic applicability check comes out `rejected`. See
+[theorem-references.md](theorem-references.md).
+
+### `doctor` — profiles, routes, backends
+
+`opentorus doctor` now also reports the model **profiles** (provider/model,
+credential env-var *name* and whether it is set), the **routes** per task class
+(unknown profile names fail the check), missing **credentials** (names only),
+**formal-systems**, **dashboard** (whether the `dashboard` extra is installed),
+**paper-parsing**, **dossier-state** (dossiers, campaigns and their replay
+diagnostics, `problems/` writable) and **version**. `--capabilities` adds the
+per-profile capability tables and whether each route has a fallback; `--probe`
+(implies `--capabilities`) probes every non-mock profile online for tool calling
+(one model call each) and caches the result in
+`.opentorus/providers/capabilities.json`; `--json` emits every check as
+`{name, ok, detail, data}`. Absent optional backends are reported as ok and
+informational — the exit code is `1` only for a failed check. See
+[model-routing.md](model-routing.md).
 
 ### `eval digest` — what a finished run actually did
 
@@ -170,12 +238,34 @@ still use `otoutput` as the canonical name.
   (`opentorus check`) and verification commands exit non-zero when they fail, so
   they compose in CI. The integrity checks follow this too: `check-algebra` exits
   `2` when it rejects a claim (e.g. a false interior optimum), and `problem
-  referee` exits `2` on a `block` verdict.
+  referee` exits `2` on a `block` verdict. The convention is `1` = error, `2` = a
+  gating verdict or a refused request, `130` = interrupted:
+  - `campaign start` exits `2` for an unknown `--mode`, `--branches < 2` in
+    prove-or-refute, a negative budget, no positive budget on any axis after
+    merging config and flags, or prove-or-refute with `--no-primary-claim` and no
+    designated primary claim (the remediation is printed); `campaign
+    import-research` exits `2` when the run was already imported (use `--force`);
+    `campaign verify` exits `1` on a replay mismatch; `campaign resume` on a
+    completed or stopped campaign exits `0` with a note; Ctrl-C during `start` /
+    `resume` pauses the campaign (reason `interrupted`) and exits `130`.
+  - `theorem check` exits `2` when the applicability result is `rejected`;
+    `doctor` exits `1` when any check fails.
 - **Errors are structured**: a failed shell command prints the command, exit
   code, a short stderr summary, the likely cause, and a suggested next action.
 - **Honest reporting**: when a capability is unavailable (no container runtime,
   missing optional dependency, unreachable provider), OpenTorus says so rather
   than silently degrading or pretending success.
+
+## Help conventions
+
+Every group and command answers `--help`; sub-commands are listed alphabetically.
+A group whose commands report state that could be misread says so in its help
+text — `campaign --help` states that campaign status is orchestration and that
+the problem status comes from `opentorus problem verdict`; `theorem --help` states
+that extraction yields candidates and only `theorem review` accepts. Flags that
+mean "unlimited" say `0 = unlimited`; flags that cannot be written by `config
+set` (mappings such as `models.profiles`, `task_routes`) are documented in
+`config.yaml` itself and by `doctor`.
 
 ## Confirmations and modes
 

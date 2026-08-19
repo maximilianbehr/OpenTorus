@@ -78,6 +78,11 @@ def _paper_corpus(ot_dir: Path, paper_id: str, *, lower: bool = True) -> str | N
     return joined.lower() if lower else joined
 
 
+# Public name for the theorem-reference subsystem (``research.theorems``), which
+# hashes located source context over this same full corpus.
+paper_corpus = _paper_corpus
+
+
 def theorem_context(corpus_raw: str, number: str, *, width: int = 220) -> str | None:
     """Return a short readable snippet around 'Theorem <number>' in the raw corpus.
 

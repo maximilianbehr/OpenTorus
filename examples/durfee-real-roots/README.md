@@ -35,7 +35,7 @@ minimal absolute root gap $\sim C/n^2$, minimal relative gap decaying slowly
 `durfee_real_roots.sh` follows the campaign template: fresh workspace → config (timeout
 2400s) → container with sympy/mpmath → four audit-verified papers (the journal-only
 primary source is cited by DOI in the notes) → dossier → **driver-created primary claim**
-+ `verdict --set-primary` → `prove --min-papers 4` → report + lint → `problem verdict` →
++ `verdict --set-primary` → `campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` →
 PDF.
 
 The instance program is exact end to end: coefficients from the $q$-series DP, per-$n$

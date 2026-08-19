@@ -35,7 +35,7 @@ graph-matrix norms on random regular graphs (Xu, arXiv:2411.14314). Note $d_{KS}
 `sos_coloring_ks.sh` follows the campaign template: fresh workspace → config (timeout
 2400s) → container with networkx/cvxpy/Clarabel/sympy → four audit-verified papers →
 dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 5` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 The instance program: exact KS and degree-2 threshold tables, Hoffman/$\vartheta$ on samples
 (creation-time reproduction: Hoffman refutes 3-col at $d = 16$ not $12$; 4-col at $36$ not

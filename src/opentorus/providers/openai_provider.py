@@ -56,6 +56,8 @@ class OpenAIProvider(BaseProvider):
         choice = completion.choices[0]
         response = parse_openai_message(choice.message)
         response.usage = _openai_usage(completion)
+        # The model id the API reports (a routed alias may resolve to a dated snapshot).
+        response.model = getattr(completion, "model", None) or None
         # finish_reason "length" means the output hit the token ceiling (truncated).
         response.truncated = getattr(choice, "finish_reason", None) == "length"
         return response

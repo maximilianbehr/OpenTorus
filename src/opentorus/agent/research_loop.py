@@ -10,21 +10,45 @@ Invariants: bounded (iteration + step caps, token/cost budget), resumable (state
 is persisted; re-running continues from the next unfinished step), and honest
 (nothing is auto-promoted past ``numerical_evidence`` — verified-class statuses
 still require a proof artifact and confirmation).
+
+The iteration body lives in :mod:`opentorus.agent.research_iteration`; this module
+is the façade: state files, budgets, resumption, and — **opt-in only**
+(``record_campaign=True`` / ``campaign.record_research`` / ``research --campaign``,
+and only when a problem is attributed) — a mirror of the run into an exploration
+campaign under that problem. A plain run writes exactly what it always wrote.
 """
 
 from __future__ import annotations
 
-import json
+import logging
 import re
-import time
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from opentorus.agent.session import SessionMessage
+from opentorus.agent.research_iteration import (
+    ensure_target_claim as _ensure_target_claim,  # noqa: F401 - re-exported private name
+)
+from opentorus.agent.research_iteration import (
+    parse_search_result as _parse_search_result,  # noqa: F401 - re-exported private name
+)
+from opentorus.agent.research_iteration import (
+    record_turn as _record_turn,  # noqa: F401 - re-exported private name
+)
+from opentorus.agent.research_iteration import (
+    run_iteration as _run_iteration,
+)
 from opentorus.config import Config
 from opentorus.providers.base import BaseProvider
-from opentorus.research.math_experiments import CounterexampleResult
+
+if TYPE_CHECKING:
+    from opentorus.campaign.research_bridge import ResearchCampaignRecorder
+    from opentorus.providers.pool import ProviderPool
+
+_logger = logging.getLogger("opentorus")
 
 DEFAULT_MAX_ITERATIONS = 5
 DEFAULT_MAX_STEPS_PER_ITERATION = 6
@@ -78,223 +102,34 @@ def _state_path(ot_dir: Path, slug: str) -> Path:
 
 
 def load_state(ot_dir: Path, question: str) -> ResearchState | None:
-    path = _state_path(ot_dir, _slugify(question))
+    return load_state_by_slug(ot_dir, _slugify(question))
+
+
+def load_state_by_slug(ot_dir: Path, slug: str) -> ResearchState | None:
+    """The persisted state of the investigation with this slug (the state file's stem)."""
+    path = _state_path(ot_dir, slug)
     if path.is_file():
         return ResearchState.model_validate_json(path.read_text(encoding="utf-8"))
     return None
 
 
+def list_states(ot_dir: Path) -> list[ResearchState]:
+    """Every persisted investigation, by slug (the importer lists them for a human)."""
+    directory = _state_dir(ot_dir)
+    if not directory.is_dir():
+        return []
+    states: list[ResearchState] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            states.append(ResearchState.model_validate_json(path.read_text(encoding="utf-8")))
+        except ValueError:
+            continue
+    return states
+
+
 def _save_state(ot_dir: Path, state: ResearchState) -> None:
     _state_dir(ot_dir).mkdir(parents=True, exist_ok=True)
     _state_path(ot_dir, state.slug).write_text(state.model_dump_json(indent=2), encoding="utf-8")
-
-
-def _record_turn(
-    ot_dir: Path,
-    config: Config,
-    provider: BaseProvider,
-    prompt: str,
-    *,
-    task_class: str = "narration",
-) -> str:
-    """One provider turn for narration; routes the model and records usage (M31/M75)."""
-    from opentorus.agent.compaction import estimate_tokens, total_tokens
-    from opentorus.errors import OpenTorusError
-    from opentorus.governance import route_model
-    from opentorus.usage import UsageRecord, estimate_cost, record_usage
-
-    messages = [SessionMessage(role="user", content=prompt)]
-    # Policy model routing (M75) is advisory here: the provider is built from
-    # config.model.name and is not rebuilt per decision, so record the model actually
-    # sent (never the chosen-but-unused decision.model). The task class is still
-    # recorded for routing transparency.
-    decision = route_model(config, task_class)
-    model = config.model.name or decision.model
-    started = time.monotonic()
-    response = provider.respond(messages)
-    elapsed = time.monotonic() - started
-
-    provider_name = getattr(provider, "name", "unknown")
-    prompt_tokens = total_tokens(messages)
-    completion_tokens = estimate_tokens(response.content) if response.content else 0
-    try:
-        record_usage(
-            ot_dir,
-            UsageRecord(
-                session_id=None,
-                provider=provider_name,
-                model=model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                latency_ms=round(elapsed * 1000),
-                cost_usd=estimate_cost(
-                    provider_name, model, prompt_tokens, completion_tokens, config.model.base_url
-                ),
-                task_class=decision.task_class,
-            ),
-        )
-    except OpenTorusError:
-        pass
-    return response.content
-
-
-def _parse_search_result(stdout: str) -> CounterexampleResult | None:
-    for line in reversed(stdout.strip().splitlines()):
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if data.get("kind") != "counterexample_search":
-            continue
-        rng = data.get("searched_range") or [0, 0]
-        ce = data.get("counterexample")
-        return CounterexampleResult(
-            start=int(rng[0]),
-            stop=int(rng[1]),
-            step=int(data.get("step", 1)),
-            checked=int(data.get("checked", 0)),
-            found=ce is not None,
-            counterexample=ce,
-        )
-    return None
-
-
-def _ensure_target_claim(ot_dir: Path, state: ResearchState) -> str:
-    """Pick the claim to work on: an existing gap, else a new conjecture."""
-    from opentorus.research.claims import get_claim, new_claim
-    from opentorus.research.dossier.store import get_active_problem
-    from opentorus.research.knowledge import find_gaps
-
-    if state.target_claim_id and get_claim(ot_dir, state.target_claim_id):
-        return state.target_claim_id
-    gaps = find_gaps(ot_dir)
-    if gaps:
-        state.target_claim_id = gaps[0].claim_id
-        return state.target_claim_id
-    claim = new_claim(ot_dir, state.question, problem_id=get_active_problem(ot_dir))
-    from opentorus.research.claims import update_claim
-
-    update_claim(ot_dir, claim.id, status="conjecture")
-    state.target_claim_id = claim.id
-    return claim.id
-
-
-def _run_iteration(
-    root: Path,
-    ot_dir: Path,
-    provider: BaseProvider,
-    config: Config,
-    state: ResearchState,
-    iteration: int,
-    max_steps: int,
-) -> IterationResult:
-    from opentorus.research.claims import get_claim, update_claim
-    from opentorus.research.experiments import new_experiment, run_experiment
-    from opentorus.research.journal import JournalEntry, add_entry
-    from opentorus.research.knowledge import propose_hypotheses
-    from opentorus.research.math_experiments import record_search_evidence
-    from opentorus.research.papers import list_papers
-
-    actions: list[str] = []
-    goal = f"Iteration {iteration}: advance '{state.question}'."
-
-    # (1) Literature: review the local corpus (offline, best-effort).
-    papers = list_papers(ot_dir)
-    actions.append(f"Reviewed local corpus: {len(papers)} paper(s).")
-
-    # (2) Hypothesis: surface gaps and pick/define the claim under study.
-    claim_id = _ensure_target_claim(ot_dir, state)
-    hypotheses = propose_hypotheses(ot_dir)
-    hypothesis_id = hypotheses[0].id if hypotheses else None
-    actions.append(f"Proposed {len(hypotheses)} hypothesis/-es; studying {claim_id}.")
-
-    # (3) Experiment: state-aware so iterations are not redundant. If a prior
-    # iteration already produced a counterexample (contradicting evidence on the
-    # claim), stop re-searching and switch to rigorously confirming it via validated
-    # numerics; otherwise keep searching for one.
-    from opentorus.research.dossier.store import get_active_problem
-    from opentorus.research.evidence import list_evidence
-
-    prior_counterexample = any(
-        e.direction in ("contradicts", "mixed") for e in list_evidence(ot_dir, claim_id)
-    )
-    template = "validated_numerics" if prior_counterexample else "counterexample_search"
-    actions.append(
-        "Counterexample already found — switching to validated-numerics confirmation."
-        if prior_counterexample
-        else "Searching for a counterexample."
-    )
-    exp = new_experiment(
-        ot_dir,
-        f"{state.slug} iter {iteration}",
-        template=template,
-        problem_id=get_active_problem(ot_dir),
-    )
-    exp, _code = run_experiment(ot_dir, exp.id, timeout=min(120, 20 * max_steps))
-    stdout = (ot_dir / exp.path / "results" / "stdout.txt").read_text(encoding="utf-8")
-    result = _parse_search_result(stdout)
-    actions.append(f"Ran {exp.id} ({exp.status}).")
-
-    # (4) Evidence + claim status under proof-status rules (M52).
-    evidence_id: str | None = None
-    claim_status: str | None = None
-    if result is not None:
-        evidence, _advisory = record_search_evidence(ot_dir, claim_id, result)
-        evidence_id = evidence.id
-        claim = get_claim(ot_dir, claim_id)
-        # Only advance toward bounded numerical evidence — never to a verified
-        # class. A clean bounded search supports; a counterexample refutes.
-        if claim is not None:
-            if result.found:
-                actions.append("Counterexample found — strong contradicting evidence.")
-            elif claim.status in {"idea", "observation", "evidence", "hypothesis", "conjecture"}:
-                update_claim(ot_dir, claim_id, status="numerical_evidence")
-            claim = get_claim(ot_dir, claim_id)
-            claim_status = claim.status if claim else None
-
-    # (4b) Adversarial review: an independent critic challenges the claim (M58-60).
-    from opentorus.agent.review import open_blocking_findings, review_target
-
-    review = review_target(ot_dir, claim_id)
-    blocking = len(open_blocking_findings(ot_dir, claim_id))
-    actions.append(f"Critic review {review.id}: verdict {review.verdict} ({blocking} blocking).")
-
-    # (5) Narration turn (records usage for budgeting) + next step.
-    next_step = _record_turn(
-        ot_dir,
-        config,
-        provider,
-        f"Investigation: {state.question}\nLatest: {actions[-1]}\n"
-        "State the single most useful next step (one sentence).",
-    ).strip()
-
-    add_entry(
-        ot_dir,
-        JournalEntry(
-            id="",
-            investigation=state.slug,
-            iteration=iteration,
-            goal=goal,
-            actions=actions,
-            evidence_ids=[evidence_id] if evidence_id else [],
-            claim_id=claim_id,
-            claim_status=claim_status,
-            next_step=next_step or "Continue gathering bounded evidence.",
-        ),
-    )
-
-    return IterationResult(
-        iteration=iteration,
-        goal=goal,
-        hypothesis_id=hypothesis_id,
-        experiment_id=exp.id,
-        evidence_id=evidence_id,
-        claim_id=claim_id,
-        claim_status=claim_status,
-    )
 
 
 def _write_progress_note(ot_dir: Path, state: ResearchState) -> str:
@@ -330,6 +165,38 @@ def _write_progress_note(ot_dir: Path, state: ResearchState) -> str:
     return rel
 
 
+def _record_or_disable(action: Callable[[], None]) -> bool:
+    """Run one recording step; a campaign-store error is logged and returns ``False`` so
+    the caller disables further recording — the mirror is a courtesy and must never
+    break the research run itself."""
+    from opentorus.errors import OpenTorusError
+
+    try:
+        action()
+    except OpenTorusError as exc:
+        _logger.warning("campaign recording of the research run stopped: %s", exc)
+        return False
+    return True
+
+
+def _campaign_recorder(
+    ot_dir: Path, config: Config, record_campaign: bool | None
+) -> ResearchCampaignRecorder | None:
+    """The campaign mirror for this run, or ``None`` (the default): opt-in, and only
+    when a problem is attributed — an unattributed run has no dossier to live under."""
+    from opentorus.research.dossier.store import get_active_problem
+
+    wanted = record_campaign if record_campaign is not None else config.campaign.record_research
+    if not wanted:
+        return None
+    problem_id = get_active_problem(ot_dir)
+    if problem_id is None:
+        return None
+    from opentorus.campaign.research_bridge import ResearchCampaignRecorder
+
+    return ResearchCampaignRecorder(ot_dir, config, problem_id=problem_id)
+
+
 def run_research(
     root: Path,
     ot_dir: Path,
@@ -341,12 +208,21 @@ def run_research(
     max_steps_per_iteration: int = DEFAULT_MAX_STEPS_PER_ITERATION,
     cost_budget_usd: float | None = None,
     token_budget: int | None = None,
+    record_campaign: bool | None = None,
 ) -> ResearchOutcome:
     """Start or continue an autonomous investigation of ``question``.
 
     Runs iterations until the global iteration cap or a budget is reached, then
     stops cleanly and reports state. Re-running with the same question resumes
     from the next unfinished iteration.
+
+    ``record_campaign`` (``None`` → ``config.campaign.record_research``): when true
+    *and* a problem is attributed (the active dossier), the run is also mirrored into
+    an exploration campaign under that problem — created lazily on the first
+    iteration, one numerical branch, one work item per iteration with the EXP/EVIDENCE/
+    CLAIM ids as artifact references — and completed when the run stops. The research
+    state file, progress note, journal and checkpoints are written exactly as before
+    either way.
     """
     from opentorus.agent.context import reset_retrieval_breaker
     from opentorus.research.checkpoints import create_checkpoint
@@ -359,11 +235,21 @@ def run_research(
     )
     state.status = "running"
     state.stopped_reason = None
+    recorder = _campaign_recorder(ot_dir, config, record_campaign)
 
     results: list[IterationResult] = []
     stopped_reason = "iteration cap reached"
 
     from opentorus.governance import breached_budgets
+
+    # One pool for the whole run (routing enabled only): provider instances are
+    # cached per profile and the routing-decision counter is seeded from the ledger
+    # once, instead of re-reading the ledger and rebuilding providers every turn.
+    pool: ProviderPool | None = None
+    if config.governance.routing.enabled:
+        from opentorus.providers.pool import build_pool
+
+        pool = build_pool(config, ot_dir)
 
     while state.completed_iterations < max_iterations:
         summary = summarize_usage(ot_dir)
@@ -381,17 +267,23 @@ def run_research(
 
         iteration = state.completed_iterations + 1
         result = _run_iteration(
-            root, ot_dir, provider, config, state, iteration, max_steps_per_iteration
+            root, ot_dir, provider, config, state, iteration, max_steps_per_iteration, pool=pool
         )
         results.append(result)
         state.completed_iterations = iteration
         state.progress_path = _write_progress_note(ot_dir, state)
         _save_state(ot_dir, state)
         create_checkpoint(root, ot_dir, f"research {state.slug} iter {iteration}")
+        if recorder is not None and not _record_or_disable(
+            partial(recorder.record_iteration, state, result)
+        ):
+            recorder = None
 
     state.status = "stopped" if stopped_reason != "iteration cap reached" else "completed"
     state.stopped_reason = stopped_reason
     _save_state(ot_dir, state)
+    if recorder is not None:
+        _record_or_disable(partial(recorder.finish, f"research run stopped: {stopped_reason}"))
 
     final = summarize_usage(ot_dir)
     return ResearchOutcome(
@@ -405,3 +297,16 @@ def run_research(
         total_tokens=final.total_tokens,
         results=results,
     )
+
+
+__all__ = [
+    "DEFAULT_MAX_ITERATIONS",
+    "DEFAULT_MAX_STEPS_PER_ITERATION",
+    "IterationResult",
+    "ResearchOutcome",
+    "ResearchState",
+    "list_states",
+    "load_state",
+    "load_state_by_slug",
+    "run_research",
+]

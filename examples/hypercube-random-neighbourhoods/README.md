@@ -34,7 +34,7 @@ $n = 9$.
 `hypercube_random_neighbourhoods.sh` follows the campaign template: fresh workspace →
 config (timeout 2400s) → container with python-sat + numpy → five audit-verified papers
 → dossier → **driver-created primary claim** + `verdict --set-primary` →
-`prove --min-papers 5` → report + lint → `problem verdict` → PDF.
+`campaign start --mode prove-or-refute` (a budgeted branch portfolio: proof, counterexample, literature, formalization, ...; `campaign status`/`tree`/`verify` afterwards) → report + lint → `problem verdict` → PDF.
 
 The instance program: exact SAT discrepancies for sampled systems ($n \le 9$–$10$),
 heuristic colourings to $n \approx 16$, and — first of all — a machine-checked

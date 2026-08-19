@@ -187,3 +187,218 @@ def test_config_set_cli_fails_loudly_when_not_persisted(tmp_path: Path, monkeypa
     assert "prove_require_instance_work: true" in (
         (workspace_dir(tmp_path) / CONFIG_FILENAME).read_text(encoding="utf-8")
     )
+
+
+def test_default_template_declares_campaign_and_models_paths() -> None:
+    # The leaf-name guard above cannot tell `campaign.max_steps` from `agent.max_steps`;
+    # pin the dotted paths of the new sections so a template drift is caught by name.
+    raw = yaml.safe_load(default_config_yaml())
+
+    def get(path: str) -> object:
+        node = raw
+        for part in path.split("."):
+            assert isinstance(node, dict) and part in node, path
+            node = node[part]
+        return node
+
+    assert get("models.default_profile") is None
+    assert get("models.profiles") == {}
+    assert get("governance.routing.task_routes") == {}
+    assert get("governance.routing.task_models") == {}
+    campaign = default_config().campaign.model_dump(mode="json")
+    for key, value in campaign.items():
+        if key == "scheduler_weights":
+            continue
+        assert get(f"campaign.{key}") == value, key
+    for key, value in campaign["scheduler_weights"].items():
+        assert get(f"campaign.scheduler_weights.{key}") == value, key
+    assert get("campaign.default_mode") == "exploration"
+    assert get("campaign.max_parallel_workers") == 1
+    assert get("campaign.max_steps") == 50
+    assert get("campaign.max_wall_seconds") == 0
+    assert get("campaign.token_budget") == 0
+    assert get("campaign.cost_budget") == 0.0
+    text = default_config_yaml()
+    assert "0 = not configured / unlimited" in text
+    assert "<provider>" in text and "<model-id>" in text  # placeholder example, no real names
+    assert "cannot write mappings" in text
+
+
+def _strip_section(text: str, header: str, indent: int) -> str:
+    """Drop a mapping (header line + everything indented deeper) from a config text."""
+    out: list[str] = []
+    skipping = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        own_indent = len(line) - len(line.lstrip())
+        if own_indent == indent and stripped.startswith(header):
+            skipping = True
+            continue
+        if skipping:
+            if stripped and own_indent <= indent:
+                skipping = False
+            else:
+                continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def test_write_config_appends_missing_top_level_campaign_section(tmp_path: Path) -> None:
+    from opentorus.config import CONFIG_FILENAME, set_dotted, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    old_text = _strip_section(path.read_text(encoding="utf-8"), "campaign:", 0)
+    assert "campaign:" not in old_text
+    assert "scheduler_weights" not in old_text
+    path.write_text(old_text, encoding="utf-8")
+
+    config = set_dotted(load_config(path), "campaign.max_steps", "99")
+    config = set_dotted(config, "campaign.default_mode", "survey")
+    write_config(path, config)
+
+    text = path.read_text(encoding="utf-8")
+    assert "\ncampaign:\n" in text
+    assert "  max_steps: 99" in text
+    assert "  scheduler_weights:\n    novelty: 1.0" in text  # nested mapping emitted too
+    reloaded = load_config(path)
+    assert reloaded.campaign.max_steps == 99
+    assert reloaded.campaign.default_mode == "survey"
+    assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
+    assert "# Operating style:" in text  # comments elsewhere untouched
+
+
+def test_write_config_appends_missing_nested_scheduler_weights(tmp_path: Path) -> None:
+    from opentorus.config import CONFIG_FILENAME, set_dotted, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    old_text = _strip_section(path.read_text(encoding="utf-8"), "scheduler_weights:", 2)
+    assert "scheduler_weights" not in old_text
+    assert "\ncampaign:\n" in old_text
+    path.write_text(old_text, encoding="utf-8")
+
+    config = set_dotted(load_config(path), "campaign.scheduler_weights.novelty", "2.5")
+    write_config(path, config)
+
+    text = path.read_text(encoding="utf-8")
+    assert text.count("\ncampaign:\n") == 1  # appended inside the existing section
+    assert "  scheduler_weights:\n    novelty: 2.5\n    root_impact: 1.0" in text
+    reloaded = load_config(path)
+    assert reloaded.campaign.scheduler_weights.novelty == 2.5
+    assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
+
+
+def test_write_config_appends_missing_models_section_with_profiles(tmp_path: Path) -> None:
+    from opentorus.config import CONFIG_FILENAME, ModelProfile, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    old_text = _strip_section(path.read_text(encoding="utf-8"), "models:", 0)
+    assert "\nmodels:\n" not in old_text
+    path.write_text(old_text, encoding="utf-8")
+
+    config = load_config(path)
+    config.models.default_profile = "strong"
+    config.models.profiles = {
+        "strong": ModelProfile(provider="ollama", name="big-model", capabilities=["tool_calling"])
+    }
+    write_config(path, config)
+
+    text = path.read_text(encoding="utf-8")
+    assert "\nmodels:\n" in text
+    assert "  default_profile: strong" in text
+    assert "  profiles:\n    strong:\n" in text  # container emitted under the missing section
+    reloaded = load_config(path)
+    assert reloaded.models.default_profile == "strong"
+    assert reloaded.models.profiles["strong"].name == "big-model"
+    assert reloaded.models.profiles["strong"].capabilities == ["tool_calling"]
+    assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
+
+
+def test_write_config_expands_an_empty_container_line_into_a_block(tmp_path: Path) -> None:
+    # `profiles: {}` on disk with a non-empty in-memory value: the empty line has
+    # nothing worth preserving, so it becomes a real mapping block (once — no duplicate
+    # key) and the value round-trips instead of being silently dropped.
+    from opentorus.config import CONFIG_FILENAME, ModelProfile, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    config = load_config(path)
+    config.models.profiles = {"x": ModelProfile(provider="ollama", name="m")}
+    config.governance.routing.task_routes = {"proof_development": ["x"]}
+    write_config(path, config)
+    text = path.read_text(encoding="utf-8")
+    assert text.count("profiles:") == text.count("# profiles:") + 1
+    assert "  profiles:\n    x:\n      provider: ollama\n" in text
+    assert "    task_routes:\n      proof_development:\n      - x\n" in text
+    assert "# profiles: a mapping of profile name" in text  # comments above it survive
+    reloaded = load_config(path)
+    assert reloaded.models.profiles["x"].name == "m"
+    assert reloaded.governance.routing.task_routes == {"proof_development": ["x"]}
+    assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
+
+
+def test_write_config_expands_empty_campaign_block_and_round_trips(tmp_path: Path) -> None:
+    # A one-line `campaign: {}` (an old or hand-minimised file) with scalar leaves set in
+    # memory: the line becomes a block whose values load back.
+    from opentorus.config import CONFIG_FILENAME, set_dotted, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    old_text = _strip_section(path.read_text(encoding="utf-8"), "campaign:", 0)
+    old_text = old_text.rstrip("\n") + "\n\ncampaign: {}\n"
+    path.write_text(old_text, encoding="utf-8")
+
+    config = set_dotted(load_config(path), "campaign.token_budget", "4321")
+    write_config(path, config)
+    text = path.read_text(encoding="utf-8")
+    assert text.count("\ncampaign:") == 1 and "campaign: {}" not in text
+    assert "\ncampaign:\n" in text and "  token_budget: 4321" in text
+    reloaded = load_config(path)
+    assert reloaded.campaign.token_budget == 4321
+    assert reloaded.model_dump(mode="json") == config.model_dump(mode="json")
+
+
+def test_write_config_warns_about_leaves_under_a_non_empty_flow_container(
+    tmp_path: Path, caplog
+) -> None:
+    # A hand-written non-empty flow mapping is left as written; the values that could
+    # not be placed under it are named in a warning rather than lost silently.
+    import logging
+
+    from opentorus.config import CONFIG_FILENAME, dropped_leaves, set_dotted, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    text = path.read_text(encoding="utf-8")
+    text = _strip_section(text, "scheduler_weights:", 2)
+    text = text.replace("\ncampaign:\n", "\ncampaign:\n  scheduler_weights: {novelty: 1.0}\n")
+    path.write_text(text, encoding="utf-8")
+
+    config = set_dotted(load_config(path), "campaign.scheduler_weights.novelty", "2.5")
+    with caplog.at_level(logging.WARNING, logger="opentorus"):
+        write_config(path, config)
+    rendered = path.read_text(encoding="utf-8")
+    assert "scheduler_weights: {novelty: 1.0}" in rendered  # hand-edit surface untouched
+    assert dropped_leaves(rendered, config.model_dump(mode="json")) == [
+        "campaign.scheduler_weights.novelty"
+    ]
+    assert any("campaign.scheduler_weights.novelty" in r.message for r in caplog.records)
+
+
+def test_config_set_round_trips_campaign_key_on_old_file(tmp_path: Path, monkeypatch) -> None:
+    from typer.testing import CliRunner
+
+    from opentorus.cli import app
+    from opentorus.config import CONFIG_FILENAME
+
+    init_workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    path.write_text(
+        _strip_section(path.read_text(encoding="utf-8"), "campaign:", 0), encoding="utf-8"
+    )
+    result = CliRunner().invoke(app, ["config", "set", "campaign.token_budget", "1234"])
+    assert result.exit_code == 0, result.output
+    assert load_config(path).campaign.token_budget == 1234

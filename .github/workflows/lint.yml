@@ -46,6 +46,11 @@ jobs:
         run: mypy
 
   build:
+    # Packaging gate: the wheel and the sdist must both build, pass twine's
+    # metadata check, install into clean virtualenvs (no dev extras and no
+    # editable install that could mask a missing package-data entry) and answer
+    # the CLI smoke commands. The dashboard extra is exercised separately so
+    # that textual stays optional: importing the CLI must never pull it in.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +60,75 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
-      - name: Install build
-        run: pip install build
-      - name: Build smoke test
+      - name: Install build tooling
+        run: pip install build twine
+      - name: Build sdist and wheel
         run: python -m build
+      - name: Check distribution metadata
+        run: twine check dist/*
+      - name: Assert wheel and sdist exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l dist/
+          test -n "$(ls dist/*.whl 2>/dev/null)" || { echo "no wheel in dist/"; exit 1; }
+          test -n "$(ls dist/*.tar.gz 2>/dev/null)" || { echo "no sdist in dist/"; exit 1; }
+      - name: Install wheel into a clean venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv-wheel
+          .venv-wheel/bin/pip install --upgrade pip
+          .venv-wheel/bin/pip install dist/*.whl
+      - name: Wheel smoke (--version, --help, init, doctor)
+        shell: bash
+        run: |
+          set -euo pipefail
+          OT="$PWD/.venv-wheel/bin/opentorus"
+          "$OT" --version
+          "$OT" --help
+          "$OT" campaign --help
+          "$OT" theorem --help
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          "$OT" init
+          # The clean venv has no pytest, and doctor's quality check would report
+          # that as a failed environment check (exit 1) although the package is
+          # fine, so the smoke workspace disables the test gate first.
+          "$OT" config set quality.test_command null
+          # `doctor --json` is preferred; fall back to the plain report on an
+          # older CLI that does not have the flag yet.
+          "$OT" doctor --json || "$OT" doctor
+      - name: Import without optional deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Neither the CLI nor the campaign engine may import textual eagerly.
+          .venv-wheel/bin/python -c "import sys, opentorus.cli, opentorus.campaign; assert 'textual' not in sys.modules"
+      - name: Install sdist into a second clean venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv-sdist
+          .venv-sdist/bin/pip install --upgrade pip
+          .venv-sdist/bin/pip install dist/*.tar.gz
+          .venv-sdist/bin/opentorus --version
+          .venv-sdist/bin/opentorus --help
+          .venv-sdist/bin/opentorus campaign --help
+          .venv-sdist/bin/opentorus theorem --help
+      - name: Dashboard extra
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv-wheel/bin/pip install "$(ls dist/*.whl)[dashboard]"
+          .venv-wheel/bin/python -c "import textual"
+          # The dashboard package itself must import once the extra is present.
+          .venv-wheel/bin/python -c "import opentorus.dashboard.app"
+          # textual is installed now; the CLI and the campaign engine must still not import it eagerly.
+          .venv-wheel/bin/python -c "import sys, opentorus.cli, opentorus.campaign; assert 'textual' not in sys.modules"
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error

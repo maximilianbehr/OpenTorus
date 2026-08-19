@@ -11,6 +11,7 @@ from opentorus.actions import list_actions
 from opentorus.cli._base import (
     BANNER,
     _cli_verbosity,
+    _emit_json,
     _load_workspace_config,
     _require_workspace_dir,
     _require_workspace_root,
@@ -20,6 +21,37 @@ from opentorus.cli._base import (
 )
 from opentorus.errors import OpenTorusError
 from opentorus.workspace import gather_status, init_workspace
+
+
+def _acquire_provider(config, ot_dir, task_class: str):  # noqa: ANN001, ANN202
+    """Lease the provider that performs ``task_class`` and return ``(provider, lease)``.
+
+    The pool records every decision in ``usage/routing.jsonl``; with routing disabled
+    it yields the default profile, which is the same provider ``get_provider(config)``
+    builds, so behaviour is unchanged for single-model configurations. A pool that
+    cannot lease any eligible profile raises ``NoEligibleProviderError`` (a
+    ``ProviderError``), which the calling command reports like any provider failure.
+    """
+    from opentorus.providers.pool import build_pool
+
+    lease = build_pool(config, ot_dir).acquire(task_class)
+    return lease.provider, lease
+
+
+def _lease_config(config, lease):  # noqa: ANN001, ANN202
+    """The config whose ``model:`` block is the *leased* profile.
+
+    Checks that read ``config.model`` (tool-calling verification, the Ollama host, the
+    model name in warnings) must look at the profile the pool selected, not at the
+    workspace default profile — otherwise a routed lease is verified against a model
+    it is not. With routing disabled the lease *is* the implicit default profile, so
+    the derived config equals the workspace config and behaviour is unchanged.
+    """
+    if lease is None:
+        return config
+    from opentorus.providers.pool import profile_config
+
+    return profile_config(config, lease.profile)
 
 
 @app.command()
@@ -429,20 +461,30 @@ def research(
         help="Attribute findings to this dossier (PROBLEM-XXXX). Default: the active "
         "problem, or unattributed if none — never silently a mismatched one.",
     ),
+    campaign: bool | None = typer.Option(
+        None,
+        "--campaign/--no-campaign",
+        help="Also record the run as an exploration campaign under the attributed problem "
+        "(default: campaign.record_research). Research state files are unchanged either way.",
+    ),
 ) -> None:
     """Pursue a research question autonomously within budgets (start or resume)."""
     from opentorus.agent.research_loop import run_research
-    from opentorus.providers.registry import get_provider
     from opentorus.research.dossier import store
 
     base = _require_workspace_dir()
     root = base.parent
     config = _load_workspace_config(base)
-    provider = get_provider(config)
+    # Acquire through the provider pool so a configured route for narration is the
+    # provider that actually answers (recorded in usage/routing.jsonl). With routing
+    # disabled the pool hands back the default profile, i.e. exactly get_provider(config).
+    provider, lease = _acquire_provider(config, base, "narration")
     from opentorus.providers.tool_support import require_tool_calling_provider
 
     require_tool_calling_provider(
-        provider, config, warn=lambda m: console.print(f"[yellow]{m}[/yellow]")
+        provider,
+        _lease_config(config, lease),
+        warn=lambda m: console.print(f"[yellow]{m}[/yellow]"),
     )
     # Explicit target wins; otherwise findings attach to the active problem (or stay
     # unattributed) — they are never silently filed under an arbitrary dossier.
@@ -463,6 +505,7 @@ def research(
         max_iterations=iterations,
         cost_budget_usd=cost_budget,
         token_budget=token_budget,
+        record_campaign=campaign,
     )
     console.print(
         f"[green]{outcome.iterations_run} iteration(s) this run[/green]; "
@@ -516,7 +559,6 @@ def prove(
     from opentorus.agent.prove_loop import run_prove
     from opentorus.approvals import make_console_confirm
     from opentorus.errors import OpenTorusError, ProviderError
-    from opentorus.providers.registry import get_provider
     from opentorus.research.dossier import store
     from opentorus.research.dossier.models import ATTACK_STRATEGIES
     from opentorus.research.dossier.strategies import create_approach
@@ -619,11 +661,21 @@ def prove(
 
     outcome = None
     try:
-        provider = get_provider(config)
+        # The proof session is routed as ``proof_development``: the pool selects the
+        # provider that performs the task and its RoutingDecisionRecord travels with
+        # every AgentLoop the run builds, so the usage ledger names the actual model.
+        provider, lease = _acquire_provider(config, ot_dir, "proof_development")
+        if lease is not None and (verbose or debug):
+            console.print(
+                f"[dim]Model route: {lease.decision.task_class} -> profile "
+                f"'{lease.profile_name}' ({lease.profile.provider}/{lease.profile.name})[/dim]"
+            )
         from opentorus.providers.tool_support import require_tool_calling_provider
 
         require_tool_calling_provider(
-            provider, config, warn=lambda m: console.print(f"[yellow]{m}[/yellow]")
+            provider,
+            _lease_config(config, lease),
+            warn=lambda m: console.print(f"[yellow]{m}[/yellow]"),
         )
         stream_llm = stream_llm and provider.supports_streaming
         if indicator is not None:
@@ -645,6 +697,7 @@ def prove(
             stream_llm=stream_llm,
             on_thinking=on_thinking,
             on_status=_on_status,
+            routing=lease.decision if lease is not None else None,
         )
     except KeyboardInterrupt:
         from opentorus.ux import format_interrupt_message
@@ -769,18 +822,43 @@ def prove(
 
 
 @app.command("doctor")
-def doctor_cmd() -> None:
-    """Check workspace, config, model provider, index, and tools."""
+def doctor_cmd(
+    capabilities: bool = typer.Option(
+        False,
+        "--capabilities",
+        help="Show per-profile capability tables and route fallback availability.",
+    ),
+    probe: bool = typer.Option(
+        False,
+        "--probe",
+        help=(
+            "Probe every non-mock profile online for tool calling (costs one model call "
+            "each) and cache the result. Implies --capabilities."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Check workspace, config, model profiles/routes, index, tools, and backends."""
+    from dataclasses import asdict
+
     from opentorus.doctor import doctor_for_cwd
 
-    root, _ot_dir, checks = doctor_for_cwd()
+    root, _ot_dir, checks = doctor_for_cwd(capabilities=capabilities, probe=probe)
+    if as_json:
+        _emit_json([asdict(check) for check in checks])
+        if root is None or not all(c.ok for c in checks):
+            raise typer.Exit(code=1)
+        return
+    from rich.markup import escape
+
     if root is None:
         for check in checks:
-            console.print(f"[red]✗[/red] {check.name}: {check.detail}")
+            console.print(f"[red]✗[/red] {check.name}: {escape(check.detail)}")
         raise typer.Exit(code=1)
     for check in checks:
         mark = "[green]✓[/green]" if check.ok else "[red]✗[/red]"
-        console.print(f"{mark} {check.name}: {check.detail}")
+        # Details are plain text (they may mention ``opentorus[dashboard]``), not markup.
+        console.print(f"{mark} {check.name}: {escape(check.detail)}")
     if not all(c.ok for c in checks):
         raise typer.Exit(code=1)
 
