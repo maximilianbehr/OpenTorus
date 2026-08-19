@@ -976,3 +976,24 @@ def test_engine_refuses_closure_proposals_the_settlement_rules_reject(tmp_path: 
         if e.type == "diagnostic_recorded" and "refused by the settlement rules" in str(e.payload)
     ]
     assert refused, "a refused proposal must stay visible as a diagnostic"
+
+
+def test_experiment_timeout_gate_caps_what_the_model_asks_for() -> None:
+    """A model asked for 1800 s searches and one work item then blocked its branch for
+    half an hour on a single experiment; the cap rewrites the live argument (the loop
+    executes exactly this dict) and records what was asked."""
+    from opentorus.campaign.workers.base import experiment_timeout_gate
+
+    coercions: list[str] = []
+    gate = experiment_timeout_gate(600, coercions)
+    assert gate is not None
+    args = {"exp_id": "EXP-0001", "timeout": 1800}
+    assert gate("exp_run", args) is None  # never blocks
+    assert args["timeout"] == 600 and coercions == ["1800 -> 600"]
+    short = {"exp_id": "EXP-0002", "timeout": 120}
+    gate("exp_run", short)
+    assert short["timeout"] == 120 and len(coercions) == 1  # under the cap: untouched
+    other = {"path": "x"}
+    gate("read_file", other)
+    assert other == {"path": "x"}  # other tools: untouched
+    assert experiment_timeout_gate(0, coercions) is None  # 0 = no cap

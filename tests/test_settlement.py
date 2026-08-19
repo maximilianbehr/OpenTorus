@@ -104,6 +104,23 @@ def _ob(**overrides: object) -> Obligation:
     return Obligation(**base)  # type: ignore[arg-type]
 
 
+def _another_accepted_proof(ot, claim_id: str | None = None) -> str:
+    """A second, *different* accepted sympy certificate (the ledger caches identical
+    sources under the first id, so the fixture alone cannot mint a second entry)."""
+    import json as _json
+
+    from opentorus.config import default_config
+    from opentorus.research.verifiers.proofs import submit_proof
+    from opentorus.research.verifiers.sympy_backend import SymPyVerifier
+
+    cert = _json.dumps({"lhs": "2*x", "rhs": "x + x", "relation": "eq", "vars": {"x": "real"}})
+    attempt = submit_proof(
+        ot, default_config(), "sympy", cert, claim_id=claim_id, verifier=SymPyVerifier()
+    )
+    assert attempt.accepted, attempt.output
+    return attempt.id
+
+
 def test_closed_obligation_and_no_modes_refuse_with_reason(tmp_path: Path) -> None:
     _root, ot, pid = make_workspace(tmp_path)
     closed = _ob(status=ObligationStatus.closed)
@@ -153,11 +170,19 @@ def test_ledger_four_checks_and_source_proof_id_is_never_looked_up_in_the_ledger
     assert sketch.id == proof_id  # the two id spaces collide, by construction
     verdict = can_close_obligation(ot, pid, _ob(source_proof_id=sketch.id, supporting_artifacts=[]))
     assert not verdict.allowed
-    # recorded under another problem -> refused with the reason
+    # ... nor via supporting_artifacts (a live run closed thirteen gaps that way)
+    verdict = can_close_obligation(ot, pid, _ob(supporting_artifacts=[sketch.id]))
+    assert not verdict.allowed and any(
+        "names a dossier proof attempt" in d for d in verdict.details
+    )
+    # recorded under another problem -> refused with the reason (a second ledger entry,
+    # whose id no sketch shares)
+    second = _another_accepted_proof(ot)
+    assert second != sketch.id
     proofs = list_proofs(ot)
     proofs[-1].problem_id = "PROBLEM-0099"
     rewrite_jsonl(proofs_path(ot), proofs)
-    verdict = can_close_obligation(ot, pid, _ob(supporting_artifacts=[proof_id]))
+    verdict = can_close_obligation(ot, pid, _ob(supporting_artifacts=[second]))
     assert not verdict.allowed and any("recorded under PROBLEM-0099" in d for d in verdict.details)
 
 
@@ -557,3 +582,121 @@ def test_special_case_marks_root_flags_only_non_settling_relations() -> None:
     )
     graph2 = ProofGraph(problem_id="PROBLEM-0001", nodes={ROOT_ID: root, "OBL-0001": flagged})
     assert [i.severity for i in special_case_marks_root(graph2)] == ["error"]
+
+
+def test_a_sketch_id_cited_as_support_is_never_resolved_in_the_verifier_ledger(
+    tmp_path: Path, accepted_proof
+) -> None:
+    """The live failure: the prover had sympy accept ``1/4 >= (1/2)**2`` as ledger
+    PROOF-0001 for the primary claim; the sketch is *also* PROOF-0001 (dossier space) and
+    every gap obligation cites the sketch as its supporting artifact. Thirteen gaps
+    "closed" as exact symbolic certificates. A supporting-artifact id that names a
+    dossier proof attempt must never be looked up in the ledger — via the obligation's
+    own citations, via the verifier-coordinator's proposals, or as an explicit
+    "can PROOF-0001 close it?" question."""
+    from opentorus.research.dossier.claims import add_claim
+
+    _root, ot, pid = make_workspace(tmp_path)
+    claim = add_claim(ot, pid, claim_type="CONJECTURE", statement="Sidorenko holds for all H")
+    ledger_id = accepted_proof(ot, claim.id)  # a real, accepted, *trivial* certificate
+    sketch = add_proof_attempt(
+        ot, pid, title="sketch", body="[GAP-1] general case", gaps=["[GAP-1] general case"]
+    )
+    assert sketch.id == ledger_id  # both PROOF-0001: the id spaces collide by construction
+    ob = _ob(
+        supporting_artifacts=[sketch.id],
+        dependencies=[claim.id],
+        source_proof_id=sketch.id,
+        gap_marker="GAP-1",
+        closure_modes=[
+            ClosureMode.nl_proof_referee_accepted,
+            ClosureMode.formal_proof,
+            ClosureMode.smt_certificate,
+            ClosureMode.exact_symbolic_certificate,
+        ],
+    )
+    verdict = can_close_obligation(ot, pid, ob)
+    assert not verdict.allowed, verdict
+    assert any("names a dossier proof attempt" in d for d in verdict.details)
+    assert not can_close_obligation(ot, pid, ob, artifact_id=sketch.id).allowed
+    proposals, _notes = closure_candidates(ot, pid, [ob])
+    assert proposals == []
+
+
+def test_a_certificate_recorded_for_another_claim_does_not_close_an_obligation(
+    tmp_path: Path, accepted_proof
+) -> None:
+    from opentorus.research.dossier.claims import add_claim
+
+    _root, ot, pid = make_workspace(tmp_path)
+    mine = add_claim(ot, pid, claim_type="CONJECTURE", statement="P(n) for all n")
+    other = add_claim(ot, pid, claim_type="LEMMA_ATTEMPT", statement="an identity")
+    ledger_id = accepted_proof(ot, other.id)
+    ob = _ob(supporting_artifacts=[ledger_id], dependencies=[mine.id])
+    verdict = can_close_obligation(ot, pid, ob)
+    assert not verdict.allowed
+    assert any(f"recorded for {other.id}" in d for d in verdict.details)
+    # the same certificate closes an obligation about the claim it was recorded for
+    assert can_close_obligation(
+        ot, pid, _ob(supporting_artifacts=[ledger_id], dependencies=[other.id])
+    ).allowed
+
+
+def test_audit_closures_flags_closures_the_current_rules_refuse(
+    tmp_path: Path, accepted_proof
+) -> None:
+    """A closure is an append-only event; when the rules tighten (or a bug is fixed)
+    the audit makes the stale closure visible instead of trusting the snapshot."""
+    from opentorus.campaign.proof_tree.settlement import audit_closures
+
+    _root, ot, pid = make_workspace(tmp_path)
+    accepted_proof(ot)  # ledger PROOF-0001 — the id the sketch below will share
+    good_id = _another_accepted_proof(ot)  # ledger PROOF-0002: no sketch shares it
+    sketch = add_proof_attempt(ot, pid, title="sketch", body="[GAP-1] todo", gaps=["[GAP-1] todo"])
+    assert sketch.id != good_id
+    justified = _ob(
+        obligation_id="OBL-0001",
+        status=ObligationStatus.closed,
+        supporting_artifacts=[good_id],
+        closed_by_artifact=good_id,
+        closed_by_mode=ClosureMode.formal_proof,
+    )
+    stale = _ob(
+        obligation_id="OBL-0002",
+        status=ObligationStatus.closed,
+        supporting_artifacts=[sketch.id],
+        closed_by_artifact=sketch.id,
+        closed_by_mode=ClosureMode.exact_symbolic_certificate,
+        closure_modes=[ClosureMode.exact_symbolic_certificate],
+    )
+    bare = _ob(obligation_id="OBL-0003", status=ObligationStatus.closed, closed_by_artifact=None)
+    still_open = _ob(obligation_id="OBL-0004")
+    audits = {
+        a.obligation_id: a for a in audit_closures(ot, pid, [justified, stale, bare, still_open])
+    }
+    assert set(audits) == {"OBL-0001", "OBL-0002", "OBL-0003"}  # open ones are not audited
+    assert audits["OBL-0001"].justified
+    assert not audits["OBL-0002"].justified and "dossier proof attempt" in audits["OBL-0002"].reason
+    assert (
+        not audits["OBL-0003"].justified
+        and "without a recorded artifact" in audits["OBL-0003"].reason
+    )
+    # the proof tree surfaces the stale closure as an error issue on that node
+    from datetime import UTC, datetime
+
+    from opentorus.campaign.models import CampaignSnapshot
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    snap = CampaignSnapshot(
+        campaign_id="CAMPAIGN-0001",
+        problem_id=pid,
+        mode="prove-or-refute",
+        created_at=now,
+        updated_at=now,
+    )
+    snap.obligations = {o.obligation_id: o for o in (justified, stale)}
+    graph = build_proof_graph(ot, pid, snap)
+    flagged = [i for i in graph.issues if i.code == "unsupported_transition"]
+    assert [i.node_ids for i in flagged] == [["OBL-0002"]]
+    assert graph.nodes["OBL-0002"].extra["closure_audit"] == "unjustified"
+    assert graph.nodes["OBL-0001"].extra["closure_audit"] == "justified"

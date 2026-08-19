@@ -291,15 +291,22 @@ def campaign_verify(
     campaign_id: str = typer.Argument(..., help="Campaign id, e.g. CAMPAIGN-0001."),
     as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Replay the event log and compare it with snapshot.json (exit 1 on mismatch)."""
+    """Replay the event log and compare it with snapshot.json; re-check every recorded
+    obligation closure against the current settlement rules (exit 1 on a mismatch or
+    an unjustified closure)."""
+    from opentorus.campaign.proof_tree.settlement import audit_closures
     from opentorus.campaign.store import open_campaign
 
     base = _require_workspace_dir()
     try:
-        report = open_campaign(base, campaign_id).verify_replay()
+        store = open_campaign(base, campaign_id)
+        report = store.verify_replay()
+        snap = store.load().snapshot
+        audits = audit_closures(base, snap.problem_id, snap.obligations.values())
     except OpenTorusError as exc:
         _fail(exc)
         return
+    unjustified = [a for a in audits if not a.justified]
     if as_json:
         _emit_json(
             {
@@ -310,6 +317,8 @@ def campaign_verify(
                 "snapshot_seq": report.snapshot_seq,
                 "log_seq": report.log_seq,
                 "diagnostics": [d.model_dump(mode="json") for d in report.diagnostics],
+                "closures_checked": len(audits),
+                "closures_unjustified": [a.model_dump(mode="json") for a in unjustified],
             }
         )
     else:
@@ -327,7 +336,19 @@ def campaign_verify(
             console.print(f"  - {escape(line)}")
         for diag in report.diagnostics:
             console.print(f"  ! {diag.kind}: {escape(diag.message)}")
-    if not report.matches:
+        if audits:
+            tone = "green" if not unjustified else "red"
+            console.print(
+                f"  closures re-checked: {len(audits) - len(unjustified)} justified, "
+                f"[{tone}]{len(unjustified)} unjustified[/{tone}] under the current settlement "
+                "rules"
+            )
+            for a in unjustified:
+                console.print(
+                    f"  ! {escape(a.obligation_id)} closed by {escape(a.artifact_id or '?')} "
+                    f"({escape(a.mode or '?')}) — {escape(a.reason)}"
+                )
+    if unjustified or not report.matches:
         raise typer.Exit(code=1)
 
 

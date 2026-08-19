@@ -87,6 +87,41 @@ def test_eval001_numerical_evidence_does_not_verify(tmp_path: Path) -> None:
         claims.set_claim_status(base, pid, claim.id, "verified")
 
 
+def test_eval001_a_verifier_run_bound_to_another_claim_cannot_verify_this_one(
+    tmp_path: Path, accepted_proof
+) -> None:
+    """A sympy/SMT run accepts whatever true statement it is handed (a live campaign had
+    ``1/4 >= (1/2)**2`` accepted eleven times, submitted against the primary
+    conjecture). The binding recorded at submission is what ties the run to a claim, so
+    a run recorded for claim A is not verification-grade evidence for claim B."""
+    base, pid = _problem(tmp_path)
+    target = claims.add_claim(base, pid, claim_type="CONJECTURE", statement="X holds for all n")
+    other = claims.add_claim(base, pid, claim_type="LEMMA_ATTEMPT", statement="a small identity")
+    bound_to_other = accepted_proof(base, other.id)
+    with pytest.raises(OpenTorusError, match=f"recorded for {other.id}"):
+        claims.add_evidence(
+            base,
+            pid,
+            target.id,
+            evidence_type="FORMAL_PROOF",
+            summary="machine-checked",
+            direction="supports",
+            source_artifacts=[bound_to_other],
+        )
+    assert store.get_claim(base, pid, target.id).status == "unverified"  # type: ignore[union-attr]
+    # the same run is fine for the claim it was submitted for
+    ev, _ = claims.add_evidence(
+        base,
+        pid,
+        other.id,
+        evidence_type="FORMAL_PROOF",
+        summary="machine-checked",
+        direction="supports",
+        source_artifacts=[bound_to_other],
+    )
+    assert ev.id
+
+
 # --- EVAL-002: "we prove" needs a verified proof artifact ---------------------
 
 

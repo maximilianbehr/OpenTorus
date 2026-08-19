@@ -69,7 +69,9 @@ class SentenceTransformerEmbedder:
         self._model = SentenceTransformer(model_name)
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        vectors = self._model.encode(_truncate(texts), normalize_embeddings=True)
+        vectors = self._model.encode(
+            _truncate(texts), normalize_embeddings=True, show_progress_bar=False
+        )
         return [list(map(float, v)) for v in vectors]
 
 
@@ -110,7 +112,11 @@ class OllamaEmbedder:
 
     def __init__(self, config: Config, model_name: str) -> None:
         self.model_name = model_name
-        self._host = (config.model.base_url or _OLLAMA_DEFAULT_HOST).rstrip("/")
+        # ``model.base_url`` names an Ollama server only when the chat provider is Ollama;
+        # for any other provider it is that provider's endpoint (a vLLM server has no
+        # ``/api/embed``), so the embedder falls back to the default local Ollama host.
+        host = config.model.base_url if config.model.provider == "ollama" else None
+        self._host = (host or _OLLAMA_DEFAULT_HOST).rstrip("/")
         self._keep_alive = config.model.keep_alive
 
     def encode(self, texts: list[str]) -> list[list[float]]:
@@ -157,13 +163,24 @@ def _embedding_model_for(config: Config, backend: str) -> str:
     return _DEFAULT_LOCAL_MODEL
 
 
+# One loaded sentence-transformers model per process: ``load_embedder`` runs on every
+# agent turn, and constructing the model each time re-reads the weights (seconds) —
+# the mock-provider test suite tripled in wall time the day the package was installed.
+_LOCAL_CACHE: dict[str, SentenceTransformerEmbedder] = {}
+
+
 def _try_local(config: Config) -> Embedder | None:
     model_name = _embedding_model_for(config, "local")
+    cached = _LOCAL_CACHE.get(model_name)
+    if cached is not None:
+        return cached
     try:
-        return SentenceTransformerEmbedder(model_name)
+        embedder = SentenceTransformerEmbedder(model_name)
     except Exception as exc:
         logger.debug("Local embeddings unavailable (%s).", exc)
         return None
+    _LOCAL_CACHE[model_name] = embedder
+    return embedder
 
 
 def _try_openai(config: Config) -> Embedder | None:
@@ -199,6 +216,14 @@ def _resolve_backend(config: Config) -> EmbeddingsBackend:
             return override
     provider = config.model.provider
     if provider == "openai":
+        # A *local* OpenAI-compatible endpoint (vLLM, llama.cpp, a proxy) is a chat
+        # server, not OpenAI: it usually serves no embedding model, and it is not where
+        # workspace text should go for one. Stay on "auto" so the local backend comes
+        # first (see ``_attempt_order``); a real OpenAI base URL keeps the OpenAI embedder.
+        from opentorus.usage import is_local_base_url
+
+        if is_local_base_url(config.model.base_url):
+            return "auto"
         return "openai"
     if provider == "ollama":
         return "ollama"
@@ -213,7 +238,10 @@ def _attempt_order(config: Config, backend: EmbeddingsBackend) -> list[str]:
     # auto — already resolved to concrete provider when possible
     provider = config.model.provider
     if provider == "openai":
-        return ["openai", "ollama", "local"]
+        # only reached for a local OpenAI-compatible endpoint: embed on this machine
+        # (sentence-transformers) when installed; else ask that endpoint (it may serve an
+        # embedding model); the workspace's Ollama default host last.
+        return ["local", "openai", "ollama"]
     if provider == "ollama":
         return ["ollama", "local"]
     if provider == "anthropic":

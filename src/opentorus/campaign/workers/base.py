@@ -249,6 +249,36 @@ def bounded_loop(
 ArtifactIndex = dict[str, set[str]]
 
 
+EXPERIMENT_RUN_TOOLS = frozenset({"exp_run", "run_experiment"})
+
+
+def experiment_timeout_gate(
+    cap_seconds: int, coercions: list[str]
+) -> Callable[[str, dict], str | None] | None:
+    """A tool gate that clamps the ``timeout`` of an experiment run to ``cap_seconds``.
+
+    The gate receives the live argument dict the loop is about to execute, so rewriting
+    it *is* the coercion (a blocked call would only cost a smaller model more turns).
+    Every rewrite is appended to ``coercions`` ("1800 -> 600") so the worker reports it.
+    ``cap_seconds <= 0`` disables the gate (``None``).
+    """
+    if cap_seconds <= 0:
+        return None
+
+    def gate(name: str, args: dict) -> str | None:
+        if name in EXPERIMENT_RUN_TOOLS:
+            try:
+                asked = int(args.get("timeout", 0) or 0)
+            except (TypeError, ValueError):
+                asked = 0
+            if asked > cap_seconds:
+                args["timeout"] = cap_seconds
+                coercions.append(f"{asked} -> {cap_seconds}")
+        return None
+
+    return gate
+
+
 def experiment_deliverable(
     ot_dir: Path, *, template: str, before: set[str]
 ) -> tuple[Callable[[], bool], Callable[[], str]]:

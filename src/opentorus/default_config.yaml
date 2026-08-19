@@ -336,6 +336,9 @@ campaign:
   cost_budget: 0.0
   # Model turns per branch before it is marked exhausted
   branch_step_budget: 10
+  # Longest experiment run a campaign worker may request via exp_run (seconds; 0 = no cap).
+  # A longer timeout asked for by the model is rewritten to this and reported.
+  max_experiment_seconds: 600
   # Require a literature-mapping branch before proof work is scheduled
   require_literature_mapping: true
   # Require every branch to declare its relation to the root problem

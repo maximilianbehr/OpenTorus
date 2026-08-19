@@ -51,6 +51,7 @@ write instead.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -269,10 +270,34 @@ def _certificate_route(
     wanted = [m for m in ob.closure_modes if m in CERTIFICATE_MODES]
     if not wanted:
         return None
+    from opentorus.research.dossier import store
+    from opentorus.research.verifiers.proofs import get_proof
+
+    # The dossier's proof *attempts* (sketches) and the workspace verifier ledger both
+    # mint ``PROOF-NNNN``. An obligation cut from a sketch cites the sketch's id, and a
+    # live run showed why that must never be looked up in the ledger: the prover had
+    # sympy accept ``1/4 >= (1/2)**2`` as PROOF-0001 for the primary claim, and thirteen
+    # gaps of sketch PROOF-0001 "closed" as exact symbolic certificates.
+    sketch_ids = {p.id.upper() for p in store.list_proof_attempts(ot_dir, problem_id)}
+    claim_ids = set(_named_claim_ids(ot_dir, problem_id, ob))
     for aid in _ledger_candidates(ob, explicit):
+        if aid in sketch_ids:
+            details.append(
+                f"{aid} names a dossier proof attempt (a sketch), not a verifier run — the "
+                "two id spaces collide, so it is not looked up in the ledger"
+            )
+            continue
         ok, backend, reason = ledger_proof_verdict(ot_dir, problem_id, aid)
         details.append(reason)
         if not ok:
+            continue
+        proof = get_proof(ot_dir, aid)
+        linked = _norm_id(proof.claim_id) if proof is not None and proof.claim_id else None
+        if linked is not None and claim_ids and linked not in claim_ids:
+            details.append(
+                f"{aid}: recorded for {linked}, not for the obligation's claim "
+                f"({', '.join(sorted(claim_ids))})"
+            )
             continue
         backend_mode = BACKEND_CLOSURE_MODES.get(backend.lower())
         if backend_mode is not None and backend_mode in wanted:
@@ -613,6 +638,55 @@ def can_close_obligation(
     )
 
 
+class ClosureAudit(BaseModel):
+    """One recorded closure re-checked against the current settlement rules."""
+
+    obligation_id: str
+    artifact_id: str | None = None
+    mode: str | None = None
+    justified: bool
+    reason: str
+
+
+def audit_closures(
+    ot_dir: Path, problem_id: str, obligations: Iterable[Obligation]
+) -> list[ClosureAudit]:
+    """Re-check every *closed* obligation: would the artifact that closed it still be
+    accepted by :func:`can_close_obligation` today?
+
+    The event log is append-only, so a closure recorded under a rule that has since
+    been tightened (or a bug that has since been fixed) stays in the history; this makes
+    it visible instead of trusting the snapshot. A closure with no recorded artifact is
+    unjustified by construction.
+    """
+    out: list[ClosureAudit] = []
+    for ob in obligations:
+        if ob.status is not ObligationStatus.closed:
+            continue
+        artifact = ob.closed_by_artifact
+        if not artifact:
+            out.append(
+                ClosureAudit(
+                    obligation_id=ob.obligation_id,
+                    justified=False,
+                    reason="closed without a recorded artifact",
+                )
+            )
+            continue
+        reopened = ob.model_copy(update={"status": ObligationStatus.open})
+        verdict = can_close_obligation(ot_dir, problem_id, reopened, artifact_id=artifact)
+        out.append(
+            ClosureAudit(
+                obligation_id=ob.obligation_id,
+                artifact_id=artifact,
+                mode=str(ob.closed_by_mode) if ob.closed_by_mode else None,
+                justified=bool(verdict.allowed),
+                reason=verdict.reason,
+            )
+        )
+    return out
+
+
 # --------------------------------------------------------------------------------------
 # Root status and structural settlement checks
 # --------------------------------------------------------------------------------------
@@ -726,8 +800,10 @@ __all__ = [
     "BACKEND_CLOSURE_MODES",
     "CERTIFICATE_MODES",
     "RELATION_CAN_SETTLE",
+    "ClosureAudit",
     "ClosureVerdict",
     "SettlementVerdict",
+    "audit_closures",
     "can_close_obligation",
     "documented_gap_closure",
     "ledger_proof_verdict",

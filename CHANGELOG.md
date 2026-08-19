@@ -221,6 +221,40 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   resume` is the signal that the endpoint is back. The first live resume had re-paused
   on the very three failures that paused it, and a mock resume with a working registry
   suspended every branch and completed the campaign without trying once.
+- **A running work item stops when the campaign's wall budget is spent.** The ledger
+  learns an item's wall time only when it finishes, so a long item kept running after
+  the budget was gone; the worker's `should_stop` now counts the running item's elapsed
+  time and the loop ends at the next turn (a running experiment still completes its own
+  timeout — see the cap below).
+- **`campaign.max_experiment_seconds` caps a worker's experiment runs.** In the
+  ten-campaign vLLM round four falsifiers asked `exp_run` for 1800-second searches and
+  each blocked its branch for half an hour on one experiment while the local CPU was
+  saturated. The falsifier and numerical workers now clamp the `timeout` argument to the
+  cap (default 600 s, 0 = off) and report the rewrite in the work item's notes.
+- **Verification-grade evidence must cite a verifier run bound to *this* claim.** A
+  sympy/SMT run accepts whatever true statement it is handed (the live sidorenko
+  campaign had `1/4 >= (1/2)**2` accepted eleven times, submitted against the primary
+  conjecture), so the `claim_id` recorded at submission is the only thing that ties the
+  run to a claim at all. `add_evidence` with `FORMAL_PROOF` / `VALIDATED_NUMERICAL` now
+  refuses a run recorded for another claim ("recorded for CLAIM-0002, not CLAIM-0001");
+  runs submitted without a claim are unchanged. Pinned by an EVAL-001 sibling test.
+- **A sketch's `PROOF-` id never closes an obligation through the verifier ledger, and
+  recorded closures are re-checked.** The dossier's proof attempts and the workspace
+  verifier ledger both mint `PROOF-NNNN`; an obligation cut from a sketch cites the
+  sketch's id. A live campaign (sidorenko) had the prover get sympy to accept
+  `1/4 >= (1/2)**2` as ledger PROOF-0001 for the primary claim, and thirteen gaps of
+  sketch PROOF-0001 "closed" as exact symbolic certificates — the claim status was never
+  touched, but the tree showed settled gaps. The certificate route now skips any cited id
+  that names a dossier proof attempt (explained in the verdict), refuses a ledger entry
+  recorded for another claim, and `settlement.audit_closures` re-runs every recorded
+  closure under the current rules: the proof tree flags a refused one as an
+  `unsupported_transition` error (`extra.closure_audit = unjustified`) and
+  `campaign verify` lists it and exits 1. History is made visible, not rewritten.
+- **Local embeddings first for a local OpenAI-compatible endpoint.** With `openai` +
+  a loopback/private `base_url` (vLLM, llama.cpp), `embeddings_backend: auto` now tries
+  sentence-transformers on this machine first, then that endpoint, then the default
+  local Ollama host — the Ollama fallback no longer targets the chat server's URL
+  (no `/api/embed` there). `pip install "opentorus[embeddings]"` enables the local path.
 - **The OpenAI embedder honours `model.base_url` too, and the parser strips Gemma 4's
   thinking channel.** With a local vLLM configured as the chat provider, hybrid retrieval
   used to build the embeddings client with the SDK defaults and send workspace text
@@ -253,6 +287,21 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   as a stall in the routed stress run. The new Ollama-only key (`"30m"`, `"2h"`, `"-1"`
   = until the server stops; also accepted in `models.profiles.<name>`) is forwarded
   verbatim on chat and embedding requests. Unset keeps the server's default.
+- **Desktop notifications read like notifications.** A finished turn used to toast
+  `OpenTorus finished` over the first 160 characters of the raw answer — `## Summary -
+  **We** verified…`, cut mid-word — and an approval prompt toasted `OpenTorus is
+  waiting…` over a bare command. The finished toast is now titled with the elapsed time
+  (`OpenTorus finished in 2m 14s`) and carries a `Task:` line plus the first paragraph
+  of the answer as plain prose (Markdown headings, list markers, emphasis and link
+  targets stripped, list items joined by `·`, cut at a word boundary); the approval
+  toast (`OpenTorus needs your approval`) names the action, the policy's reason and
+  risk level, and where to answer, and is sent with critical urgency so it stays on
+  screen. Bodies are escaped for the daemon's markup (a `<` or `&` in an answer had
+  silently eaten the GNOME toast and broken the Windows toast XML), and the macOS
+  backend now emits AppleScript string literals — it had wrapped them in single quotes,
+  which AppleScript rejects, so the `osascript` toast never showed.
+  `notify_turn_complete` takes an optional `task`; `notify_permission_required` takes
+  `reason` and `risk_level`; `send_notification` takes `urgency`.
 - **A desktop notification that times out is a courtesy that failed, not an error.**
   `send_notification` now swallows `subprocess.TimeoutExpired` (a slow PowerShell toast
   on a Windows CI runner escaped and failed an unrelated agent-loop test) along with the

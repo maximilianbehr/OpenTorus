@@ -318,6 +318,7 @@ so a resume months later runs under the same rules.
 | `campaign.token_budget` | `0` | tokens across all workers; 0 = unlimited (`--token-budget`) |
 | `campaign.cost_budget` | `0.0` | USD across all workers; 0 = unlimited (`--cost-budget`) |
 | `campaign.branch_step_budget` | `10` | model turns per branch before it is exhausted (the example drivers set it from `OPENTORUS_BRANCH_STEPS`, default 40) |
+| `campaign.max_experiment_seconds` | `600` | cap on the `timeout` a falsifier/numerical worker may pass to `exp_run` (0 = no cap); a longer request is rewritten and reported in the work item's notes |
 | `campaign.require_literature_mapping` | `true` | keep a literature branch while critical coverage is insufficient |
 | `campaign.require_root_relation` | `true` | every branch must declare its relation to the root |
 | `campaign.persist_every_event` | `true` | rewrite `snapshot.json` after every event (`false` = at phase boundaries only) |
