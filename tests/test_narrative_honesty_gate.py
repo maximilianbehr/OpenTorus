@@ -115,3 +115,29 @@ def test_compose_narrative_clean_without_findings_has_no_warning_section(
     doc = compose_narrative_tex(base, pid, provider=provider, compose_llm=True)
     assert "\\begin{document}" in doc
     assert "Honesty warnings" not in doc
+
+
+def test_report_command_survives_a_refused_narrative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused narrative must not cost the caller report.md, the lint or the rest of
+    a script. A live driver (barnette, round 5) lost its verdict and PDF because one
+    model overclaim made `problem report` exit non-zero under `set -e`."""
+    from typer.testing import CliRunner
+
+    from opentorus.cli import app
+
+    base, pid = _problem(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "opentorus.providers.registry.get_provider",
+        lambda *a, **k: _FakeProvider("\\section{Summary} We prove that X holds for every n."),
+    )
+    result = CliRunner().invoke(app, ["problem", "report", pid])
+    assert result.exit_code == 0, result.output
+    assert "Narrative report refused" in result.output
+    # the reason travels with it (console wrapping makes long tokens unreliable)
+    assert "unlicensed" in result.output and "overclaim" in result.output
+    # the honest artifact was still written, and no narrative reached the disk
+    assert (store.dossier_dir(base, pid) / "report.md").is_file()
+    assert not (store.dossier_dir(base, pid) / f"{pid}-narrative.tex").is_file()
