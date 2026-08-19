@@ -103,6 +103,14 @@ _LIFECYCLE_TARGETS: dict[str, CampaignPhase] = {
     ev.EventType.campaign_failed: CampaignPhase.FAILED,
 }
 
+# Lifecycle transitions always flush the snapshot, even under
+# ``persist_every_event: false``: a live campaign paused BUDGET_EXHAUSTED at seq 150
+# while snapshot.json still said status=created/last_seq=1 past process exit, and
+# everything reading the snapshot directly saw a campaign that never started.
+_SNAPSHOT_FLUSH_EVENTS: frozenset[str] = frozenset(
+    {ev.EventType.campaign_started, ev.EventType.campaign_resumed, *_LIFECYCLE_TARGETS}
+)
+
 
 class CampaignStore:
     """One campaign's files: create, append, load, verify."""
@@ -278,7 +286,7 @@ class CampaignStore:
         self._write_line(event)
         self._last_seq = seq
         self._snapshot = reducer.apply(snapshot, event)
-        if self.persist_every_event:
+        if self.persist_every_event or event.type in _SNAPSHOT_FLUSH_EVENTS:
             self.write_snapshot()
         return event
 
@@ -507,6 +515,22 @@ class CampaignStore:
         left = replayed.model_dump(mode="json")
         right = on_disk.model_dump(mode="json")
         diff = sorted(k for k in set(left) | set(right) if left.get(k) != right.get(k))
+        lag = events[-1].seq - on_disk.last_seq
+        if lag > 0:
+            # "matches" alone would be misleading here: a live verify once reported
+            # success after replaying 1 of 150 events against a never-flushed snapshot.
+            diagnostics.append(
+                Diagnostic(
+                    kind="snapshot_lag",
+                    message=(
+                        f"snapshot lags the log by {lag} event(s); replay verified only "
+                        f"the covered prefix (seq <= {on_disk.last_seq}). The CLI derives "
+                        "state from the full log; re-open the campaign or enable "
+                        "persist_every_event to refresh snapshot.json."
+                    ),
+                    seq=on_disk.last_seq,
+                )
+            )
         return ReplayReport(
             matches=not diff,
             diff=[f"{k}: replay != snapshot" for k in diff],

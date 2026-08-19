@@ -118,8 +118,15 @@ def _enter_phase(
 def _add_ref(snapshot: CampaignSnapshot, ref: ArtifactRef) -> None:
     for existing in snapshot.artifact_refs:
         if existing.artifact_id == ref.artifact_id and existing.kind == ref.kind:
-            return
-    snapshot.artifact_refs.append(ref)
+            # A re-created artifact is a revision: carry the new seq forward so the
+            # next critique phase sees it again. Keeping the first creation seq forever
+            # meant a revised proof sketch never got a second referee pass ("no new
+            # claim or proof attempt to review" while PROOF-0001 had just changed).
+            if (ref.seq or 0) > (existing.seq or 0):
+                existing.seq = ref.seq
+            break
+    else:
+        snapshot.artifact_refs.append(ref)
     if ref.branch_id and ref.branch_id in snapshot.branches:
         branch = snapshot.branches[ref.branch_id]
         if ref.artifact_id not in branch.artifact_references:

@@ -379,6 +379,14 @@ def test_parse_strategist_json_is_lenient() -> None:
     ]
     assert parse_strategist_json('{"a": 1, "single_list": [{"title": "L"}]}') == [{"title": "L"}]
     assert parse_strategist_json('{"x": [{"t": 1}], "y": [{"t": 2}]}') == []  # ambiguous: refuse
+    # LaTeX backslashes inside JSON strings (invalid escapes) killed 5/5 live portfolios
+    latex = r'[{"title": "A", "objective": "bound $\mathbb{E}\vartheta(G)/\sqrt{n}$"}]'
+    assert parse_strategist_json(latex) == [
+        {"title": "A", "objective": "bound $\\mathbb{E}\\vartheta(G)/\\sqrt{n}$"}
+    ]
+    # valid escapes stay untouched even alongside invalid ones
+    mixed = r'[{"title": "line\nbreak", "objective": "$\Theta(n)$"}]'
+    assert parse_strategist_json(mixed) == [{"title": "line\nbreak", "objective": "$\\Theta(n)$"}]
     ctx = _ctx(CampaignMode.prove_or_refute)
     proposals, notes = proposals_from_items(
         [{"title": "?", "kind": "nonsense", "objective": "z"}, {"kind": "proof", "objective": ""}],

@@ -181,6 +181,9 @@ DiagnosticKind = Literal[
     "invalid_transition",
     "migration",
     "parallelism_capped",
+    # verify: snapshot.json covers only a prefix of the log (persist_every_event=false),
+    # so "replay matches snapshot" verified only that prefix.
+    "snapshot_lag",
 ]
 ReactivationKind = Literal[
     "new_evidence_count",

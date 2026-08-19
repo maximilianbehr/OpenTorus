@@ -366,3 +366,53 @@ def test_terminal_campaign_accepts_no_further_events(tmp_path: Path) -> None:
             ev.EventType.phase_entered,
             ev.PhaseEnteredPayload(phase=CampaignPhase.INGEST, from_phase=CampaignPhase.CREATED),
         )
+
+
+def test_lifecycle_events_flush_the_snapshot_even_without_persist_every_event(
+    tmp_path: Path,
+) -> None:
+    """A live campaign (persist_every_event=false) paused BUDGET_EXHAUSTED at seq 150
+    while snapshot.json still said created/last_seq=1 past process exit, and `verify`
+    reported success after replaying 1 of 150 events. Lifecycle transitions now always
+    flush, and verify names the lag while one exists."""
+    import json
+
+    ot, store = _store(tmp_path)
+    store.persist_every_event = False
+    _drive(store)  # campaign_started flushes; the later phase events do not
+    on_disk = json.loads(store.snapshot_path.read_text(encoding="utf-8"))
+    assert on_disk["last_seq"] < store.snapshot.last_seq
+    report = store.verify_replay()
+    assert report.matches  # the covered prefix is consistent...
+    assert any(d.kind == "snapshot_lag" for d in report.diagnostics)  # ...and the lag is named
+    # a lifecycle transition flushes: pause brings the on-disk snapshot up to date
+    store.append(
+        ev.EventType.campaign_paused,
+        ev.CampaignPausedPayload(reason="BUDGET_EXHAUSTED", resume_phase=CampaignPhase.NORMALIZE),
+    )
+    on_disk = json.loads(store.snapshot_path.read_text(encoding="utf-8"))
+    assert on_disk["last_seq"] == store.snapshot.last_seq
+    assert on_disk["status"] != "created"
+    report = store.verify_replay()
+    assert report.matches
+    assert not any(d.kind == "snapshot_lag" for d in report.diagnostics)
+
+
+def test_recreated_artifact_ref_carries_the_new_seq(tmp_path: Path) -> None:
+    """A revised PROOF-* kept its first creation seq forever, so critique_targets never
+    saw the revision ("no new claim or proof attempt to review" right after a refine).
+    Re-creating an artifact now bumps the single ref's seq instead of being ignored."""
+    _ot, store = _store(tmp_path)
+    _drive(store)
+    store.append(
+        ev.EventType.artifact_created,
+        ArtifactRef(artifact_id="PROOF-0001", kind="proof_attempt"),
+    )
+    first = next(r.seq for r in store.snapshot.artifact_refs if r.artifact_id == "PROOF-0001")
+    store.append(
+        ev.EventType.artifact_created,
+        ArtifactRef(artifact_id="PROOF-0001", kind="proof_attempt"),
+    )
+    refs = [r for r in store.snapshot.artifact_refs if r.artifact_id == "PROOF-0001"]
+    assert len(refs) == 1  # one ref per (artifact, kind) — a revision, not a duplicate
+    assert (refs[0].seq or 0) > (first or 0)

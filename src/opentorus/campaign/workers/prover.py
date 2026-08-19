@@ -358,9 +358,19 @@ class ProverWorker:
             gaps=list(proof.gaps), body=_proof_body(rt.ot_dir, pid, proof.body_path)
         )
         known = {ob.statement.strip().lower() for ob in ctx.open_obligations}
+        # A reworded gap is still the same obligation: dedup on (source proof, gap
+        # marker) as well — a live refinement minted OBL-0004/0005 duplicating
+        # OBL-0001/0002 for the same GAP-1/GAP-2 because only exact statement text
+        # was compared, and the duplicates polluted every later worker prompt.
+        known_markers = {
+            (ob.source_proof_id, ob.gap_marker)
+            for ob in ctx.open_obligations
+            if ob.source_proof_id and ob.gap_marker
+        }
         obligations: list[ObligationProposal] = []
         for n, gap in enumerate(gaps, start=1):
-            if gap.strip().lower() in known:
+            marker = gap_marker_key(gap) or f"GAP-{n}"
+            if gap.strip().lower() in known or (proof.id, marker) in known_markers:
                 continue
             obligations.append(
                 ObligationProposal(
@@ -369,7 +379,7 @@ class ProverWorker:
                     root_relation=ctx.root_relation,
                     closure_modes=list(GAP_CLOSURE_MODES),
                     source_proof_id=proof.id,
-                    gap_marker=gap_marker_key(gap) or f"GAP-{n}",
+                    gap_marker=marker,
                     supporting_artifacts=[proof.id],
                 )
             )
