@@ -221,6 +221,14 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   resume` is the signal that the endpoint is back. The first live resume had re-paused
   on the very three failures that paused it, and a mock resume with a working registry
   suspended every branch and completed the campaign without trying once.
+- **The OpenAI provider honours `model.base_url`, `timeout_seconds` and the sampling
+  shape.** `base_url` used to be ignored (the client was built with the SDK defaults),
+  so a config pointing at a vLLM / llama.cpp / proxy endpoint silently talked to
+  api.openai.com; the request timeout was the SDK's, and `max_tokens` / `top_p` / `seed`
+  were dropped. Now `base_url` selects the endpoint, `timeout_seconds` bounds every
+  request, and the sampling fields are forwarded when set. The example drivers gained
+  `OPENTORUS_PROVIDER` (default `ollama`) next to `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL`,
+  so a vLLM server is one environment line away.
 - **A campaign worker sees only its own session's history.** The workspace keeps one
   transcript and the history window used to be workspace-wide: a live falsifier whose
   latest history was the strategist's "propose a portfolio as JSON" exchange answered
