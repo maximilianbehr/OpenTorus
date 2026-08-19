@@ -62,8 +62,15 @@ RELATION_ALIASES: dict[str, RootRelation] = {r.value: r for r in RootRelation} |
 
 _WRAPPER_KEYS = ("proposals", "branches", "portfolio", "strategies", "items")
 _TRAILING_COMMA = re.compile(r",(\s*[\]}])")
-# A backslash that starts none of JSON's escapes ("\m" in "$\mathbb{E}$", "\v", "\s", …).
-_INVALID_ESCAPE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
+# Either a valid JSON escape (kept whole) or a lone backslash starting none of them
+# ("\m" in "$\mathbb{E}$", "\d" in "\dots"). Matching valid escapes first consumes
+# them atomically, so an already-doubled "\\sup" is not mangled into "\\\sup" —
+# models mix both conventions inside one answer.
+_ESCAPE = re.compile(r'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})|\\(.)', re.S)
+
+
+def _repair_escapes(text: str) -> str:
+    return _ESCAPE.sub(lambda m: m.group(0) if m.group(1) else "\\\\" + m.group(2), text)
 
 
 def _loads_lenient(text: str) -> object | None:
@@ -76,7 +83,7 @@ def _loads_lenient(text: str) -> object | None:
     untouched because the raw text is always tried first.
     """
     candidates = [text, _TRAILING_COMMA.sub(r"\1", text)]
-    candidates += [_INVALID_ESCAPE.sub(r"\\\\", c) for c in list(candidates)]
+    candidates += [_repair_escapes(c) for c in list(candidates)]
     for candidate in candidates:
         try:
             return json.loads(candidate)

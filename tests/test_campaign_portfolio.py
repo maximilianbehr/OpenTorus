@@ -387,6 +387,19 @@ def test_parse_strategist_json_is_lenient() -> None:
     # valid escapes stay untouched even alongside invalid ones
     mixed = r'[{"title": "line\nbreak", "objective": "$\Theta(n)$"}]'
     assert parse_strategist_json(mixed) == [{"title": "line\nbreak", "objective": "$\\Theta(n)$"}]
+    # A live answer mixed conventions inside one string: already-doubled "\\sup" next to
+    # a bare "\dots". Repairing the bare one must not mangle the doubled one.
+    both = (
+        r'[{"title": "T", "objective": "the set $\{1, \dots, k\}$",'
+        r' "strategy_summary": "compute $\\sup_t \\min_i \\lVert t v_i \\rVert$"}]'
+    )
+    assert parse_strategist_json(both) == [
+        {
+            "title": "T",
+            "objective": "the set $\\{1, \\dots, k\\}$",
+            "strategy_summary": "compute $\\sup_t \\min_i \\lVert t v_i \\rVert$",
+        }
+    ]
     ctx = _ctx(CampaignMode.prove_or_refute)
     proposals, notes = proposals_from_items(
         [{"title": "?", "kind": "nonsense", "objective": "z"}, {"kind": "proof", "objective": ""}],
