@@ -51,7 +51,10 @@ def send_notification(title: str, message: str) -> bool:
         try:
             if attempt(title, message):
                 return True
-        except OSError as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
+            # A notification is a courtesy: a slow PowerShell/notify-send that hits its
+            # 5-second timeout (seen on a Windows CI runner) must never surface as a
+            # failed agent turn.
             logger.debug("Notification backend failed: %s", exc)
     return False
 

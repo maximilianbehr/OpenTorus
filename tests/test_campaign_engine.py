@@ -631,8 +631,23 @@ def test_provider_outage_pauses_the_campaign_instead_of_burning_every_branch(
     assert dead.calls <= PROVIDER_OUTAGE_STREAK + 3
     assert snap.budget.steps_used < 60
     assert open_campaign(ot, record.id).verify_replay().matches
-    # the outage is over: resume continues from REALLOCATE with a working registry
+    n_before = len(snap.work_items)
+    # the outage is over: resume continues from REALLOCATE with a working registry and
+    # must *try again* — a live campaign once re-paused on the very failures that had
+    # paused it, without a single new work item (the streak looked at pre-resume items)
     engine2 = make_engine(root, ot)
     result = engine2.resume(record.id)
     assert result.resumed
-    assert _snapshot(ot, record.id).status in {CampaignStatus.completed, CampaignStatus.paused}
+    after = _snapshot(ot, record.id)
+    assert not (after.pause_reason or "").startswith("PROVIDER_UNAVAILABLE"), after.pause_reason
+    assert len(after.work_items) > n_before
+    assert after.status in {CampaignStatus.completed, CampaignStatus.paused}
+    # ... and when the endpoint is still dead, the breaker fires again, on new evidence
+    engine3 = make_engine(root, ot, worker_registry=registry)
+    dead.calls = 0
+    result3 = engine3.resume(record.id)
+    final = _snapshot(ot, record.id)
+    if result3.resumed and final.status is CampaignStatus.paused:
+        assert (final.pause_reason or "").startswith("PROVIDER_UNAVAILABLE")
+        assert 1 <= dead.calls <= PROVIDER_OUTAGE_STREAK + 3
+    assert open_campaign(ot, record.id).verify_replay().matches

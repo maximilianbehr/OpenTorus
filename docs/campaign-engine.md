@@ -252,7 +252,7 @@ Retry rules:
   at suspension. Conditions follow the category: `verification_backend_changed`
   for backend categories, `new_evidence_count` for `no_witness_found` /
   `model_no_progress`, `theorem_ref_accepted` for `citation_invalid`,
-  `human_override` otherwise.
+  `campaign_resumed` for `provider_unavailable`, `human_override` otherwise.
 - Something changed: `retry_allowed`, and `why_different` is appended to the
   signature's `retry_notes`.
 - REALLOCATE also suspends a branch with two or more trailing identical failures,
@@ -288,6 +288,18 @@ ledger's `exhausted` list) and the campaign is **paused** with reason
 still spent lets the mode's completion criterion end the campaign (`budget`)
 instead of pausing forever. `max_parallel_workers > 1` is accepted but capped to
 1 with a `parallelism_capped` event: v1 executes work items sequentially.
+
+A **provider outage** is treated the same way, not as a verdict on the strategy.
+A worker that raises fails its work item with a *signed* failure
+(`provider_unavailable` for provider/transport errors), and three consecutive
+provider failures pause the campaign with reason `PROVIDER_UNAVAILABLE`
+(`engine.PROVIDER_OUTAGE_STREAK`). A `campaign resume` is a fresh start for that
+judgement: the reducer records the resume seq (`counters.last_resume_seq`), the
+streak counts only work items created after it, the retry gate allows one
+identical attempt of a provider signature recorded before it
+(`RetryChanges.provider_recovered`), and a branch suspended for a provider
+outage carries a `campaign_resumed` reactivation condition. If the endpoint is
+still down, the next three failures pause the campaign again -- on new evidence.
 
 ## Configuration
 

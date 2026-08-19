@@ -91,8 +91,10 @@ branches (a test asserts the first three work items span three branches).
 * **Suspension** also happens in REALLOCATE for a branch with ≥ 2 trailing identical
   failures. Reactivation conditions follow the category: `verification_backend_changed`
   for `tool_unavailable` / `verifier_*`, `new_evidence_count` for `no_witness_found` /
-  `model_no_progress`, `theorem_ref_accepted` for `citation_invalid`, `human_override`
-  otherwise — each recording what was observed at suspension.
+  `model_no_progress`, `theorem_ref_accepted` for `citation_invalid`, `campaign_resumed`
+  for `provider_unavailable` (the next `campaign resume` after the suspension is the
+  signal that the endpoint is back), `human_override` otherwise — each recording what
+  was observed at suspension.
 * **Reactivation** (`branch_reactivated`) happens only when a *recorded* condition is
   met by the current facts (enabled verifier backends, evidence count, accepted
   theorem references); a campaign whose remaining branches are all suspended completes
