@@ -164,7 +164,7 @@ class AgentLoop:
         usage_tags: dict[str, str] | None = None,
         policies: WorkflowPolicySet | None = None,
         should_stop: Callable[[], bool] | None = None,
-        isolate_history: bool = False,
+        isolate_history: bool | None = None,
     ) -> None:
         self.root = root
         self.ot_dir = ot_dir
@@ -176,7 +176,7 @@ class AgentLoop:
         # An isolated run (a campaign worker) sees only its own session's messages in
         # the history window; the default keeps the workspace-wide window the REPL and
         # ``run`` rely on for continuity across invocations.
-        self.isolate_history = isolate_history
+        self.isolate_history = bool(isolate_history)
         self.confirm = confirm
         self.on_text = on_text
         self.on_status = on_status

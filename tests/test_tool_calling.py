@@ -832,3 +832,34 @@ def test_a_repaired_argument_name_stays_visible_in_the_ledger(tmp_path: Path) ->
     logged = [a for a in list_actions(ot) if a.tool_name == "read_file"]
     assert logged, "the call should have run rather than failed"
     assert any("_repaired_keys" in (a.args or {}) for a in logged)
+
+
+def test_openai_provider_honours_base_url_timeout_and_sampling() -> None:
+    """``model.base_url`` selects the endpoint (a vLLM server as much as OpenAI) — it
+    used to be ignored, so a config pointing at vLLM silently talked to OpenAI. The
+    sampling shape is forwarded only when set."""
+    from opentorus.config import default_config
+    from opentorus.providers.openai_provider import build_openai_request, openai_client_kwargs
+
+    config = default_config()
+    config.model.provider = "openai"
+    config.model.name = "gemma-4-31b-it"
+    assert openai_client_kwargs(config) == {"timeout": 300.0}
+    config.model.base_url = "http://localhost:8000/v1"
+    config.model.timeout_seconds = 900
+    assert openai_client_kwargs(config) == {
+        "base_url": "http://localhost:8000/v1",
+        "timeout": 900.0,
+    }
+    messages = [SessionMessage(role="user", content="hi")]
+    plain = build_openai_request(config, messages, None)
+    assert plain["model"] == "gemma-4-31b-it" and "tools" not in plain
+    assert not {"max_tokens", "top_p", "seed"} & plain.keys()
+    config.model.max_tokens = 4096
+    config.model.top_p = 0.9
+    config.model.seed = 7
+    shaped = build_openai_request(
+        config, messages, [{"name": "status", "description": "d", "parameters": {"type": "object"}}]
+    )
+    assert (shaped["max_tokens"], shaped["top_p"], shaped["seed"]) == (4096, 0.9, 7)
+    assert shaped["tools"][0]["function"]["name"] == "status"

@@ -11,8 +11,11 @@ and builds an honesty-linted report.
 
 > **Each driver resets the local workspace** (`rm -rf .opentorus`) and defaults to
 > a local Ollama model on `http://localhost:11434`. Run it in a scratch directory;
-> override the model or endpoint with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL`, or
-> edit the `opentorus config set model.*` lines for your own provider.
+> override the model, endpoint or provider with `OPENTORUS_MODEL` /
+> `OPENTORUS_BASE_URL` / `OPENTORUS_PROVIDER` (e.g. `openai` for a vLLM server:
+> `OPENTORUS_PROVIDER=openai OPENTORUS_BASE_URL=http://localhost:8000/v1
+> OPENTORUS_MODEL=<served-model-name> OPENAI_API_KEY=x`), or edit the
+> `opentorus config set model.*` lines for your own provider.
 
 ---
 
@@ -153,7 +156,9 @@ description of the workflow, and prerequisites.
 
 - **Docker** for the `python-sci` container (the numerical example).
 - **A tool-calling model.** The scripts default to `gemma4:31b` on a local Ollama
-  server (port 11434); override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL`, or
+  server (port 11434); override with `OPENTORUS_MODEL` / `OPENTORUS_BASE_URL` /
+  `OPENTORUS_PROVIDER` (`openai` also speaks to vLLM and other OpenAI-compatible
+  servers — the API key may be any non-empty string there), or
   set `model.provider` / `model.name` / `model.base_url` to your own provider with
   `opentorus config set …`. The default `mock` provider is an offline smoke test
   only. Which model to pick is measured, not guessed — see below. On a remote

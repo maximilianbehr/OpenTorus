@@ -43,15 +43,8 @@ class OpenAIProvider(BaseProvider):
                 "The 'openai' package is not installed. Install it with: pip install openai"
             ) from exc
 
-        kwargs: dict = {
-            "model": self.config.model.name,
-            "temperature": self.config.model.temperature,
-            "messages": to_openai_messages(messages),
-        }
-        if tools:
-            kwargs["tools"] = to_function_tools(tools)
-
-        client = OpenAI()
+        kwargs = build_openai_request(self.config, messages, tools)
+        client = OpenAI(**openai_client_kwargs(self.config))
         completion = client.chat.completions.create(**kwargs)
         choice = completion.choices[0]
         response = parse_openai_message(choice.message)
@@ -61,6 +54,47 @@ class OpenAIProvider(BaseProvider):
         # finish_reason "length" means the output hit the token ceiling (truncated).
         response.truncated = getattr(choice, "finish_reason", None) == "length"
         return response
+
+
+def openai_client_kwargs(config: Config) -> dict:
+    """Constructor arguments for the ``openai`` client.
+
+    ``model.base_url`` selects the endpoint — an OpenAI-compatible server (vLLM,
+    llama.cpp, LM Studio, a proxy) as much as OpenAI itself; unset keeps the SDK's
+    default (``OPENAI_BASE_URL`` or api.openai.com). It used to be ignored here, so a
+    ``base_url`` pointing at a vLLM server silently talked to OpenAI instead.
+    ``model.timeout_seconds`` bounds every request the same way it does for Ollama.
+    """
+    kwargs: dict = {}
+    if config.model.base_url:
+        kwargs["base_url"] = config.model.base_url
+    if config.model.timeout_seconds:
+        kwargs["timeout"] = float(config.model.timeout_seconds)
+    return kwargs
+
+
+def build_openai_request(
+    config: Config, messages: list[SessionMessage], tools: list[dict] | None
+) -> dict:
+    """The ``chat.completions.create`` arguments: model, sampling shape, messages, tools.
+
+    ``max_tokens``, ``top_p`` and ``seed`` are forwarded only when set, so an unset
+    field keeps the server's own default (the same contract as the Ollama options).
+    """
+    kwargs: dict = {
+        "model": config.model.name,
+        "temperature": config.model.temperature,
+        "messages": to_openai_messages(messages),
+    }
+    if config.model.max_tokens is not None:
+        kwargs["max_tokens"] = config.model.max_tokens
+    if config.model.top_p is not None:
+        kwargs["top_p"] = config.model.top_p
+    if config.model.seed is not None:
+        kwargs["seed"] = config.model.seed
+    if tools:
+        kwargs["tools"] = to_function_tools(tools)
+    return kwargs
 
 
 def _openai_usage(completion: object) -> TokenUsage | None:

@@ -23,7 +23,14 @@ from opentorus.tools.builtin import build_default_registry
 from opentorus.workspace import init_workspace, workspace_dir
 from test_control_plane_characterization import M0_SIGNATURE
 
-NEW_KEYWORD_ONLY = ["event_sink", "routing", "usage_tags", "policies", "should_stop"]
+NEW_KEYWORD_ONLY = [
+    "event_sink",
+    "routing",
+    "usage_tags",
+    "policies",
+    "should_stop",
+    "isolate_history",
+]
 
 PRIVATE_ATTRIBUTES = [
     "_fail_streak",
