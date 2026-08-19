@@ -635,3 +635,54 @@ def test_snapshot_never_carries_root_status(tmp_path: Path) -> None:
     dumped = snap.model_dump(mode="json")
     assert "root_status" not in dumped and "report_status" not in dumped
     assert isinstance(snap, CampaignSnapshot)
+
+
+def test_workspace_evidence_attributed_to_the_problem_is_a_node_not_a_missing_ref(
+    tmp_path: Path,
+) -> None:
+    """The falsifier records bounded searches through the workspace evidence ledger
+    (EVIDENCE-*), never the dossier's evidence/index.jsonl. Such evidence must appear
+    as an evidence node under its claim (with a supports/contradicts edge) instead of
+    surfacing as a ``missing_ref`` diagnostic — the first routed real run had two."""
+    from opentorus.research.evidence import add_evidence as add_ws_evidence
+    from opentorus.research.experiments import new_experiment
+
+    _root_dir, ot, pid = make_workspace(tmp_path)
+    claim = add_claim(ot, pid, claim_type="CONJECTURE", statement="P(n) for every n")
+    exp = new_experiment(ot, "bounded search", template="counterexample_search", problem_id=pid)
+    # the evidence ledger refuses the untouched template predicate: give it a real one
+    run_py = ot / exp.path / "run.py"
+    run_py.write_text(
+        run_py.read_text().replace("return n * n >= n", "return n % 7 != 3"), encoding="utf-8"
+    )
+    ev, _advisory = add_ws_evidence(
+        ot,
+        claim.id,
+        source_type="experiment",
+        source_id=exp.id,
+        summary="no counterexample below 10^6",
+        direction="supports",
+        strength="weak",
+        problem_id=pid,
+    )
+    graph = build_proof_graph(ot, pid, None)
+    node = graph.nodes[ev.id]
+    assert node.kind is ProofNodeKind.evidence and node.source == "workspace"
+    assert node.parents == [claim.id] and node.status == "supports"
+    rels = {(e.source_id, e.target_id, e.relation) for e in graph.edges}
+    assert (ev.id, claim.id, "supports") in rels
+    assert not any(i.code == "missing_ref" and ev.id in i.node_ids for i in graph.issues)
+    # workspace evidence of another problem stays out of this tree
+    other = dstore.create_dossier(ot, "For every m, Q(m) holds.")
+    add_ws_evidence(
+        ot,
+        claim.id,
+        source_type="experiment",
+        source_id=exp.id,
+        summary="elsewhere",
+        direction="supports",
+        strength="weak",
+        problem_id=other.id,
+    )
+    graph2 = build_proof_graph(ot, pid, None)
+    assert [n for n in graph2.nodes.values() if n.source == "workspace"] == [graph2.nodes[ev.id]]
