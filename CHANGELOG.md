@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.15] — 2026-08-19
+
 OpenTorus ran three mostly linear loops. `prove` was one budgeted session with its
 anti-loop guards inlined and its recovery hints hard-coded next to them; `research` was
 a fixed counterexample-search iteration with a per-question JSON state file; and both
