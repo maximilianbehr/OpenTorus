@@ -192,3 +192,28 @@ def test_sketch_open_conjecture_warning_is_attribution_aware() -> None:
     bare = "Therefore the conjecture holds in general."
     warnings = lint_proof_sketch(bare, open_problem=True)
     assert any("appears to resolve" in w for w in warnings)
+
+
+def test_a_branch_objective_in_the_imperative_is_not_a_proof_claim() -> None:
+    """Round 5, frankl-union-closed: the composed narrative quoted its branch objectives
+    ("Prove the conjecture for ...") and the linter read each one as a claim that the
+    conjecture had been proven, refusing the narrative three times over. An objective
+    states what is attempted; only an assertion of achievement is a proof claim."""
+    from opentorus.research.dossier.honesty import IssueKind, lint_report
+
+    objective = "Prove the conjecture for union-closed families of size at most 12.\n"
+    assert [i for i in lint_report(objective) if i.kind is IssueKind.PROOF_CLAIM] == []
+    # headings carrying the objective are objectives too
+    assert [
+        i for i in lint_report("## Prove the conjecture\n") if i.kind is IssueKind.PROOF_CLAIM
+    ] == []
+    # the achievement forms stay flagged, including mid-line uses of the bare verb
+    for claim in (
+        "We prove the conjecture for all n.\n",
+        "This proves the conjecture.\n",
+        "The argument proves the conjecture for k >= 4.\n",
+        "The statement is proven.\n",
+    ):
+        assert [
+            i for i in lint_report(claim) if i.kind is IssueKind.PROOF_CLAIM
+        ], f"must stay flagged: {claim!r}"
