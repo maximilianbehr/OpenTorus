@@ -21,6 +21,14 @@ import pytest
 os.environ.pop("FORCE_COLOR", None)
 os.environ.pop("CLICOLOR_FORCE", None)
 os.environ.setdefault("NO_COLOR", "1")
+# Typer switches its Rich help output into forced-terminal mode whenever GITHUB_ACTIONS,
+# FORCE_COLOR or PY_COLORS is set (typer.rich_utils.FORCE_TERMINAL) — ANSI escapes plus
+# 80-column wrapping that splits long option names such as ``--no-primary-claim`` across
+# lines. Tests assert on plain ``--help`` text, so the help must render the same on a CI
+# runner as on a laptop: Typer's own off-switch, and a wide fixed terminal width.
+os.environ.setdefault("_TYPER_FORCE_DISABLE_TERMINAL", "1")
+os.environ.setdefault("TERMINAL_WIDTH", "200")
+os.environ.pop("PY_COLORS", None)
 
 
 @pytest.fixture(autouse=True)
