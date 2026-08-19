@@ -90,7 +90,109 @@ class SMTVerifier:
                     f"this is inconclusive, not a rejection.\n{output}"
                 ).strip(),
             )
-        return _result_from_solver_output(self.name, self.version(), output)
+        verdict = _result_from_solver_output(self.name, self.version(), output)
+        if verdict.accepted:
+            vacuous = self._vacuity_check(source)
+            if vacuous is not None:
+                return vacuous
+        return verdict
+
+    def _vacuity_check(self, source: str) -> VerificationResult | None:
+        """Refuse an ``unsat`` whose hypotheses are already unsatisfiable on their own.
+
+        ``unsat`` proves the goal only when the assertions *before* the negated goal
+        are consistent; inconsistent hypotheses make every goal "provable". Observed
+        live (caccetta-haggkvist, PROOF-0009): ``(assert (forall ((i Int)) (and (>= i 0)
+        (< i 9))))`` — "every integer lies in [0, 9)" — followed by the real encoding,
+        and z3 said ``unsat`` about nothing. So when the script carries two or more
+        assertions, the script minus its *last* assertion (by convention the negated
+        goal) is run again: if that residue is ``unsat`` too, the proof is vacuous and is
+        REJECTED with the reason (not inconclusive — the solver did decide, about the
+        wrong thing). Returns ``None`` when the hypotheses are consistent (or the check
+        itself could not conclude, which is reported as inconclusive).
+        """
+        forms = _top_level_forms(source)
+        assert_idx = [i for i, f in enumerate(forms) if f.lstrip("( \t\r\n").startswith("assert")]
+        if len(assert_idx) < 2:
+            return None
+        residue_forms = [f for i, f in enumerate(forms) if i != assert_idx[-1]]
+        if not any(f.lstrip("( \t\r\n").startswith("check-sat") for f in residue_forms):
+            residue_forms.append("(check-sat)")
+        residue = "\n".join(residue_forms)
+        with tempfile.TemporaryDirectory(prefix="opentorus-smt-") as tmp:
+            src = Path(tmp) / f"hypotheses{self.suffix}"
+            src.write_text(residue, encoding="utf-8")
+            result = run_shell(f"{self.command} {shlex.quote(str(src))}", timeout=self.timeout)
+        output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()
+        if result.timed_out or not ran_at_all(result.exit_code):
+            return VerificationResult(
+                backend=self.name,
+                backend_version=self.version(),
+                accepted=False,
+                inconclusive=True,
+                available=True,
+                output=(
+                    "The goal came back unsat, but the vacuity check (the script without its "
+                    "last assertion) did not conclude, so it is unknown whether the hypotheses "
+                    "are consistent; recorded as inconclusive, not as a proof.\n" + output
+                ).strip(),
+            )
+        residue_verdict = _result_from_solver_output(self.name, self.version(), output)
+        if residue_verdict.outcome == "unsat":
+            return VerificationResult(
+                backend=self.name,
+                backend_version=self.version(),
+                accepted=False,
+                inconclusive=False,
+                available=True,
+                outcome="unsat",
+                output=(
+                    "REJECTED as vacuous: the assertions *before* the last one are already "
+                    "unsatisfiable on their own, so 'unsat' proves nothing about the goal "
+                    "(inconsistent hypotheses make every statement 'provable'). Check the "
+                    "hypotheses for a contradiction — e.g. a quantifier over all integers "
+                    "that pins them into a finite range — and put the negated goal last.\n" + output
+                ).strip(),
+            )
+        return None
+
+
+def _top_level_forms(source: str) -> list[str]:
+    """Split an SMT-LIB script into its top-level s-expressions (comments and string
+    literals respected). Text outside parentheses is dropped."""
+    forms: list[str] = []
+    depth = 0
+    start: int | None = None
+    in_string = False
+    in_comment = False
+    i = 0
+    while i < len(source):
+        ch = source[i]
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+        elif in_string:
+            if ch == '"':
+                if i + 1 < len(source) and source[i + 1] == '"':
+                    i += 1  # escaped quote
+                else:
+                    in_string = False
+        elif ch == ";":
+            in_comment = True
+        elif ch == '"':
+            in_string = True
+        elif ch == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == ")":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    forms.append(source[start : i + 1])
+                    start = None
+        i += 1
+    return forms
 
 
 def _errors_invalidate_the_verdict(

@@ -132,7 +132,9 @@ opentorus problem verdict "${TARGET}" --set-primary CLAIM-0001
 # budget below bounds the run; every axis can be overridden from the environment.
 # A finished campaign is orchestration state -- the mathematical status still comes
 # from `opentorus problem verdict` (derived from accepted dossier artifacts only).
-opentorus --verbose campaign start "${TARGET}" --mode prove-or-refute \
+# Stress/coverage runs may adjust the workspace (budgets, profiles, backends) before the start.
+[ -n "${OPENTORUS_PRESTART_HOOK:-}" ] && source "$OPENTORUS_PRESTART_HOOK"
+opentorus --verbose campaign start "${TARGET}" --mode "${OPENTORUS_MODE:-prove-or-refute}" \
   --branches "${OPENTORUS_BRANCHES:-4}" \
   --max-steps "${OPENTORUS_MAX_STEPS:-200}" \
   --max-wall-seconds "${OPENTORUS_MAX_WALL_SECONDS:-0}"

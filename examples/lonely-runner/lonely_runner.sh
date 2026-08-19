@@ -30,6 +30,7 @@ opentorus config set model.provider "${OPENTORUS_PROVIDER:-ollama}"
 opentorus config set model.name "${OPENTORUS_MODEL:-gemma4:31b}"
 opentorus config set model.base_url "${OPENTORUS_BASE_URL:-http://localhost:11434}"
 opentorus config set model.timeout_seconds 2400
+opentorus config set tools.verifiers.smt "${OPENTORUS_SMT:-false}"   # z3 on PATH: set OPENTORUS_SMT=true to let the formalizer use it
 opentorus config set agent.style autonomous
 opentorus config set agent.max_steps inf
 opentorus config set agent.prove_gap_fill_max_steps inf
@@ -153,7 +154,9 @@ opentorus problem verdict "${TARGET}" --set-primary CLAIM-0001
 # budget below bounds the run; every axis can be overridden from the environment.
 # A finished campaign is orchestration state -- the mathematical status still comes
 # from `opentorus problem verdict` (derived from accepted dossier artifacts only).
-opentorus --verbose campaign start "${TARGET}" --mode prove-or-refute \
+# Stress/coverage runs may adjust the workspace (budgets, profiles, backends) before the start.
+[ -n "${OPENTORUS_PRESTART_HOOK:-}" ] && source "$OPENTORUS_PRESTART_HOOK"
+opentorus --verbose campaign start "${TARGET}" --mode "${OPENTORUS_MODE:-prove-or-refute}" \
   --branches "${OPENTORUS_BRANCHES:-4}" \
   --max-steps "${OPENTORUS_MAX_STEPS:-200}" \
   --max-wall-seconds "${OPENTORUS_MAX_WALL_SECONDS:-0}"
