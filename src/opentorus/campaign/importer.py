@@ -149,7 +149,9 @@ def import_research(
         sources.append(jpath)
     if state.progress_path and (ot_dir / state.progress_path).is_file():
         sources.append(ot_dir / state.progress_path)
-    source_paths = [str(p.relative_to(ot_dir)) for p in sources]
+    # POSIX form on every platform: the provenance record is a portable artifact, not a
+    # native path — a dossier imported on Windows must read the same on Linux.
+    source_paths = [p.relative_to(ot_dir).as_posix() for p in sources]
     sha256s = [_sha256(p) for p in sources]
     imported_at = clock.now()
     provenance: dict[str, object] = {
