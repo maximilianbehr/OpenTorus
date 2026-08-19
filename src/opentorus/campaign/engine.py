@@ -93,6 +93,38 @@ from opentorus.providers.pool import ProviderPool
 _logger = logging.getLogger("opentorus")
 
 
+PROVIDER_OUTAGE_STREAK = 3
+
+
+def provider_outage(snap: CampaignSnapshot) -> str | None:
+    """The message of the last failure when the ``PROVIDER_OUTAGE_STREAK`` most recent
+    finished work items all failed with ``provider_unavailable``; else ``None``.
+
+    Only work items that reached a worker count (scheduled-but-refused retries do not
+    finish), and any success or differently-failed item breaks the streak.
+    """
+    finished = [
+        wi
+        for wi in sorted(snap.work_items.values(), key=lambda w: w.created_seq)
+        if wi.status.value in ("completed", "failed")
+    ]
+    tail = finished[-PROVIDER_OUTAGE_STREAK:]
+    if len(tail) < PROVIDER_OUTAGE_STREAK:
+        return None
+
+    def _provider_failure(wi: WorkItem) -> bool:
+        if wi.status.value != "failed":
+            return False
+        sig = snap.failure_signatures.get(wi.failure_signature_id or "")
+        if sig is not None:
+            return sig.error_category == "provider_unavailable"
+        return (wi.failure_reason or "").startswith(("ProviderError", "ConnectionError"))
+
+    if all(_provider_failure(wi) for wi in tail):
+        return tail[-1].failure_reason or "provider unavailable"
+    return None
+
+
 class CampaignEngine:
     """Start, run, pause, resume and stop campaigns for one workspace."""
 
@@ -678,6 +710,13 @@ class CampaignEngine:
                 )
             self._pause_now(run, ReasonCode.BUDGET_EXHAUSTED.value)
             return PhaseOutcome(None, "budget exhausted")
+        outage = provider_outage(snap)
+        if outage is not None:
+            # Three model-driven work items in a row died on the provider/network: the
+            # endpoint is gone, not the mathematics. Pause (resumable) instead of letting
+            # every branch spend its budget against a dead socket.
+            self._pause_now(run, f"PROVIDER_UNAVAILABLE: {outage}"[:500])
+            return PhaseOutcome(None, "provider unavailable")
         facts = self._facts(run)
         notes: list[str] = []
         suspended = suspend_and_exhaust(run, facts)

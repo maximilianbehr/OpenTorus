@@ -41,6 +41,7 @@ from opentorus.campaign.models import (
     ArtifactRef,
     BranchRecord,
     CostTotals,
+    ErrorCategory,
     NormalizedProblem,
     Obligation,
     ObligationStatus,
@@ -112,6 +113,45 @@ class ExecuteContext:
     result: WorkerResult = field(default_factory=WorkerResult)
     new_refs: list[ArtifactRef] = field(default_factory=list)
     wall_seconds: float = 0.0
+
+
+def failed_result_for_exception(exc: BaseException, ec: ExecuteContext) -> WorkerResult:
+    """The honest, *signed* outcome of a worker that raised.
+
+    An exception used to become a bare ``failed`` item with no failure signature, so
+    the retry gate and the suspension rules never saw it: when the 4xH100 Ollama
+    endpoint dropped mid-run, a resumed campaign burned fifty work items in ten
+    minutes — every branch tried again and again against a dead socket until its
+    budget was spent. Now the exception is a signature (provider/transport failures
+    under ``provider_unavailable``, everything else under ``other``) whose key repeats
+    while nothing changes, so the second identical attempt is refused and the branch
+    suspended; consecutive provider failures additionally pause the whole campaign
+    (see the engine's reallocate phase).
+    """
+    from opentorus.campaign.failures import build_failure_signature
+    from opentorus.errors import ProviderError
+
+    message = f"{type(exc).__name__}: {exc}"
+    provider_failure = isinstance(exc, ProviderError | OSError)
+    category: ErrorCategory = "provider_unavailable" if provider_failure else "other"
+    signature = build_failure_signature(
+        role=ec.item.role,
+        strategy_class=ec.ctx.strategy_key or ec.item.role.value,
+        target_obligation=None,
+        assumption_context=ec.ctx.assumption_context,
+        tool_or_solver="provider" if provider_failure else "worker",
+        error_category=category,
+        counterargument=message[:300],
+        branch_id=ec.item.branch_id,
+        work_item_id=ec.item.work_item_id,
+    )
+    return WorkerResult(
+        status="failed",
+        error_category=category,
+        message=message,
+        failure_signature=signature,
+        usage=CostTotals(steps=1),
+    )
 
 
 class WorkerExecutor:
@@ -309,12 +349,7 @@ class WorkerExecutor:
             _logger.warning(
                 "worker %s failed on %s: %s", ec.item.role.value, ec.item.work_item_id, exc
             )
-            result = WorkerResult(
-                status="failed",
-                error_category="other",
-                message=f"{type(exc).__name__}: {exc}",
-                usage=CostTotals(steps=1),
-            )
+            result = failed_result_for_exception(exc, ec)
         finished = self.clock.now()
         after = snapshot_artifacts(self.ot_dir, run.pid)
         ec.wall_seconds = round(max(0.0, (finished - started).total_seconds()), 3)
