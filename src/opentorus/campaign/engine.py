@@ -300,6 +300,7 @@ class CampaignEngine:
         snap = run.snap
         if is_terminal(snap.phase):
             raise OpenTorusError(f"{run.cid} is already {snap.status.value}.")
+        self._harvest(run)
         run.store.append(
             ev.EventType.campaign_stopped, ev.CampaignStoppedPayload(reason=reason), actor="cli"
         )
@@ -392,10 +393,28 @@ class CampaignEngine:
             ev.PhaseEnteredPayload(phase=next_phase, from_phase=current, reason=outcome),
         )
 
+    def _harvest(self, run: RunContext) -> list[str]:
+        """Mirror worker ledgers into the dossier; never raises, always idempotent.
+
+        Called from SYNTHESIZE *and* from every stop that skips it. A bounded run
+        normally ends by pausing on a spent budget, and harvesting only on the
+        completion path lost the workers' evidence in four of eight live campaigns.
+        """
+        try:
+            from opentorus.campaign.harvest import harvest_worker_ledgers
+
+            return harvest_worker_ledgers(
+                self.ot_dir, run.pid, run.cid, run.snap.failure_signatures.values()
+            )
+        except Exception as exc:  # noqa: BLE001 - harvest must not block a stop
+            _logger.warning("worker-ledger harvest failed for %s: %s", run.cid, exc)
+            return [f"worker-ledger harvest failed: {exc}"]
+
     def _pause_now(self, run: RunContext, reason: str) -> None:
         snap = run.snap
         if is_terminal(snap.phase) or snap.status is CampaignStatus.paused:
             return
+        self._harvest(run)
         try:
             run.store.append(
                 ev.EventType.campaign_paused,
@@ -408,6 +427,7 @@ class CampaignEngine:
         snap = run.snap
         if is_terminal(snap.phase):
             return
+        self._harvest(run)
         try:
             run.store.append(ev.EventType.campaign_failed, ev.CampaignFailedPayload(reason=reason))
         except OpenTorusError:
@@ -760,16 +780,7 @@ class CampaignEngine:
                 notes.extend(result.notes)
             except Exception as exc:  # noqa: BLE001 - synthesis must not block completion
                 notes.append(f"synthesizer failed: {exc}")
-        try:
-            from opentorus.campaign.harvest import harvest_worker_ledgers
-
-            notes.extend(
-                harvest_worker_ledgers(
-                    self.ot_dir, run.pid, run.cid, run.snap.failure_signatures.values()
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - harvest must not block completion
-            notes.append(f"worker-ledger harvest failed: {exc}")
+        notes.extend(self._harvest(run))
         facts = self._facts(run)
         verdict = run.profile.completion(run.snap, facts)
         reason = verdict.reason if verdict.complete else "no schedulable work item remained"

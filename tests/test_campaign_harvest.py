@@ -89,3 +89,33 @@ def test_harvest_is_idempotent_and_skips_without_a_target_claim(tmp_path: Path) 
     harvest_worker_ledgers(ot, pid, "CAMPAIGN-0001", [_signature()])
     assert len(dstore.list_evidence(ot, pid)) == 1
     assert len(dstore.list_failed_attempts(ot, pid)) == 1
+
+
+def test_a_paused_campaign_still_harvests_its_worker_ledgers(tmp_path: Path) -> None:
+    """Round 5: the harvest lived only in SYNTHESIZE, which a bounded run never reaches
+    when it pauses on a spent budget — four of eight live campaigns paused and left
+    fifteen pieces of worker evidence invisible to their dossiers. Every stop harvests."""
+    from opentorus.campaign.models import CampaignStatus
+    from opentorus.campaign.store import open_campaign
+    from support.campaign import make_engine, make_workspace
+
+    def _status(ot_dir, cid):
+        return open_campaign(ot_dir, cid).snapshot.status
+
+    root, ot, pid = make_workspace(tmp_path)
+    primary_id = _primary(ot, pid)
+    worker_claim = new_claim(ot, "Branch-level claim from a worker.")
+    ws_ev, _ = add_evidence(
+        ot,
+        worker_claim.id,
+        source_type="manual_note",
+        summary="a bounded search over n <= 40 found no witness",
+        direction="supports",
+    )
+    engine = make_engine(root, ot)
+    record = engine.start(pid, mode="exploration", max_steps=1)  # pauses: budget spent
+    assert _status(ot, record.id) is CampaignStatus.paused
+    mirrored = dstore.list_evidence(ot, pid)
+    assert [e.claim_id for e in mirrored] == [primary_id]
+    assert ws_ev.id in mirrored[0].source_artifacts
+    assert any("unreviewed" in lim for lim in mirrored[0].limitations)
