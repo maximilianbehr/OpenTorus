@@ -206,6 +206,12 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   (the two drivers that already set it are unchanged apart from the header).
 
 ### Changed
+
+- **A container-backed experiment that outruns its timeout is stopped, not orphaned.**
+  A timeout (or a Ctrl-C) used to kill only the `docker run`/`podman run` client; the
+  container kept running — twelve orphaned experiment containers were still burning CPU
+  hours after the stress-test campaigns that started them had ended. The OCI backends now
+  name every container and `kill` it whenever the client did not exit cleanly.
 - **A prover on a branch whose relation to the root is not `equivalent` can only write
   exploration sketches, and the tool gate enforces it.** A special-case branch's model
   called `proof_write` with the default primary scope, refined the dossier's one primary

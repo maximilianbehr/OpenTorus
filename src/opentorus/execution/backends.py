@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
+import uuid
 from pathlib import Path
 
 from opentorus.execution.base import WORKDIR_TARGET as _WORKDIR_TARGET
@@ -95,10 +97,12 @@ class _OciBackend:
             )
         return mounts
 
-    def build_argv(self, request: ExecutionRequest) -> list[str]:
+    def build_argv(self, request: ExecutionRequest, *, name: str | None = None) -> list[str]:
         if not request.image:
             raise ValueError(f"Backend '{self.name}' requires an image.")
         argv = [self.binary, "run", "--rm"]
+        if name:
+            argv += ["--name", name]
         if not request.network:
             argv += ["--network", "none"]
         argv += ["--workdir", _WORKDIR_TARGET]
@@ -123,11 +127,36 @@ class _OciBackend:
                 stderr=f"Execution backend '{self.name}' is not installed; unavailable.",
                 exit_code=127,
             )
-        return run_argv(
-            self.build_argv(request),
-            timeout=request.limits.timeout,
-            label=request.command,
-        )
+        # A timeout (or a Ctrl-C) kills the ``docker run`` *client*, not the container:
+        # after a stress test twelve orphaned experiment containers were still burning
+        # CPU hours after the runs that started them had ended. Naming the container
+        # lets the backend stop it whenever the client did not exit cleanly.
+        name = f"opentorus-{uuid.uuid4().hex[:12]}"
+        clean_exit = False
+        try:
+            result = run_argv(
+                self.build_argv(request, name=name),
+                timeout=request.limits.timeout,
+                label=request.command,
+            )
+            clean_exit = not result.timed_out
+            return result
+        finally:
+            if not clean_exit:
+                self._kill(name)
+
+    def _kill(self, name: str) -> None:
+        """Best-effort stop of a named container whose client did not exit cleanly."""
+        try:
+            subprocess.run(
+                [self.binary, "kill", name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 class DockerBackend(_OciBackend):
