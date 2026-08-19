@@ -11,6 +11,8 @@ Paths are saved in ``.opentorus/environments.yaml`` for later rebuilds
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +29,10 @@ from opentorus.tools.shell import run_argv
 
 _LOCAL_IMAGE_TAG = "opentorus-{name}:local"
 _CONTAINERFILE_NAMES = ("Dockerfile", "Containerfile", "dockerfile", "containerfile")
+# Image label carrying the sha256 of the Containerfile the image was built from,
+# so `env prepare` can tell a current image from a stale one instead of blindly
+# reusing whatever carries the tag.
+CONTAINERFILE_LABEL = "org.opentorus.containerfile-sha256"
 _MISSING_DOCKERFILE = (
     "Pass --file path/to/Dockerfile (or Containerfile). OpenTorus does not ship container images."
 )
@@ -41,6 +47,9 @@ class PrepareResult:
     config_path: Path
     containerfile: Path | None = None
     build_context: Path | None = None
+    # Why the image was built or reused (hash match, hash mismatch, missing
+    # label, missing image, --rebuild) — surfaced verbatim by the CLI.
+    reason: str = ""
 
 
 def local_image_tag(name: str) -> str:
@@ -178,6 +187,37 @@ def _image_exists(runtime: str, tag: str) -> bool:
     return result.exit_code == 0
 
 
+def containerfile_sha256(containerfile: Path) -> str:
+    """sha256 of the Containerfile's content — the image's build-input identity."""
+    return hashlib.sha256(containerfile.read_bytes()).hexdigest()
+
+
+def _image_label(runtime: str, tag: str, label: str) -> str | None:
+    """Return ``label``'s value on the image, or ``None`` if image/label is absent.
+
+    Parses ``image inspect`` JSON rather than a Go template so the same code
+    reads Docker (``.Config.Labels``) and Podman (also top-level ``.Labels``).
+    """
+    result = run_argv([runtime, "image", "inspect", tag], timeout=30)
+    if result.exit_code != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return None
+    entry = data[0]
+    config = entry.get("Config")
+    labels = (config or {}).get("Labels") if isinstance(config, dict) else None
+    if not isinstance(labels, dict):
+        labels = entry.get("Labels")
+    if not isinstance(labels, dict):
+        return None
+    value = labels.get(label)
+    return value if isinstance(value, str) and value else None
+
+
 def _build_image(
     runtime: str,
     tag: str,
@@ -185,6 +225,7 @@ def _build_image(
     context: Path,
     containerfile: Path,
     label_name: str,
+    containerfile_hash: str | None = None,
 ) -> None:
     argv = [
         runtime,
@@ -193,8 +234,12 @@ def _build_image(
         str(containerfile),
         "-t",
         tag,
-        str(context),
     ]
+    if containerfile_hash:
+        # Stamp the build input's hash on the image so a later `env prepare` can
+        # detect a stale image instead of silently reusing it.
+        argv += ["--label", f"{CONTAINERFILE_LABEL}={containerfile_hash}"]
+    argv.append(str(context))
     result = run_argv(argv, timeout=600, label=f"{runtime} build -t {tag}")
     if result.exit_code != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -287,9 +332,40 @@ def prepare_environment(
         containerfile=containerfile,
         build_context=build_context,
     )
+    cf_hash = containerfile_sha256(cf)
+    # Decide build-vs-reuse from the Containerfile hash stamped on the image at
+    # build time — an image that merely carries the tag is not proof it was built
+    # from the *current* Containerfile.
+    needs_build = True
+    if rebuild:
+        reason = "--rebuild requested"
+    elif not _image_exists(runtime, tag):
+        reason = "image not found"
+    else:
+        stored = _image_label(runtime, tag, CONTAINERFILE_LABEL)
+        if stored == cf_hash:
+            needs_build = False
+            reason = f"containerfile hash match ({cf_hash[:12]})"
+        elif stored is None:
+            reason = (
+                f"existing image lacks the {CONTAINERFILE_LABEL} label "
+                f"(current containerfile {cf_hash[:12]}); rebuilding"
+            )
+        else:
+            reason = (
+                f"containerfile hash mismatch (image label {stored[:12]}, "
+                f"current {cf_hash[:12]}); rebuilding"
+            )
     built = False
-    if rebuild or not _image_exists(runtime, tag):
-        _build_image(runtime, tag, context=context, containerfile=cf, label_name=name)
+    if needs_build:
+        _build_image(
+            runtime,
+            tag,
+            context=context,
+            containerfile=cf,
+            label_name=name,
+            containerfile_hash=cf_hash,
+        )
         built = True
     cmd = _default_command_for(ot_dir, name, default_command)
     config_path = _write_workspace_override(
@@ -308,4 +384,5 @@ def prepare_environment(
         config_path=config_path,
         containerfile=cf,
         build_context=context,
+        reason=reason,
     )

@@ -120,8 +120,9 @@ def env_prepare(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
     action = "Built" if result.built else "Reused"
+    why = f" ({result.reason})" if result.reason else ""
     console.print(
-        f"[green]{action}[/green] {result.image} via {result.runtime} "
+        f"[green]{action}[/green] {result.image} via {result.runtime}{why} "
         f"→ {result.config_path.relative_to(base.parent)}"
     )
     if result.containerfile is not None:
