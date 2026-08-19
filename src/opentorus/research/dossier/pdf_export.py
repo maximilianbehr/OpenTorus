@@ -21,6 +21,7 @@ from opentorus.research.papers import is_paper_parsed, list_papers
 
 if TYPE_CHECKING:
     from opentorus.providers.base import BaseProvider
+    from opentorus.research.dossier.honesty import ReportIssue
 
 logger = logging.getLogger(__name__)
 
@@ -1500,6 +1501,26 @@ def _latex_to_prose(document: str) -> str:
     return text.replace("{", " ").replace("}", " ").replace("%", " ")
 
 
+# Lint kinds that are never emitted, in any composed document: an experiment-as-proof
+# claim, or a proof/result claim the dossier's artifacts do not license. Softer kinds
+# (weasel words, knowledge claims) are surfaced as warnings instead.
+_HARD_OVERCLAIM_KINDS = ("experiment_proof", "proof_claim", "result_claim")
+
+
+def _lint_composed_document(ot_dir: Path, problem_id: str, document: str) -> list[ReportIssue]:
+    """Run the artifact-aware honesty linter over a composed LaTeX document's prose."""
+    from opentorus.research.dossier.honesty import lint_report
+    from opentorus.research.dossier.report import honesty_context
+
+    has_p, has_r, has_t = honesty_context(ot_dir, problem_id)
+    return lint_report(
+        _latex_to_prose(document),
+        has_verified_proof=has_p,
+        has_reference=has_r,
+        has_supported_theorem=has_t,
+    )
+
+
 def enforce_export_honesty(
     ot_dir: Path, problem_id: str, document: str, *, allow_overclaims: bool = False
 ) -> None:
@@ -1514,20 +1535,10 @@ def enforce_export_honesty(
     """
     if allow_overclaims:
         return
-    from opentorus.research.dossier.honesty import lint_report
-    from opentorus.research.dossier.report import honesty_context
     from opentorus.research.dossier.status_gate import derive_status
 
-    has_p, has_r, has_t = honesty_context(ot_dir, problem_id)
-    issues = lint_report(
-        _latex_to_prose(document),
-        has_verified_proof=has_p,
-        has_reference=has_r,
-        has_supported_theorem=has_t,
-    )
-    hard = [
-        i for i in issues if i.kind.value in ("experiment_proof", "proof_claim", "result_claim")
-    ]
+    issues = _lint_composed_document(ot_dir, problem_id, document)
+    hard = [i for i in issues if i.kind.value in _HARD_OVERCLAIM_KINDS]
     reasons: list[str] = []
     if hard:
         phrases = "; ".join(f"'{i.phrase}'" for i in hard[:5])
@@ -1540,6 +1551,57 @@ def enforce_export_honesty(
             "back the claims, or pass --force to override (the honest HTML report is written "
             "instead)."
         )
+
+
+def _append_honesty_warnings_tex(document: str, issues: list[ReportIssue]) -> str:
+    """Attach the linter's soft findings to the narrative, mirroring report.md.
+
+    ``report.md`` always carries an "Honesty Warnings" section; the narrative .tex
+    gets the same treatment so a reader of the composed document sees every finding
+    the linter could not justify from the artifacts.
+    """
+    lines = [
+        "\\section*{Honesty warnings}",
+        "% Appended by the artifact-aware honesty linter (mirrors report.md).",
+        "\\begin{itemize}",
+    ]
+    for i in issues:
+        item = f"line {i.line} [{i.kind.value}] '{i.phrase}': {i.suggestion}"
+        lines.append(f"  \\item {_latex_escape(item)}")
+    lines.append("\\end{itemize}")
+    block = "\n".join(lines)
+    marker = "\\end{document}"
+    idx = document.rfind(marker)
+    if idx == -1:
+        return document.rstrip() + "\n\n" + block + "\n"
+    return document[:idx] + block + "\n\n" + document[idx:]
+
+
+def enforce_narrative_honesty(ot_dir: Path, problem_id: str, document: str) -> str:
+    """Gate the LLM-composed narrative .tex with the same honesty machinery as the PDF.
+
+    ``report.md`` is linted and the composed PDF passes ``enforce_export_honesty``,
+    but the narrative .tex used to be written with no check at all. This refuses the
+    same hard kinds the PDF gate refuses (experiment-as-proof, unlicensed
+    proof/result claims) — loudly, with the lint findings — and appends the soft
+    findings as an "Honesty warnings" section inside the document. Returns the
+    (possibly warning-annotated) document.
+    """
+    issues = _lint_composed_document(ot_dir, problem_id, document)
+    hard = [i for i in issues if i.kind.value in _HARD_OVERCLAIM_KINDS]
+    if hard:
+        findings = "; ".join(
+            f"line {i.line} [{i.kind.value}] '{i.phrase}': {i.suggestion}" for i in hard[:5]
+        )
+        raise OpenTorusError(
+            f"Refusing to write the narrative report: {len(hard)} unlicensed overclaim(s) "
+            f"in the composed text — {findings} Fix the wording or back the claims with "
+            "verification artifacts; the artifact report.md is unaffected."
+        )
+    soft = [i for i in issues if i.kind.value not in _HARD_OVERCLAIM_KINDS]
+    if soft:
+        document = _append_honesty_warnings_tex(document, soft)
+    return document
 
 
 def latex_lint(document: str) -> list[str]:
@@ -1627,7 +1689,11 @@ def compose_narrative_tex(
     )
     body = _append_missing_proofs(body, facts, provider, compose_llm=compose_llm, hooks=hooks)
     body = sanitize_latex_body(body)
-    return wrap_preprint_document(facts, body)
+    document = wrap_preprint_document(facts, body)
+    # The narrative used to bypass every honesty check report.md and the PDF get.
+    # Gate it here so no caller can write an unlinted narrative: hard overclaims
+    # refuse composition loudly; soft findings ride along inside the document.
+    return enforce_narrative_honesty(ot_dir, problem_id, document)
 
 
 def compose_and_render_pdf(

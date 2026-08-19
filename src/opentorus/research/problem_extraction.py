@@ -973,21 +973,44 @@ def _register_candidates(
     if not candidates:
         return []
 
+    from opentorus.research.dossier.store import (
+        clear_active_problem,
+        get_active_problem,
+        list_dossiers,
+        set_active_problem,
+    )
+
+    # ``create_dossier`` moves the active-problem pointer as a side effect, so a bulk
+    # import used to leave the LAST extracted dossier active — hijacking `status` and
+    # every bare `problem` command away from the problem the user was working on.
+    # Extraction may only claim the pointer when the workspace had no problems at all
+    # before the import; otherwise the pre-import state (set or unset) is restored.
+    had_problems = bool(list_dossiers(ot_dir))
+    previous_active = get_active_problem(ot_dir)
+
     seen: set[str] = set()
     ingested: list[ProblemDossier] = []
-    for label, statement, section in candidates:
-        problem = _register_one(
-            ot_dir,
-            label,
-            statement,
-            section,
-            paper_id=paper_id,
-            source=source,
-            text=text,
-            seen=seen,
-        )
-        if problem is not None and problem not in ingested:
-            ingested.append(problem)
+    try:
+        for label, statement, section in candidates:
+            problem = _register_one(
+                ot_dir,
+                label,
+                statement,
+                section,
+                paper_id=paper_id,
+                source=source,
+                text=text,
+                seen=seen,
+            )
+            if problem is not None and problem not in ingested:
+                ingested.append(problem)
+    finally:
+        # try/finally: an interrupt mid-import must not leave a junk dossier active.
+        if had_problems:
+            if previous_active is not None:
+                set_active_problem(ot_dir, previous_active)
+            else:
+                clear_active_problem(ot_dir)
     return ingested
 
 
