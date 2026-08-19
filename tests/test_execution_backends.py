@@ -127,3 +127,55 @@ def test_select_auto_image_falls_back_to_local(monkeypatch: pytest.MonkeyPatch) 
     config = default_config()
     monkeypatch.setattr(backends_mod, "_which", lambda binary: False)
     assert select_backend(config, needs_image=True).name == "local"
+
+
+def test_docker_run_kills_the_named_container_when_the_client_times_out(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A timeout kills the ``docker run`` client, not the container. The backend names
+    the container and issues ``docker kill <name>`` whenever the client did not exit
+    cleanly (timeout or interrupt), and never after a clean exit."""
+    from opentorus.execution import backends as backends_mod
+    from opentorus.tools.shell import ShellResult
+
+    seen: dict[str, object] = {"argv": None, "killed": []}
+
+    def _fake_run_argv(argv, cwd=None, timeout=60, *, label=None, env=None):  # noqa: ANN001, ANN202
+        seen["argv"] = list(argv)
+        return ShellResult(
+            command=label or "", stdout="", stderr="t/o", exit_code=124, timed_out=True
+        )
+
+    def _fake_subprocess_run(argv, **kwargs):  # noqa: ANN001, ANN202
+        seen["killed"].append(list(argv))  # type: ignore[union-attr]
+
+        class _Done:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Done()
+
+    backend = DockerBackend()
+    monkeypatch.setattr(backend, "is_available", lambda: True)
+    monkeypatch.setattr(backends_mod, "run_argv", _fake_run_argv)
+    monkeypatch.setattr(backends_mod.subprocess, "run", _fake_subprocess_run)
+    result = backend.run(_req(tmp_path, image="img", command="python long.py"))
+    assert result.timed_out
+    argv = seen["argv"]
+    assert "--name" in argv  # type: ignore[operator]
+    name = argv[argv.index("--name") + 1]  # type: ignore[index]
+    assert name.startswith("opentorus-")
+    assert seen["killed"] == [["docker", "kill", name]]
+
+    # clean exit: no kill
+    seen["killed"] = []
+    monkeypatch.setattr(
+        backends_mod,
+        "run_argv",
+        lambda argv, cwd=None, timeout=60, *, label=None, env=None: ShellResult(
+            command=label or "", stdout="ok", stderr="", exit_code=0
+        ),
+    )
+    assert backend.run(_req(tmp_path, image="img", command="python ok.py")).exit_code == 0
+    assert seen["killed"] == []
