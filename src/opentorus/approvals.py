@@ -97,7 +97,12 @@ def make_console_confirm(console, approvals: SessionApprovals | None = None, con
         if config is not None:
             from opentorus.notifications import notify_permission_required
 
-            notify_permission_required(config.ui, description=description)
+            notify_permission_required(
+                config.ui,
+                description=description,
+                reason=decision.reason,
+                risk_level=str(decision.risk_level),
+            )
         console.print(f"\n[bold]OpenTorus wants to:[/bold] {description}")
         console.print(f"Reason: {decision.reason}  [dim](risk: {decision.risk_level})[/dim]")
         # Brackets must be escaped, otherwise Rich treats ``[y]``/``[s]``/``[n]``

@@ -855,6 +855,7 @@ class AgentLoop:
             self.config.ui,
             summary=result_text,
             elapsed_seconds=time.monotonic() - run_started,
+            task=task,
         )
         return result_text
 
