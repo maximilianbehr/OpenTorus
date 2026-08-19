@@ -125,6 +125,44 @@ def test_bounded_loop_stamps_campaign_tags_and_routing_id(tmp_path: Path) -> Non
     assert lease.decision.campaign_id == "CAMPAIGN-0001"
 
 
+def test_bounded_loop_sees_only_its_own_session_history(tmp_path: Path) -> None:
+    """The workspace keeps one transcript. A worker's model must not see another run's
+    messages as its recent history: a live falsifier whose latest history was the
+    strategist's "propose a portfolio as JSON" exchange answered with another
+    portfolio (one turn, no experiment). The plain ``AgentLoop`` keeps the
+    workspace-wide window (the REPL and ``run`` rely on it for continuity)."""
+    from opentorus.agent.loop import AgentLoop
+    from opentorus.agent.session import SessionMessage, append_message
+
+    root, ot, pid = make_workspace(tmp_path)
+    config = default_config()
+    foreign = "Propose a portfolio of branches as a JSON list."
+    append_message(
+        ot, SessionMessage(role="user", content=foreign, metadata={"session_id": "other-run"})
+    )
+    append_message(
+        ot,
+        SessionMessage(
+            role="assistant", content='[{"title": "x"}]', metadata={"session_id": "other-run"}
+        ),
+    )
+    provider = ScriptedProvider([message("done.")], name="scripted")
+    pool = ProviderPool(config, ot_dir=ot, factory=lambda _cfg: provider)
+    rt = WorkerRuntime(root=root, ot_dir=ot, config=config, pool=pool, clock=StepClock())
+    ctx = _ctx(pid)
+    lease = pool.acquire(ctx.task_class)
+    loop = bounded_loop(ctx, rt, lease=lease, registry=ToolRegistry())
+    assert loop.isolate_history is True
+    loop.run("Search for a counterexample.")
+    seen = [m.content for m in provider.calls[-1][0]]
+    assert not any(foreign in c for c in seen)
+    assert any("Search for a counterexample." in c for c in seen)
+    # the default loop (REPL / run) still carries the workspace-wide window
+    plain = ScriptedProvider([message("ok")], name="scripted")
+    AgentLoop(root, ot, plain, ToolRegistry(), config, max_steps=1).run("hi")
+    assert any(foreign in m.content for m in plain.calls[-1][0])
+
+
 def test_bounded_loop_honours_should_stop(tmp_path: Path) -> None:
     root, ot, pid = make_workspace(tmp_path)
     config = default_config()
@@ -591,6 +629,49 @@ def test_falsifier_scaffold_search_records_experiment_but_no_evidence(tmp_path: 
     again = FalsifierWorker().run(ctx2, rt)
     assert again.status == "failed" and again.error_category == "model_no_progress"
     assert [c.id for c in list_claims(ot)] == ["CLAIM-0001"]  # the branch claim is reused
+
+
+def test_falsifier_nudges_a_chat_only_model_until_it_creates_the_experiment(
+    tmp_path: Path,
+) -> None:
+    """A model that answers its first turn in prose is nudged toward the deliverable
+    (an experiment created in this run) instead of ending the work item after one
+    turn — a live falsifier once spent its branch attempt on exactly that."""
+    from opentorus.campaign.workers.falsifier import FalsifierWorker
+    from opentorus.research.experiments import list_experiments
+
+    root, ot, pid = make_workspace(tmp_path)
+    config = default_config()
+    config.permissions.mode = "trusted"
+    provider = ScriptedProvider(
+        [
+            message("Here is a portfolio of strategies instead."),
+            tool_call(
+                "exp_new",
+                {"title": "search", "template": "counterexample_search", "problem_id": pid},
+            ),
+            message("The experiment exists; searched n < 200, no witness."),
+        ],
+        name="scripted",
+    )
+    from opentorus.tools.builtin import build_default_registry
+
+    rt = WorkerRuntime(
+        root=root,
+        ot_dir=ot,
+        config=config,
+        pool=ProviderPool(config, ot_dir=ot, factory=lambda _cfg: provider),
+        clock=StepClock(),
+        registry_factory=lambda _pid: build_default_registry(root, ot, config),
+    )
+    ctx = _branch_ctx(pid, WorkerRole.falsifier, strategy_key="counterexample_search")
+    result = FalsifierWorker().run(ctx, rt)
+    assert len(provider.calls) >= 2, "the chat-only reply must be followed by a nudge"
+    nudged = [m.content for m in provider.calls[1][0] if m.role == "user"]
+    assert any("must produce an experiment" in c for c in nudged)
+    assert list_experiments(ot), "the nudged model created the experiment"
+    assert result.status in {"completed", "failed"}
+    assert result.error_category != "provider_unavailable"
 
 
 def test_falsifier_records_evidence_for_a_real_predicate_and_never_touches_status(

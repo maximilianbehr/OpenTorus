@@ -221,6 +221,16 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   resume` is the signal that the endpoint is back. The first live resume had re-paused
   on the very three failures that paused it, and a mock resume with a working registry
   suspended every branch and completed the campaign without trying once.
+- **A campaign worker sees only its own session's history.** The workspace keeps one
+  transcript and the history window used to be workspace-wide: a live falsifier whose
+  latest history was the strategist's "propose a portfolio as JSON" exchange answered
+  with another portfolio (one turn, no experiment, the branch's attempt spent).
+  `AgentLoop(isolate_history=True)` — set by every campaign worker — restricts the
+  history window and the retrieval query to the run's own `session_id`; the default
+  keeps the workspace-wide window the REPL and `run` rely on for continuity.
+- **The falsifier and numerical worker insist on their experiment.** A model that
+  answers in prose is nudged toward `exp_new`/`exp_run` (the loop's deliverable retries,
+  `tool_choice=required` on Ollama) instead of ending the work item after one chat turn.
 - **`model.keep_alive` keeps an Ollama model resident between a worker's calls.** Ollama
   unloads a model five minutes after its last request; a campaign worker often pauses
   longer than that (an experiment runs, a paper is parsed) and the next call then pays a

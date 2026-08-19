@@ -164,6 +164,7 @@ class AgentLoop:
         usage_tags: dict[str, str] | None = None,
         policies: WorkflowPolicySet | None = None,
         should_stop: Callable[[], bool] | None = None,
+        isolate_history: bool = False,
     ) -> None:
         self.root = root
         self.ot_dir = ot_dir
@@ -172,6 +173,10 @@ class AgentLoop:
         self.config = config
         self.max_steps = max_steps
         self.session_id = session_id or uuid.uuid4().hex
+        # An isolated run (a campaign worker) sees only its own session's messages in
+        # the history window; the default keeps the workspace-wide window the REPL and
+        # ``run`` rely on for continuity across invocations.
+        self.isolate_history = isolate_history
         self.confirm = confirm
         self.on_text = on_text
         self.on_status = on_status
@@ -672,6 +677,7 @@ class AgentLoop:
                 recovery_hint=recovery_hint,
                 goal=task,
                 provider=self.provider,
+                history_session_id=self.session_id if self.isolate_history else None,
             )
             recovery_hint = None
             tool_choice: str | dict | None = None
