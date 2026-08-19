@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -184,13 +185,21 @@ class WorkerExecutor:
 
     # -- services -------------------------------------------------------------------
 
-    def runtime(self, run: RunContext) -> WorkerRuntime:
+    def runtime(self, run: RunContext, *, item_started: datetime | None = None) -> WorkerRuntime:
         cfg = run.cfg
 
         def _should_stop() -> bool:
             if self._stop_flag is not None and self._stop_flag():
                 return True
-            return CampaignBudgetPolicy(cfg, run.snap.budget).is_exhausted()
+            if CampaignBudgetPolicy(cfg, run.snap.budget).is_exhausted():
+                return True
+            # The ledger only learns a work item's wall time when the item finishes, so a
+            # long item (thirty turns of half-hour experiments, live) ran on long after
+            # the campaign's wall budget was spent. Count the running item's elapsed time.
+            if cfg.max_wall_seconds > 0 and item_started is not None:
+                elapsed = (self.clock.now() - item_started).total_seconds()
+                return run.snap.budget.wall_seconds_used + elapsed >= cfg.max_wall_seconds
+            return False
 
         return WorkerRuntime(
             root=self.root,
@@ -337,10 +346,10 @@ class WorkerExecutor:
     # -- run ------------------------------------------------------------------------------
 
     def run_worker(self, run: RunContext, worker: Worker, ec: ExecuteContext) -> None:
-        rt = self.runtime(run)
+        started = self.clock.now()
+        rt = self.runtime(run, item_started=started)
         self.collector.reset()
         before = snapshot_artifacts(self.ot_dir, run.pid)
-        started = self.clock.now()
         try:
             result = worker.run(ec.ctx, rt)
         except KeyboardInterrupt:

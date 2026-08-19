@@ -498,6 +498,10 @@ class CampaignConfig(BaseModel):
     cost_budget: float = 0.0
     # Model turns per branch before it is exhausted.
     branch_step_budget: int = 10
+    # Cap on the ``timeout`` a campaign worker may pass to exp_run (seconds; 0 = no cap).
+    # A model asked for 1800 s searches and one work item then blocked a branch for half
+    # an hour on a single experiment; the cap rewrites the argument and is reported.
+    max_experiment_seconds: int = 600
     require_literature_mapping: bool = True
     require_root_relation: bool = True
     # Rewrite snapshot.json after every event (else at phase boundaries).

@@ -35,6 +35,7 @@ from opentorus.campaign.workers.base import (
     acquire_lease,
     bounded_loop,
     experiment_deliverable,
+    experiment_timeout_gate,
     is_mock_provider,
 )
 from opentorus.campaign.workers.falsifier import (
@@ -157,9 +158,25 @@ class NumericalWorker:
         else:
             before = {e.id for e in list_experiments(rt.ot_dir)}
             gate, hint = experiment_deliverable(rt.ot_dir, template=template, before=before)
-            loop = bounded_loop(ctx, rt, lease=lease, session_gate=gate, session_recovery_hint=hint)
+            timeout_coercions: list[str] = []
+            loop = bounded_loop(
+                ctx,
+                rt,
+                lease=lease,
+                tool_gate=experiment_timeout_gate(
+                    rt.config.campaign.max_experiment_seconds, timeout_coercions
+                ),
+                session_gate=gate,
+                session_recovery_hint=hint,
+            )
             loop.run(_prompt(ctx, template))
             turns = loop.steps_run
+            if timeout_coercions:
+                notes.append(
+                    f"{len(timeout_coercions)} experiment timeout(s) capped at "
+                    f"{rt.config.campaign.max_experiment_seconds}s (asked: "
+                    f"{', '.join(timeout_coercions)})"
+                )
             exp_ids = sorted(e.id for e in list_experiments(rt.ot_dir) if e.id not in before)
         recorded: list[str] = []
         scaffold_only = False

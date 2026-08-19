@@ -118,13 +118,22 @@ Routes are tried in a fixed order and each requires an *accepted* artifact:
 
 | closure mode | requires |
 |---|---|
-| `formal_proof`, `smt_certificate`, `exact_symbolic_certificate`, `validated_numerical_certificate` | a `PROOF-*` in the workspace verifier ledger, cited by the obligation, passing the four checks of `dossier.claims._require_verification_artifact` (exists, not inconclusive, accepted, recorded under this problem or unscoped) with a backend matching the mode; `formal_proof` accepts any accepted backend, the certificate modes need the matching one (`sympy` -> exact symbolic, `smt/z3/cvc5` -> SMT, `interval` -> validated numerical, `lean4/coq` -> formal). `source_proof_id` is never looked up in the ledger: it names a *dossier* sketch, and the two `PROOF-` id spaces collide. |
+| `formal_proof`, `smt_certificate`, `exact_symbolic_certificate`, `validated_numerical_certificate` | a `PROOF-*` in the workspace verifier ledger, cited by the obligation, passing the four checks of `dossier.claims._require_verification_artifact` (exists, not inconclusive, accepted, recorded under this problem or unscoped) with a backend matching the mode; `formal_proof` accepts any accepted backend, the certificate modes need the matching one (`sympy` -> exact symbolic, `smt/z3/cvc5` -> SMT, `interval` -> validated numerical, `lean4/coq` -> formal). Neither `source_proof_id` nor a cited id that names a *dossier* proof attempt (a sketch) is ever looked up in the ledger: the two `PROOF-` id spaces collide (a live run had sympy accept `1/4 >= (1/2)**2` as ledger PROOF-0001 and thirteen gaps of sketch PROOF-0001 "closed"). A ledger entry recorded for another claim (`claim_id`) does not close an obligation about this one. |
 | `accepted_counterexample_certificate` | a cited dossier claim of type `COUNTEREXAMPLE_VERIFIED` (creatable only with an explicit verification record) whose record names every assumption the dossier records (`witness_satisfies_root_assumptions`: each `assumptions.yaml` statement or its `ASM-` id must occur in the claim's notes/statement, its cited artifacts, or the status-change reasons; a missing assumption refuses; a dossier without recorded assumptions passes vacuously). |
 | `nl_proof_referee_accepted` | a *primary*-scope dossier proof attempt cited by the obligation whose `claim_links` name the obligation's claim (its `CLAIM-` dependencies, else the dossier's primary claim), with no open gaps (recorded gaps reconciled with the body's `[GAP-n]` markers), whose gap closure is documented (see below), and on which `referee_review(persist=False)` returns `pass` without classifying the claim as refuted. This is the weakest mode: it records that a hostile deterministic referee found nothing to object to in a gap-free sketch. It is not machine verification, and it never changes a claim status. |
 | `accepted_literature_theorem` | a cited `THMREF-*` with `review_status == accepted` (only `theorem review` writes that) and an applicability check for this problem with `result == accepted` whose `target_id` is the obligation or its claim. |
 
 Anything else stays open; `ClosureVerdict.details` lists every reason that was
 checked, and the verifier-coordinator forwards them as notes.
+
+### Recorded closures are re-checked
+
+An `obligation_closed` event is append-only. The rules that admitted it may since
+have been tightened (or a bug fixed), so the builder re-runs every closed
+obligation's artifact through `can_close_obligation` (``settlement.audit_closures``):
+a closure the current rules refuse is an `unsupported_transition` **error** issue
+on that node, `extra.closure_audit` reads `unjustified`, and `campaign verify`
+lists it and exits `1`. The history is not rewritten; it is made visible.
 
 ### Deleting gap markers does not close obligations
 

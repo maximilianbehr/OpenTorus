@@ -95,7 +95,7 @@ opentorus campaign pause CAMPAIGN-0001 --reason "..."   # resumes at the phase i
 opentorus campaign resume CAMPAIGN-0001                  # idempotent on a finished one
 opentorus campaign stop CAMPAIGN-0001 --reason "..."    # terminal; --reason required
 opentorus campaign list [--problem PROBLEM-0001] [--json]
-opentorus campaign verify CAMPAIGN-0001 [--json]         # replay the log vs snapshot.json
+opentorus campaign verify CAMPAIGN-0001 [--json]         # replay the log vs snapshot.json; re-check every recorded closure
 opentorus campaign tree CAMPAIGN-0001 [--plain|--json|--dot] [--kind K] [--status S] [--depth N] [--out FILE]
 opentorus campaign dashboard CAMPAIGN-0001 [--live] [--plain|--json|--dot]   # needs opentorus[dashboard]
 opentorus campaign import-research "question" | --slug SLUG [--problem P] [--force]
@@ -245,7 +245,8 @@ still use `otoutput` as the canonical name.
     merging config and flags, or prove-or-refute with `--no-primary-claim` and no
     designated primary claim (the remediation is printed); `campaign
     import-research` exits `2` when the run was already imported (use `--force`);
-    `campaign verify` exits `1` on a replay mismatch; `campaign resume` on a
+    `campaign verify` exits `1` on a replay mismatch or on a recorded obligation
+    closure the current settlement rules no longer accept; `campaign resume` on a
     completed or stopped campaign exits `0` with a note; Ctrl-C during `start` /
     `resume` pauses the campaign (reason `interrupted`) and exits `130`.
   - `theorem check` exits `2` when the applicability result is `rejected`;
@@ -273,3 +274,32 @@ Effecting actions are gated by the permission policy. In `ask` mode the CLI
 prompts inline (allow-once / session-allow); restricted claim upgrades require an
 explicit confirmation. `--mode review` makes the whole session read-only. See
 [safety.md](safety.md).
+
+## Desktop notifications
+
+Long runs ping the desktop (native toast via `notify-send` / `osascript` /
+PowerShell, terminal bell as fallback) when a turn finishes or an approval is
+blocking the loop. By default only background or piped runs notify
+(`ui.notify_only_unfocused`); turn-complete toasts need `ui.notify_min_elapsed_seconds`
+of wall-clock first. The text is reduced to plain prose before it is sent —
+Markdown headings, list markers, emphasis and link targets stripped, the first
+paragraph kept, cut at a word boundary — and escaped for the daemon's markup, so a
+`<` or `&` in a model answer cannot mangle the toast.
+
+```
+OpenTorus finished in 2m 14s
+Task: Prove the Crouzeix conjecture for 3×3 matrices
+The conjecture holds for the tested family; see PROOF-0003.
+```
+
+```
+OpenTorus needs your approval
+Action: pytest tests/ -q
+Command requires confirmation in ask mode. (risk: medium)
+Approve in the terminal to continue.
+```
+
+The approval toast is sent with *critical* urgency so it stays on screen (on
+desktops that honour the hint) until the prompt is answered; the finished toast
+is *normal*. All of this is configurable under `ui:` in `config.yaml`
+(`notifications_enabled`, `notify_on_turn_complete`, `notify_on_permission`).

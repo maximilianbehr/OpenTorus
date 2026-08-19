@@ -117,6 +117,7 @@ def _require_verification_artifact(
     problem_id: str,
     evidence_type: EvidenceType,
     source_artifacts: list[str] | None,
+    claim_id: str | None = None,
 ) -> None:
     """Verification-grade evidence must name a verifier run that actually happened.
 
@@ -170,6 +171,20 @@ def _require_verification_artifact(
                 f"{art}: recorded under {proof.problem_id}, not {problem_id} — a proof "
                 "of another problem's claim verifies nothing here"
             )
+        elif (
+            claim_id is not None
+            and proof.claim_id is not None
+            and proof.claim_id.strip().upper() != claim_id.strip().upper()
+        ):
+            # A certificate is bound to the claim it was submitted for. A sympy/SMT run
+            # accepts whatever true statement it was handed (a live run had
+            # ``1/4 >= (1/2)**2`` accepted eleven times), so the binding recorded at
+            # submission is the only thing that ties the run to a claim at all — a run
+            # recorded for another claim cannot be cited to promote this one.
+            problems.append(
+                f"{art}: recorded for {proof.claim_id}, not {claim_id} — a verifier run is "
+                "bound to the claim it was submitted for"
+            )
         else:
             accepted.append(art)
     if not accepted:
@@ -204,7 +219,9 @@ def add_evidence(
     # Verification-grade evidence is the only kind that can lift a claim out of
     # 'supported'. Check it before anything is written.
     if evidence_can_verify(evidence_type):
-        _require_verification_artifact(ot_dir, problem_id, evidence_type, source_artifacts)
+        _require_verification_artifact(
+            ot_dir, problem_id, evidence_type, source_artifacts, claim_id=claim.id
+        )
 
     # An EXPERIMENT citation must reference a real EXP-* manifest. A hallucinated id
     # is rejected outright; a real but not-yet-run experiment is recorded but flagged

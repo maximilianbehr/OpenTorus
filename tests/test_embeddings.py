@@ -98,3 +98,40 @@ def test_ollama_embedder_parses_response(monkeypatch: pytest.MonkeyPatch) -> Non
     assert len(vectors) == 2
     assert vectors[0][0] == 1.0
     assert vectors[1][1] == 1.0
+
+
+def test_local_openai_compatible_endpoint_embeds_locally_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A vLLM/llama.cpp endpoint configured as the ``openai`` provider is a chat server,
+    not OpenAI: auto mode embeds on this machine first (sentence-transformers), then
+    asks that endpoint, and the Ollama fallback targets the default local Ollama host —
+    never the vLLM URL (no ``/api/embed`` there)."""
+    from opentorus.research.embeddings import _attempt_order, _resolve_backend
+
+    config = set_dotted(default_config(), "model.provider", "openai")
+    config.model.base_url = "http://localhost:8000/v1"
+    assert _resolve_backend(config) == "auto"
+    assert _attempt_order(config, "auto") == ["local", "openai", "ollama"]
+    assert OllamaEmbedder(config, "nomic-embed-text")._host == "http://localhost:11434"
+    calls: list[str] = []
+
+    class _Local:
+        model_name = "all-MiniLM-L6-v2"
+
+        def encode(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0] for _ in texts]
+
+    monkeypatch.setattr(
+        "opentorus.research.embeddings._try_local", lambda _cfg: calls.append("local") or _Local()
+    )
+    monkeypatch.setattr(
+        "opentorus.research.embeddings._try_openai", lambda _cfg: calls.append("openai") or None
+    )
+    assert load_embedder(config).model_name == "all-MiniLM-L6-v2"  # type: ignore[union-attr]
+    assert calls == ["local"]
+    # a real OpenAI endpoint keeps the OpenAI embedder
+    config.model.base_url = None
+    assert _resolve_backend(config) == "openai"
+    config.model.base_url = "https://api.openai.com/v1"
+    assert _resolve_backend(config) == "openai"

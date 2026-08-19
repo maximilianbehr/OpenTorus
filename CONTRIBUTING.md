@@ -46,6 +46,9 @@ the honesty linter must preserve these rules. They are enforced in
 2. **Only a verification artifact promotes a claim.** `formally_verified` requires
    an accepted formal proof; a `COUNTEREXAMPLE_VERIFIED` requires an explicit
    verification artifact (a verified proof attempt or `FORMAL_PROOF` evidence).
+   The verifier run must be the one *bound to that claim* at submission: a
+   sympy/SMT backend accepts whatever true statement it is handed, so a run
+   recorded for another claim (or an unrelated identity) verifies nothing here.
 3. **No hallucinated authority.** A `THEOREM`, `REFERENCE_FACT`, known result, or
    bibliography entry must cite a *local* source artifact (`PAPER-*`, a theorem
    reference, or a verified local artifact). Missing metadata is marked missing,

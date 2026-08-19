@@ -22,6 +22,7 @@ from opentorus.campaign.models import (
     CampaignPhase,
     CampaignSnapshot,
     CampaignStatus,
+    CostTotals,
     RootRelation,
     WorkerContext,
     WorkerResult,
@@ -650,4 +651,42 @@ def test_provider_outage_pauses_the_campaign_instead_of_burning_every_branch(
     if result3.resumed and final.status is CampaignStatus.paused:
         assert (final.pause_reason or "").startswith("PROVIDER_UNAVAILABLE")
         assert 1 <= dead.calls <= PROVIDER_OUTAGE_STREAK + 3
+    assert open_campaign(ot, record.id).verify_replay().matches
+
+
+def test_a_running_work_item_stops_when_the_campaign_wall_budget_is_spent(
+    tmp_path: Path,
+) -> None:
+    """The ledger learns a work item's wall time only when the item finishes, so a long
+    item (thirty turns of half-hour experiments, live) kept running after the campaign's
+    wall budget was spent: ``rt.should_stop`` now counts the running item's elapsed time.
+    With a StepClock each ``now()`` advances 100 s, so a worker that polls the stop flag
+    sees it flip once the budget (300 s) is consumed — and the campaign pauses on it."""
+
+    class _Poller:
+        role = WorkerRole.librarian
+        polls = 0
+        stopped_at = None
+
+        def run(self, ctx: WorkerContext, rt: object) -> WorkerResult:
+            assert rt.should_stop is not None  # type: ignore[attr-defined]
+            for _ in range(50):
+                _Poller.polls += 1
+                if rt.should_stop():  # type: ignore[attr-defined]
+                    _Poller.stopped_at = _Poller.polls
+                    break
+            return WorkerResult(status="completed", usage=CostTotals(steps=1))
+
+    from opentorus.campaign.workers import DEFAULT_WORKERS
+
+    root, ot, pid = make_workspace(tmp_path)
+    registry = {**DEFAULT_WORKERS, WorkerRole.librarian: _Poller()}
+    engine = make_engine(root, ot, clock=StepClock(step_seconds=100.0), worker_registry=registry)
+    record = engine.start(pid, mode="survey", max_steps=50, max_wall_seconds=300)
+    snap = _snapshot(ot, record.id)
+    assert _Poller.stopped_at is not None and _Poller.stopped_at < 50, (
+        "the worker must have been told to stop mid-item"
+    )
+    assert snap.status is CampaignStatus.paused
+    assert snap.pause_reason == "BUDGET_EXHAUSTED"
     assert open_campaign(ot, record.id).verify_replay().matches

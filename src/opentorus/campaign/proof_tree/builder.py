@@ -471,8 +471,31 @@ class _Builder:
         snap = self.snapshot
         if snap is None:
             return
+        # A closure is a recorded event; the rules that admitted it may since have been
+        # tightened (a live run closed thirteen gaps through a PROOF- id collision). Re-check
+        # every closed obligation so the tree shows what the *current* rules would accept.
+        from opentorus.campaign.proof_tree.settlement import audit_closures
+
+        try:
+            audits = {
+                a.obligation_id: a
+                for a in audit_closures(self.ot_dir, self.pid, snap.obligations.values())
+            }
+        except Exception as exc:  # noqa: BLE001 - the audit must never break the tree
+            audits = {}
+            self.issue("malformed_node", f"closure audit failed: {exc}", severity="warning")
         for oid in sorted(snap.obligations):
             ob = snap.obligations[oid]
+            audit = audits.get(oid)
+            if audit is not None and not audit.justified:
+                self.issue(
+                    "unsupported_transition",
+                    f"{oid} is recorded as closed by {ob.closed_by_artifact or '?'} "
+                    f"({ob.closed_by_mode.value if ob.closed_by_mode else '?'}), but the current "
+                    f"settlement rules do not accept that closure: {audit.reason}",
+                    node_ids=[oid],
+                    severity="error",
+                )
             parent = ob.branch_id if ob.branch_id and ob.branch_id in snap.branches else ROOT_ID
             if ob.branch_id and ob.branch_id not in snap.branches:
                 self.issue(
@@ -493,6 +516,9 @@ class _Builder:
                 "created_seq": ob.created_seq,
                 "updated_seq": ob.updated_seq,
                 "branch_id": ob.branch_id,
+                "closure_audit": (
+                    None if audit is None else ("justified" if audit.justified else "unjustified")
+                ),
             }
             if (
                 self.add_node(
