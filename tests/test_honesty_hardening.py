@@ -214,6 +214,6 @@ def test_a_branch_objective_in_the_imperative_is_not_a_proof_claim() -> None:
         "The argument proves the conjecture for k >= 4.\n",
         "The statement is proven.\n",
     ):
-        assert [
-            i for i in lint_report(claim) if i.kind is IssueKind.PROOF_CLAIM
-        ], f"must stay flagged: {claim!r}"
+        assert [i for i in lint_report(claim) if i.kind is IssueKind.PROOF_CLAIM], (
+            f"must stay flagged: {claim!r}"
+        )
