@@ -34,6 +34,7 @@ from opentorus.campaign.workers.base import (
     WorkerRuntime,
     acquire_lease,
     bounded_loop,
+    experiment_deliverable,
     is_mock_provider,
 )
 from opentorus.campaign.workers.falsifier import (
@@ -155,7 +156,8 @@ class NumericalWorker:
                 exp_ids = [created_exp.id]
         else:
             before = {e.id for e in list_experiments(rt.ot_dir)}
-            loop = bounded_loop(ctx, rt, lease=lease)
+            gate, hint = experiment_deliverable(rt.ot_dir, template=template, before=before)
+            loop = bounded_loop(ctx, rt, lease=lease, session_gate=gate, session_recovery_hint=hint)
             loop.run(_prompt(ctx, template))
             turns = loop.steps_run
             exp_ids = sorted(e.id for e in list_experiments(rt.ot_dir) if e.id not in before)

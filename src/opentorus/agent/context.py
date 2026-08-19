@@ -33,12 +33,30 @@ def reset_retrieval_breaker() -> None:
     _retrieval_failures = 0
 
 
-def latest_user_query(ot_dir: Path) -> str | None:
-    """Return the most recent user message content, used as the retrieval query."""
-    for message in reversed(read_messages(ot_dir)):
+def latest_user_query(ot_dir: Path, *, session_id: str | None = None) -> str | None:
+    """Return the most recent user message content, used as the retrieval query.
+
+    With ``session_id`` only that session's messages count (see ``session_messages``).
+    """
+    for message in reversed(session_messages(ot_dir, session_id)):
         if message.role == "user" and message.content.strip():
             return message.content
     return None
+
+
+def session_messages(ot_dir: Path, session_id: str | None) -> list[SessionMessage]:
+    """The workspace transcript, restricted to ``session_id`` when one is given.
+
+    The workspace keeps one ``session.jsonl``; every message carries the id of the
+    run that wrote it in ``metadata.session_id``. A campaign worker must see only its
+    own run: with the whole transcript, a falsifier's first turn saw the strategist's
+    "propose a portfolio as JSON" exchange as the latest history and answered with
+    another portfolio (a real run: WI-0005, one turn, no experiment).
+    """
+    history = read_messages(ot_dir)
+    if session_id is None:
+        return history
+    return [m for m in history if m.metadata.get("session_id") == session_id]
 
 
 def select_relevant(ot_dir: Path, config: Config, query: str | None):
@@ -152,6 +170,7 @@ def build_messages(
     recovery_hint: str | None = None,
     goal: str | None = None,
     provider=None,
+    history_session_id: str | None = None,
 ) -> list[SessionMessage]:
     """Assemble the message list for a provider call.
 
@@ -159,6 +178,9 @@ def build_messages(
     message to the session, so the recent history ends with the message the
     provider should respond to. When retrieval is enabled, the most relevant
     artifacts for the latest user message are injected as a context block.
+    ``history_session_id`` restricts the history window (and the retrieval query)
+    to one run's messages — an isolated worker; ``None`` keeps the workspace-wide
+    window the REPL and ``run`` rely on for continuity.
     """
     from opentorus.agent.prompts import build_system_prompt, build_task_execution_prompt
 
@@ -208,7 +230,9 @@ def build_messages(
         )
 
     inventory = build_context_summary(root, ot_dir, config, tool_names)
-    selected = select_relevant(ot_dir, config, latest_user_query(ot_dir))
+    selected = select_relevant(
+        ot_dir, config, latest_user_query(ot_dir, session_id=history_session_id)
+    )
     retrieval = format_relevant(selected) if selected else None
 
     if not config.context.stable_prefix:
@@ -217,12 +241,12 @@ def build_messages(
         messages.insert(1, SessionMessage(role="system", content=inventory))
         if retrieval:
             messages.append(SessionMessage(role="system", content=retrieval))
-        _extend_with_history(messages, ot_dir, config, include_history)
+        _extend_with_history(messages, ot_dir, config, include_history, history_session_id)
         if recovery_hint:
             messages.append(SessionMessage(role="user", content=recovery_hint))
         return _finalize(ot_dir, config, messages, provider)
 
-    _extend_with_history(messages, ot_dir, config, include_history)
+    _extend_with_history(messages, ot_dir, config, include_history, history_session_id)
 
     # Volatile state goes behind the history, but *not* dead last: the final turn is
     # what the model is answering, and burying it under a page of inventory both shifts
@@ -274,9 +298,10 @@ def _extend_with_history(
     ot_dir: Path,
     config: Config,
     include_history: int | None,
+    session_id: str | None = None,
 ) -> None:
     turns = include_history if include_history is not None else config.context.history_turns
-    history = _sanitize_session_history(read_messages(ot_dir))
+    history = _sanitize_session_history(session_messages(ot_dir, session_id))
     if history:
         messages.extend(history[-turns:])
 

@@ -228,6 +228,10 @@ def bounded_loop(
         routing=lease.decision,
         usage_tags=usage_tags(ctx),
         should_stop=_stop,
+        # Only this work item's messages: the workspace transcript is shared, and a
+        # worker that saw the strategist's JSON exchange as its latest history once
+        # answered with another portfolio instead of running an experiment.
+        isolate_history=True,
         **loop_kwargs,  # type: ignore[arg-type]
     )
     if deliverable_satisfied_by is not None:
@@ -243,6 +247,34 @@ def bounded_loop(
 # --------------------------------------------------------------------------------------
 
 ArtifactIndex = dict[str, set[str]]
+
+
+def experiment_deliverable(
+    ot_dir: Path, *, template: str, before: set[str]
+) -> tuple[Callable[[], bool], Callable[[], str]]:
+    """``(session_gate, session_recovery_hint)`` for ``bounded_loop`` that make "an
+    experiment created in this run" the work item's deliverable: a chat-only reply is
+    nudged (up to the loop's retry cap, with ``tool_choice=required`` on Ollama)
+    instead of ending the run after one turn.
+
+    A live falsifier once answered its first turn in prose (a portfolio, from a
+    contaminated history) and the loop, having no deliverable to insist on, returned:
+    one model turn, no experiment, the branch's attempt spent.
+    """
+    from opentorus.research.experiments import list_experiments
+
+    def _gate() -> bool:
+        return any(e.id not in before for e in list_experiments(ot_dir))
+
+    def _hint() -> str:
+        return (
+            "You replied without calling a tool. This work item must produce an "
+            f"experiment: call exp_new(title=..., template='{template}') now, then edit "
+            "its run.py with write_file and run it with exp_run(exp_id=...). Do not "
+            "answer in prose until the experiment exists."
+        )
+
+    return _gate, _hint
 
 
 def snapshot_artifacts(ot_dir: Path, problem_id: str) -> ArtifactIndex:
