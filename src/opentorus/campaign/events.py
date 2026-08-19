@@ -215,6 +215,9 @@ class WorkerFailedPayload(_Payload):
     error_category: ErrorCategory = "other"
     message: str = ""
     failure_signature_id: str | None = None
+    # What the worker did before failing (experiments run, coercions, capped timeouts):
+    # the diagnosis a failed item needs most, and it used to be dropped on this path.
+    notes: list[str] = Field(default_factory=list)
 
 
 class ProofNodeUpdatedPayload(_Payload):

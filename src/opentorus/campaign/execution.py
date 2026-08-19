@@ -463,6 +463,7 @@ class WorkerExecutor:
                     error_category=result.error_category or "other",
                     message=result.message or "; ".join(result.notes),
                     failure_signature_id=sig_id,
+                    notes=list(result.notes),
                 ),
             )
             if result.error_category == "tool_unavailable" and self.workers.get(item.role) is None:

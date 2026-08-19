@@ -15,7 +15,11 @@ and builds an honesty-linted report.
 > `OPENTORUS_BASE_URL` / `OPENTORUS_PROVIDER` (e.g. `openai` for a vLLM server:
 > `OPENTORUS_PROVIDER=openai OPENTORUS_BASE_URL=http://localhost:8000/v1
 > OPENTORUS_MODEL=<served-model-name> OPENAI_API_KEY=x`), or edit the
-> `opentorus config set model.*` lines for your own provider.
+> `opentorus config set model.*` lines for your own provider. The campaign
+> drivers also take `OPENTORUS_MODE` (prove-or-refute / exploration / survey),
+> `OPENTORUS_BRANCHES`, `OPENTORUS_MAX_STEPS`, `OPENTORUS_BRANCH_STEPS`,
+> `OPENTORUS_MAX_WALL_SECONDS` and `OPENTORUS_SMT=true` (lets the formalizer use
+> a `z3` on your PATH; default off).
 
 ---
 

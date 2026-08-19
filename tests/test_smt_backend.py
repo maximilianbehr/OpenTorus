@@ -128,3 +128,55 @@ def test_outcome_parsing_maps_verdicts() -> None:
     unknown = _result_from_solver_output("smt", None, "unknown")
     assert unknown.outcome == "unknown"
     assert unknown.accepted is False
+
+
+def test_top_level_forms_respects_comments_and_strings() -> None:
+    from opentorus.research.verifiers.smt import _top_level_forms
+
+    src = (
+        '; a comment (with parens)\n(set-logic ALL)\n(assert (> x "(;)")) ; trailing (\n(check-sat)'
+    )
+    assert _top_level_forms(src) == ["(set-logic ALL)", '(assert (> x "(;)"))', "(check-sat)"]
+
+
+def _z3_or_skip():
+    import shutil
+
+    import pytest
+
+    if shutil.which("z3") is None:
+        pytest.skip("z3 not installed")
+    from opentorus.research.verifiers.smt import SMTVerifier
+
+    return SMTVerifier(command="z3", timeout=60)
+
+
+def test_real_z3_rejects_a_vacuous_unsat_but_accepts_a_genuine_one() -> None:
+    """Observed live (caccetta-haggkvist, PROOF-0009): a quantifier pinning *all*
+    integers into [0, 9) makes the hypotheses inconsistent; z3 says unsat about nothing
+    and the ledger recorded an accepted formal proof. The vacuity check re-runs the
+    script without its last assertion (the negated goal): hypotheses that are unsat on
+    their own mean the proof is REJECTED as vacuous, with the reason."""
+    z3 = _z3_or_skip()
+    vacuous = (
+        "(declare-const i Int)\n(declare-const n Int)\n"
+        "(assert (forall ((j Int)) (and (>= j 0) (< j 9))))\n"
+        "(assert (not (> n 0)))\n(check-sat)"
+    )
+    v = z3.verify(vacuous)
+    assert v.available and not v.inconclusive and not v.accepted
+    assert "vacuous" in v.output
+    genuine = (
+        "(declare-const x Int)\n(declare-const y Int)\n"
+        "(assert (> x 0))\n(assert (> y 0))\n"
+        "(assert (not (> (+ x y) 0)))\n(check-sat)"  # negated goal last
+    )
+    g = z3.verify(genuine)
+    assert g.accepted and g.outcome == "unsat"
+    # a single assertion (a tautology's negation) has no hypotheses to be inconsistent
+    single = "(declare-const x Int)\n(assert (not (= x x)))\n(check-sat)"
+    assert z3.verify(single).accepted
+    # sat is still a counterexample, untouched by the check
+    refuted = "(declare-const x Int)\n(assert (> x 0))\n(assert (not (> x 1)))\n(check-sat)"
+    r = z3.verify(refuted)
+    assert r.outcome == "sat" and not r.accepted and not r.inconclusive

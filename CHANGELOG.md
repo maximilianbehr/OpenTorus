@@ -221,6 +221,15 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   resume` is the signal that the endpoint is back. The first live resume had re-paused
   on the very three failures that paused it, and a mock resume with a working registry
   suspended every branch and completed the campaign without trying once.
+- **The SMT backend rejects a vacuous `unsat`.** An `unsat` proves the goal only when
+  the hypotheses are consistent; a live campaign (caccetta-haggkvist, PROOF-0009) had
+  `(assert (forall ((j Int)) (and (>= j 0) (< j 9))))` — every integer in [0, 9) — ahead
+  of the encoding, z3 said `unsat` about nothing, and the ledger recorded an accepted
+  formal proof. When a script carries two or more assertions the backend re-runs it
+  without the last one (by convention the negated goal): hypotheses that are `unsat` on
+  their own make the proof REJECTED as vacuous, with the reason; a residue the solver
+  cannot decide makes it inconclusive. A single assertion (a tautology's negation) and
+  every `sat` are unaffected.
 - **A running work item stops when the campaign's wall budget is spent.** The ledger
   learns an item's wall time only when it finishes, so a long item kept running after
   the budget was gone; the worker's `should_stop` now counts the running item's elapsed
