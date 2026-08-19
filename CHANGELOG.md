@@ -425,6 +425,28 @@ workspace, produced these. Each was reproduced in the code before it was changed
   registered as `local_pdf`; **bulk problem extraction no longer hijacks the active
   problem** pointer.
 
+A second stress run, against the fixed code, found five more defects — three of them in
+the fixes above, which is the point of running it again:
+
+- **The harvest was wired only to a clean completion**, which a bounded run never reaches
+  when it pauses on a spent budget: four of eight campaigns paused and left fifteen pieces
+  of worker evidence invisible to their dossiers. Pause, stop and fail harvest too.
+- **The strategist's escape repair was half-working.** Models mix conventions inside one
+  answer (`$\{1, \dots, k\}$` beside `$\\sup_t \\min_i$`), and doubling every invalid
+  escape also hit the second backslash of a valid pair. Valid escapes are consumed first;
+  the preserved answer from a live campaign now parses to its nine proposals.
+- **A refused narrative took the whole pipeline with it**: `problem report` exited non-zero
+  and `set -e` in the drivers skipped the lint, the verdict and the PDF over an optional
+  composed extra. The refusal is loud but no longer fatal; the PDF path, where the composed
+  document is the deliverable, still fails hard.
+- **The honesty linter read a branch objective as a proof claim.** A narrative quoting its
+  own objectives ("Prove the conjecture for …") was refused three times over. A line opening
+  with the bare verb states what is attempted; `we prove`, `this proves` and `is proven`
+  stay flagged.
+- **An advisory lint cost 66 example drivers their verdict and PDF.** `problem report --lint`
+  exits non-zero on findings — correct for a lint gate, fatal under `set -e`. The lint stays
+  visible and is now tolerated where further steps follow.
+
 ## [0.0.14] — 2026-08-18
 
 The worst defect in this series, and it never produced an error message. The argument
