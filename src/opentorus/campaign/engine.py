@@ -760,6 +760,16 @@ class CampaignEngine:
                 notes.extend(result.notes)
             except Exception as exc:  # noqa: BLE001 - synthesis must not block completion
                 notes.append(f"synthesizer failed: {exc}")
+        try:
+            from opentorus.campaign.harvest import harvest_worker_ledgers
+
+            notes.extend(
+                harvest_worker_ledgers(
+                    self.ot_dir, run.pid, run.cid, run.snap.failure_signatures.values()
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - harvest must not block completion
+            notes.append(f"worker-ledger harvest failed: {exc}")
         facts = self._facts(run)
         verdict = run.profile.completion(run.snap, facts)
         reason = verdict.reason if verdict.complete else "no schedulable work item remained"
