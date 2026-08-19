@@ -155,6 +155,11 @@ ErrorCategory = Literal[
     "verifier_rejected",
     "verifier_inconclusive",
     "no_witness_found",
+    # A search ran but its output could not be parsed as a search result: the witness
+    # status is unknown and must never be asserted as "no witness found". (A live
+    # falsifier once printed "CONFIRMED: This is a counterexample!" in free text and
+    # the canned no-witness signature buried it.)
+    "witness_unconfirmed",
     "citation_invalid",
     "permission_blocked",
     "budget",

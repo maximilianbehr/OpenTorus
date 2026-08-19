@@ -41,7 +41,9 @@ BACKEND_CATEGORIES: frozenset[str] = frozenset(
     {"tool_unavailable", "verifier_rejected", "verifier_inconclusive"}
 )
 # Categories whose reactivation hinges on new evidence about the problem.
-EVIDENCE_CATEGORIES: frozenset[str] = frozenset({"no_witness_found", "model_no_progress"})
+EVIDENCE_CATEGORIES: frozenset[str] = frozenset(
+    {"no_witness_found", "witness_unconfirmed", "model_no_progress"}
+)
 
 
 def normalize_text(text: str) -> str:
