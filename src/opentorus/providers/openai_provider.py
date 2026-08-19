@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from opentorus.agent.session import SessionMessage
 from opentorus.config import Config
@@ -140,4 +141,26 @@ def parse_openai_message(message: object) -> ProviderResponse:
             tool_call_id=first.tool_call_id,
             tool_calls=parsed,
         )
-    return ProviderResponse(kind="message", content=getattr(message, "content", "") or "")
+    return ProviderResponse(kind="message", content=strip_channel_markers(content_of(message)))
+
+
+# Gemma 4 emits its thinking as a "channel": ``<|channel>thought ... <channel|>`` before the
+# answer. A vLLM server started without ``--reasoning-parser gemma4`` passes the markers
+# through as ordinary content (observed: ``'<|channel>thought\n<channel|>The workspace …'``);
+# an OpenAI-compatible server without a reasoning parser is the common case, so the
+# provider strips them here. The thinking text is dropped, not shown as the answer.
+_CHANNEL_BLOCK = re.compile(r"<\|channel>thought\s*(.*?)<channel\|>", re.DOTALL)
+_STRAY_MARKERS = re.compile(r"<\|channel>thought\s*|<channel\|>")
+
+
+def content_of(message: object) -> str:
+    return str(getattr(message, "content", "") or "")
+
+
+def strip_channel_markers(text: str) -> str:
+    """Remove Gemma-4 thinking-channel blocks and stray markers from a reply."""
+    if "<|channel>" not in text and "<channel|>" not in text:
+        return text
+    cleaned = _CHANNEL_BLOCK.sub("", text)
+    cleaned = _STRAY_MARKERS.sub("", cleaned)
+    return cleaned.strip()

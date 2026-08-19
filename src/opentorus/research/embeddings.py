@@ -74,7 +74,13 @@ class SentenceTransformerEmbedder:
 
 
 class OpenAIEmbedder:
-    """OpenAI ``/v1/embeddings`` (uses ``OPENAI_API_KEY``)."""
+    """``/v1/embeddings`` on the configured OpenAI-compatible endpoint (``OPENAI_API_KEY``).
+
+    Honours ``model.base_url`` like the chat provider does: with a local vLLM/llama.cpp
+    server configured, the embedder used to build the client with the SDK defaults and
+    sent workspace text (artifact titles and bodies) to api.openai.com — off-machine,
+    against the workspace's own locality — before failing on the bogus key.
+    """
 
     def __init__(self, config: Config, model_name: str) -> None:
         self.model_name = model_name
@@ -87,8 +93,9 @@ class OpenAIEmbedder:
             from openai import OpenAI
         except ImportError as exc:
             raise RuntimeError("openai package is not installed") from exc
+        from opentorus.providers.openai_provider import openai_client_kwargs
 
-        client = OpenAI()
+        client = OpenAI(**openai_client_kwargs(self._config))
         trimmed = _truncate(texts)
         out: list[list[float]] = []
         for start in range(0, len(trimmed), _ENCODE_BATCH):
