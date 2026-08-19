@@ -9,8 +9,10 @@ final validation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
+import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -374,6 +376,10 @@ class ResultManifest(BaseModel):
     sif_cache: str | None = None
     cache_hit: bool = False
     cache_key: str | None = None
+    # When a cached result is replayed (cache_hit: true), start_time/end_time keep
+    # the ORIGINAL run's timing and replayed_at records the replay moment. The
+    # manifest never claims the replay moment as the run's execution time.
+    replayed_at: datetime | None = None
     # Dataset inputs consumed by this run, pinned by content hash (Phase 23, M71).
     datasets: list[dict] = Field(default_factory=list)
 
@@ -571,19 +577,73 @@ def _resolve_image_ref(ot_dir: Path, experiment: Experiment) -> str | None:
     return resolve_environment(ot_dir, experiment.environment).image
 
 
+def _command_file_hashes(
+    root: Path, workdir: Path, exp_dir: Path, command: str
+) -> list[tuple[str, str]]:
+    """sha256 of every existing workspace file the command references.
+
+    Command tokens are resolved against the directory the run executes from
+    (mirroring ``_run_via_backend``: the workspace root for ``run_from ==
+    "workspace"``, else the experiment directory). A command like ``python
+    scripts/foo.py`` must not replay results produced by an older
+    ``scripts/foo.py``, so every referenced file's content is part of the cache
+    identity. ``run.py`` next to the experiment is excluded — it is already
+    hashed as ``run_source`` — and files outside the workspace (e.g. an absolute
+    interpreter path) are ignored so keys stay machine-independent. Returns
+    sorted ``(relative_path, sha256)`` pairs; empty when the command references
+    no existing workspace files, which keeps the key unchanged for such runs.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    root = root.resolve()
+    run_py = (exp_dir / "run.py").resolve()
+    hashes: dict[str, str] = {}
+    for token in tokens:
+        if not token or token.startswith("-"):
+            continue
+        candidate = Path(token) if Path(token).is_absolute() else workdir / token
+        try:
+            resolved = candidate.resolve()
+            if not resolved.is_file():
+                continue
+        except OSError:
+            continue
+        if resolved == run_py:
+            continue
+        try:
+            rel = resolved.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if rel not in hashes:
+            hashes[rel] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    return sorted(hashes.items())
+
+
 def _cache_key_for(ot_dir: Path, experiment: Experiment, exp_dir: Path) -> str:
     from opentorus.execution.cache import cache_key
 
     run_py = exp_dir / "run.py"
     run_source = run_py.read_text(encoding="utf-8") if run_py.is_file() else ""
+    command = experiment.command or "python run.py"
+    inputs: dict = {}
     # Attached datasets are inputs: fold their (id, sha256) into the key so a run with
     # the same script but different data does not restore the wrong cached result.
     datasets = sorted((d.dataset_id, d.sha256 or "") for d in experiment.datasets)
+    if datasets:
+        inputs["datasets"] = datasets
+    # Workspace files referenced by the command are inputs too: rewriting
+    # ``scripts/foo.py`` must invalidate the cache for ``python scripts/foo.py``.
+    workdir = ot_dir.parent if experiment.run_from == "workspace" else exp_dir
+    command_files = _command_file_hashes(ot_dir.parent, workdir, exp_dir, command)
+    if command_files:
+        inputs["command_files"] = command_files
     return cache_key(
         run_source=run_source,
         image_ref=_resolve_image_ref(ot_dir, experiment),
-        command=experiment.command or "python run.py",
-        inputs={"datasets": datasets} if datasets else None,
+        command=command,
+        inputs=inputs or None,
     )
 
 
@@ -602,8 +662,11 @@ def _try_cache_hit(
 
     manifest = ResultManifest.model_validate(cached)
     manifest.experiment_id = experiment.id
-    manifest.start_time = _utcnow()
-    manifest.end_time = _utcnow()
+    # start_time/end_time stay as the ORIGINAL run recorded them: a replayed
+    # result must never claim the replay moment as its execution time (a
+    # 5-second run would otherwise look like a microsecond one). The replay
+    # moment is recorded separately in replayed_at.
+    manifest.replayed_at = _utcnow()
     manifest.cache_hit = True
     manifest.cache_key = key
     manifest.datasets = [ref.model_dump(mode="json") for ref in experiment.datasets]

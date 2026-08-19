@@ -35,6 +35,8 @@ from opentorus.campaign.workers.base import (
 from opentorus.errors import OpenTorusError
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from opentorus.campaign.portfolio import PortfolioContext
 
 
@@ -60,11 +62,29 @@ RELATION_ALIASES: dict[str, RootRelation] = {r.value: r for r in RootRelation} |
 
 _WRAPPER_KEYS = ("proposals", "branches", "portfolio", "strategies", "items")
 _TRAILING_COMMA = re.compile(r",(\s*[\]}])")
+# Either a valid JSON escape (kept whole) or a lone backslash starting none of them
+# ("\m" in "$\mathbb{E}$", "\d" in "\dots"). Matching valid escapes first consumes
+# them atomically, so an already-doubled "\\sup" is not mangled into "\\\sup" —
+# models mix both conventions inside one answer.
+_ESCAPE = re.compile(r'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})|\\(.)', re.S)
+
+
+def _repair_escapes(text: str) -> str:
+    return _ESCAPE.sub(lambda m: m.group(0) if m.group(1) else "\\\\" + m.group(2), text)
 
 
 def _loads_lenient(text: str) -> object | None:
-    """``json.loads`` that also survives a trailing comma before ``]``/``}``."""
-    for candidate in (text, _TRAILING_COMMA.sub(r"\1", text)):
+    """``json.loads`` that also survives trailing commas and LaTeX backslashes.
+
+    Five of five stress campaigns lost their model portfolio because a proposal
+    contained LaTeX inside a JSON string (``$\\mathbb{E}\\vartheta(G)/\\sqrt{n}$``):
+    ``\\m`` is not a JSON escape, so the whole answer was discarded. Doubling every
+    invalid escape reconstructs the string the model meant; valid answers are
+    untouched because the raw text is always tried first.
+    """
+    candidates = [text, _TRAILING_COMMA.sub(r"\1", text)]
+    candidates += [_repair_escapes(c) for c in list(candidates)]
+    for candidate in candidates:
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:
@@ -147,6 +167,27 @@ def strategist_context(ctx: PortfolioContext) -> WorkerContext:
     )
 
 
+def _preserve_raw_answer(ot_dir: Path, campaign_id: str, answer: str) -> str | None:
+    """Persist an unparseable strategist answer under the campaign dir; relpath or None.
+
+    A 160-char excerpt in the event note is not enough to diagnose (or re-parse) a
+    discarded portfolio; the full text is kept next to the campaign log.
+    """
+    if not answer.strip():
+        return None
+    try:
+        from opentorus.campaign import paths
+
+        _pid, cdir = paths.find_campaign(ot_dir, campaign_id)
+        target = cdir / "strategist-answers"
+        target.mkdir(parents=True, exist_ok=True)
+        path = target / f"answer-{len(list(target.glob('answer-*.txt'))) + 1:03d}.txt"
+        path.write_text(answer, encoding="utf-8")
+        return str(path.relative_to(ot_dir))
+    except Exception:  # noqa: BLE001 - preservation must never break the portfolio phase
+        return None
+
+
 def propose_with_model(
     runtime: WorkerRuntime, ctx: PortfolioContext
 ) -> tuple[list[dict[str, object]], list[str]]:
@@ -172,10 +213,13 @@ def propose_with_model(
     items = parse_strategist_json(answer)
     if not items:
         excerpt = " ".join((answer or "").split())[:160]
-        return [], [
-            "strategist: answer was not a JSON array of proposals; template portfolio used"
-            + (f" (answer began: {excerpt!r})" if excerpt else " (empty answer)")
-        ]
+        note = "strategist: answer was not a JSON array of proposals; template portfolio used" + (
+            f" (answer began: {excerpt!r})" if excerpt else " (empty answer)"
+        )
+        kept = _preserve_raw_answer(runtime.ot_dir, ctx.campaign_id, answer or "")
+        if kept:
+            note += f"; full answer preserved at {kept}"
+        return [], [note]
     return items, [
         f"strategist: {len(items)} proposal(s) from {lease.profile_name} "
         f"({lease.decision.decision_id})"

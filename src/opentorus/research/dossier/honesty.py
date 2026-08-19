@@ -186,7 +186,12 @@ def lint_report(
             attributed = _PAPER_REF.search(line) is not None and not m.group(0).lower().startswith(
                 ("we", "this", "it is", "q", "hence", "therefore")
             )
-            if not attributed:
+            # A line that *opens* with the bare verb states an objective, not a result:
+            # branch objectives ("Prove the conjecture for k >= 4") are quoted verbatim
+            # in reports and narratives, and reading them as proof claims blocked a
+            # composed narrative three times in one live run.
+            imperative = m.start() == 0 and m.group(0).lower().startswith("prove ")
+            if not attributed and not imperative:
                 issues.append(
                     ReportIssue(
                         line=lineno,

@@ -696,6 +696,7 @@ def problem_report(
                     stream_llm=stream_llm,
                 )
                 narrative_path = store.dossier_dir(base, pid) / f"{pid}-narrative.tex"
+                refused: str | None = None
                 try:
                     if indicator is not None:
                         indicator.update("Gathering artifacts")
@@ -703,12 +704,25 @@ def problem_report(
                         base, pid, provider=provider, compose_llm=True, hooks=hooks
                     )
                     narrative_path.write_text(doc, encoding="utf-8")
+                except OpenTorusError as exc:
+                    # The narrative is the optional extra; report.md above is the
+                    # deliverable. A refused narrative must be loud but must not cost
+                    # the caller the honest artifact, the lint, or the rest of a script
+                    # (a live driver lost its verdict and PDF to one model overclaim).
+                    refused = str(exc)
                 finally:
                     if indicator is not None:
                         indicator.stop()
                 if llm_hooks.on_llm_request is not None:
                     console.print()
-                console.print(f"[green]Narrative report[/green] → {narrative_path}")
+                if refused is not None:
+                    console.print(f"[red]Narrative report refused[/red] — {refused}")
+                    console.print(
+                        "[dim]report.md above is unaffected; rerun with --no-compose-llm "
+                        "to skip the narrative entirely.[/dim]"
+                    )
+                else:
+                    console.print(f"[green]Narrative report[/green] → {narrative_path}")
     except OpenTorusError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc

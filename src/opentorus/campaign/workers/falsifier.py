@@ -16,18 +16,23 @@ unmodified template — no evidence is recorded for it and the work item fails w
 predicate *was* edited (by a model in the loop path, or by a human) is parsed and its
 result recorded. With a real provider the model designs the search in a bounded loop
 (``exp_new`` → edit ``run.py`` → ``exp_run``); the worker then parses every new
-experiment's output. Nothing found is a ``no_witness_found`` signature so the branch
-is not re-run unchanged.
+experiment's output. A clean parsed search with nothing found is a ``no_witness_found``
+signature so the branch is not re-run unchanged; an output that does *not* parse as a
+search result is ``witness_unconfirmed`` — the worker must never assert "no witness"
+about output it could not read, and evidence the model recorded through tools during
+the session is attached to the signature instead of being dropped.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from opentorus.campaign.failures import build_failure_signature
 from opentorus.campaign.models import (
     ArtifactRef,
     CostTotals,
+    ErrorCategory,
     FailureSignature,
     WorkerContext,
     WorkerResult,
@@ -48,6 +53,8 @@ UNMODIFIED_TEMPLATE_NOTE = (
     "the search predicate is the unmodified template (a tautology): the run is a "
     "reproducible scaffold, not evidence about the claim, so no evidence was recorded"
 )
+# Free-text markers that make an unparsed output triage-worthy rather than merely noisy.
+_WITNESS_MARKERS = re.compile(r"counter.?example|violation|witness|refut", re.IGNORECASE)
 
 
 def resolve_target_claim(ctx: WorkerContext, rt: WorkerRuntime) -> tuple[str, ArtifactRef | None]:
@@ -107,20 +114,26 @@ class FalsifierWorker:
     role = WorkerRole.falsifier
 
     def _signature(
-        self, ctx: WorkerContext, *, counterargument: str, artifact_ids: list[str]
+        self,
+        ctx: WorkerContext,
+        *,
+        counterargument: str,
+        artifact_ids: list[str],
+        error_category: ErrorCategory = "no_witness_found",
     ) -> FailureSignature:
         return build_failure_signature(
             role=self.role,
             strategy_class=ctx.strategy_key or "counterexample_search",
             assumption_context=ctx.assumption_context,
             tool_or_solver=SEARCH_TEMPLATE,
-            error_category="no_witness_found",
+            error_category=error_category,
             counterargument=counterargument,
             artifact_ids=artifact_ids,
         )
 
     def run(self, ctx: WorkerContext, rt: WorkerRuntime) -> WorkerResult:
         from opentorus.agent.research_iteration import parse_search_result
+        from opentorus.research.evidence import list_evidence
         from opentorus.research.experiments import (
             get_experiment,
             is_unmodified_counterexample_template,
@@ -145,6 +158,7 @@ class FalsifierWorker:
         if created is not None:
             artifacts.append(created)
             notes.append(f"branch-level workspace claim {claim_id} created for evidence")
+        evidence_before = {e.id for e in list_evidence(rt.ot_dir)}
         turns = 0
         exp_ids: list[str] = []
         if is_mock_provider(lease.provider):
@@ -211,9 +225,22 @@ class FalsifierWorker:
                     f"{', '.join(timeout_coercions)})"
                 )
             exp_ids = sorted(e.id for e in _list_ws_experiments(rt.ot_dir) if e.id not in before)
+        # Evidence the model recorded through tools during the session must survive the
+        # worker outcome — a live falsifier once filed contradicting evidence that the
+        # canned no-witness signature then buried.
+        session_evidence = sorted(
+            e.id for e in list_evidence(rt.ot_dir) if e.id not in evidence_before
+        )
+        for ev_id in session_evidence:
+            artifacts.append(
+                ArtifactRef(artifact_id=ev_id, kind="evidence", branch_id=ctx.branch_id)
+            )
+            notes.append(f"{ev_id}: recorded by the worker session; attached to the outcome")
         found = False
         evidence_ids: list[str] = []
         scaffold_only = False
+        unparsed: list[str] = []
+        marker_hit = False
         for exp_id in exp_ids:
             found_exp = get_experiment(rt.ot_dir, exp_id)
             if found_exp is None:
@@ -224,9 +251,18 @@ class FalsifierWorker:
             artifacts.append(
                 ArtifactRef(artifact_id=exp.id, kind="experiment", branch_id=ctx.branch_id)
             )
-            result = parse_search_result(_stdout(rt.ot_dir, exp.path))
+            out = _stdout(rt.ot_dir, exp.path)
+            result = parse_search_result(out)
             if result is None:
-                notes.append(f"{exp.id}: output carries no counterexample_search result")
+                unparsed.append(exp.id)
+                if _WITNESS_MARKERS.search(out):
+                    marker_hit = True
+                    notes.append(
+                        f"{exp.id}: output contains counterexample-like text but no "
+                        "parseable search result — needs triage"
+                    )
+                else:
+                    notes.append(f"{exp.id}: output carries no counterexample_search result")
                 continue
             if is_unmodified_counterexample_template(rt.ot_dir, exp):
                 scaffold_only = True
@@ -256,18 +292,30 @@ class FalsifierWorker:
                 ],
                 target_claim_id=claim_id,
             )
+        category: ErrorCategory = "no_witness_found"
         if scaffold_only:
             counterargument = UNMODIFIED_TEMPLATE_NOTE
+        elif unparsed:
+            category = "witness_unconfirmed"
+            counterargument = (
+                "search output could not be parsed as a counterexample_search result; "
+                "the witness status is unconfirmed, not absent"
+            )
+            if marker_hit:
+                counterargument += " (output contains counterexample-like text — needs triage)"
         elif exp_ids:
             counterargument = "bounded search found no witness in the searched range"
         else:
             counterargument = f"no search experiment produced in {max(1, turns)} model turn(s)"
         sig = self._signature(
-            ctx, counterargument=counterargument, artifact_ids=[*exp_ids, *evidence_ids]
+            ctx,
+            counterargument=counterargument,
+            artifact_ids=[*exp_ids, *evidence_ids, *session_evidence],
+            error_category=category,
         )
         return WorkerResult(
             status="failed",
-            error_category="no_witness_found",
+            error_category=category,
             message=counterargument,
             artifacts_created=artifacts,
             usage=usage,

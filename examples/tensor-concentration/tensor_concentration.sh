@@ -128,7 +128,7 @@ opentorus --verbose prove "${TARGET}" --min-papers 5
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
-opentorus problem report "${TARGET}" --lint            # honesty linter flags overclaiming
+opentorus problem report "${TARGET}" --lint            # honesty linter flags overclaiming || true   # advisory: warnings are findings to read, not a reason to skip the verdict
 opentorus problem export "${TARGET}" --pdf
 
 echo

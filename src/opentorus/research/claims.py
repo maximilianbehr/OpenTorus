@@ -166,8 +166,13 @@ def get_claim(ot_dir: Path, claim_id: str) -> Claim | None:
 def new_claim(ot_dir: Path, statement: str, *, problem_id: str | None = None) -> Claim:
     path = claims_path(ot_dir)
     existing = read_jsonl(path, Claim)
+    # Workspace and dossier claims share the CLAIM-NNNN prefix; a live campaign had
+    # two different CLAIM-0001s in one workspace, with evidence reading against the
+    # wrong one. Minting across both stores keeps the id space unambiguous.
+    from opentorus.research.dossier.store import all_dossier_claim_ids
+
     claim = Claim(
-        id=next_id("CLAIM", (c.id for c in existing)),
+        id=next_id("CLAIM", [*(c.id for c in existing), *all_dossier_claim_ids(ot_dir)]),
         statement=statement,
         problem_id=problem_id,
         status="idea",

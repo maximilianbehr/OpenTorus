@@ -116,6 +116,20 @@ def add_evidence(
     if strength not in VALID_STRENGTHS:
         raise OpenTorusError(f"Invalid strength '{strength}'. Valid: {', '.join(VALID_STRENGTHS)}")
 
+    # The claim must exist in a store the workspace can read back — a dangling id makes
+    # the evidence unauditable, and the shared CLAIM- id space makes typos silent.
+    from opentorus.research.claims import get_claim
+
+    if get_claim(ot_dir, claim_id) is None:
+        from opentorus.research.dossier.store import dossier_claim_exists
+
+        if not dossier_claim_exists(ot_dir, claim_id):
+            raise OpenTorusError(
+                f"Cannot record evidence for '{claim_id}': no such claim in the workspace "
+                "ledger or any problem dossier. Create it first (claim_new) or cite an "
+                "existing claim id."
+            )
+
     # Experiment citations must point at a real EXP-* artifact: a hallucinated id
     # (e.g. "EXP-9999" the model never created) can never back a claim. A real but
     # not-yet-run experiment is allowed but surfaces an advisory — citing its

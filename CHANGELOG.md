@@ -374,6 +374,55 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   lives there and `providers.capabilities` re-exports it, so the usage ledger and the
   egress predicates import without the provider package.
 
+### Fixed
+
+A stress run of twenty-three campaigns against a local vLLM, audited workspace by
+workspace, produced these. Each was reproduced in the code before it was changed.
+
+- **The falsifier no longer asserts "no witness" about output it could not read.** One
+  campaign's search printed `CONFIRMED: This is a counterexample!` in free text; the
+  canned no-witness signature buried it, blocked the retry as unchanged and suspended
+  the branch with the candidate untriaged. Unparseable search output is now a
+  `witness_unconfirmed` signature, a counterexample-like marker is surfaced for triage,
+  and evidence the model recorded during the session is attached to the outcome.
+- **Worker ledgers reach the dossier.** Campaign synthesis mirrors workspace evidence
+  and failure signatures into the dossier as candidate-grade records through the
+  dossier's own honesty-preserving APIs, so `report`, `referee` and `verdict` stop
+  saying "Evidence: (none linked)" and "Failed attempts: 0 recorded" while the workspace
+  holds both (invariant 5).
+- **`CLAIM-*` and `PROOF-*` ids are minted from one shared space** across the workspace
+  ledgers and every problem dossier. Six of seven audited workspaces held two different
+  `CLAIM-0001`s, with evidence reading against the wrong one; `add_evidence` now refuses
+  a claim id no store can resolve.
+- **An experiment's identity includes the scripts its command runs**, and a cache hit
+  keeps the original run's timing (recording `replayed_at` separately) instead of
+  overwriting the manifest with timestamps microseconds apart.
+- **`env prepare` detects a stale image** by comparing the Containerfile's sha256
+  against a label stamped at build time, instead of reusing anything that carries the
+  tag; the CLI says why it built or reused.
+- **The LLM-composed narrative `.tex` passes the honesty gate** it used to bypass
+  entirely: hard overclaims refuse composition with the findings named, soft findings
+  are appended as an "Honesty warnings" section.
+- **`NUMERICAL_EVIDENCE` states what the runs showed.** The rationale is direction-aware;
+  "support" now requires linked supporting evidence with nothing contradicting.
+- **Lifecycle events flush `snapshot.json`** even under `persist_every_event: false` — a
+  paused campaign read `created` on disk after its process exited — and `campaign verify`
+  records a `snapshot_lag` diagnostic instead of reporting success after replaying one
+  event of a hundred and fifty.
+- **LaTeX no longer costs the model portfolio**: the strategist's JSON reader repairs
+  invalid escapes (`\m` in `$\mathbb{E}$` discarded five of five live portfolios) and an
+  unparseable answer is preserved in full beside the campaign log.
+- **A reworded gap does not mint a duplicate obligation** (dedup keys on the source proof
+  and gap marker), and **a revised proof attempt is critiqued again** (re-creation carries
+  the new sequence number forward).
+- **A cached embedder makes no network calls**: the "local" sentence-transformers backend
+  revalidated against huggingface.co on every init, once stalling a campaign fifteen
+  minutes on a dead connection.
+- **`inconclusive` is rendered as inconclusive**, not as a rejection, by `proof list` and
+  `proof submit`; **`paper extract` accepts any locally cached PDF**, not only papers
+  registered as `local_pdf`; **bulk problem extraction no longer hijacks the active
+  problem** pointer.
+
 ## [0.0.14] — 2026-08-18
 
 The worst defect in this series, and it never produced an error message. The argument

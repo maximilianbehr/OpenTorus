@@ -1384,7 +1384,9 @@ def test_instance_work_gate_cleared_by_verifier_attempt(tmp_path: Path) -> None:
     outcome = run_prove(
         tmp_path, ot, SmoothProvider(), config, "PROBLEM-0001", literature_first=False
     )
-    assert outcome.proof_ids == ["PROOF-0001"]
+    # PROOF-0001 is the ledger submission above; the dossier sketch mints the next id
+    # in the shared PROOF- space instead of colliding with it.
+    assert outcome.proof_ids == ["PROOF-0002"]
     assert "instance-work gate" not in outcome.answer
     assert outcome.gaps_remaining == 0
 

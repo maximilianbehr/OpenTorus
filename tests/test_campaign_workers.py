@@ -997,3 +997,100 @@ def test_experiment_timeout_gate_caps_what_the_model_asks_for() -> None:
     gate("read_file", other)
     assert other == {"path": "x"}  # other tools: untouched
     assert experiment_timeout_gate(0, coercions) is None  # 0 = no cap
+
+
+def test_falsifier_unparsed_counterexample_output_is_unconfirmed_not_no_witness(
+    tmp_path: Path,
+) -> None:
+    """A live falsifier printed "CONFIRMED: This is a counterexample!" in free text and
+    the canned no-witness signature buried it (fisk-toeplitz-minors, 2026-08-19). Output
+    the worker cannot parse must classify as witness_unconfirmed, never as a no-witness
+    assertion, and the triage marker must be surfaced."""
+    from opentorus.campaign.workers.falsifier import FalsifierWorker
+    from opentorus.research.dossier import store as dstore
+    from opentorus.research.dossier.claims import add_claim
+    from opentorus.research.experiments import new_experiment
+
+    root, ot, pid = make_workspace(tmp_path)
+    primary = add_claim(ot, pid, claim_type="CONJECTURE", statement="P(n) for all n.")
+    dossier = dstore.require_dossier(ot, pid)
+    dossier.primary_claim_id = primary.id
+    dstore.save_dossier(ot, dossier)
+    exp = new_experiment(
+        ot,
+        "free-text search",
+        run_body='print("CONFIRMED: This is a counterexample! n=50")',
+        problem_id=pid,
+    )
+    rt = _runtime(root, ot)
+    ctx = _branch_ctx(
+        pid,
+        WorkerRole.falsifier,
+        strategy_key="counterexample_search",
+        branch_artifact_ids=(exp.id,),
+        root_problem=NormalizedProblem(
+            problem_id=pid, statement="P(n) for all n.", primary_claim_id=primary.id
+        ),
+    )
+    result = FalsifierWorker().run(ctx, rt)
+    assert result.status == "failed"
+    assert result.error_category == "witness_unconfirmed"
+    sig = result.failure_signature
+    assert sig is not None and sig.error_category == "witness_unconfirmed"
+    assert "unconfirmed" in sig.counterargument
+    assert "needs triage" in sig.counterargument
+    assert "no witness in the searched range" not in sig.counterargument
+    assert any("counterexample-like text" in n for n in result.notes)
+    assert exp.id in sig.artifact_ids
+    # the dossier claim is untouched either way
+    assert dstore.get_claim(ot, pid, primary.id).status == "unverified"  # type: ignore[union-attr]
+    assert dstore.list_status_changes(ot, pid) == []
+
+
+def test_prover_refinement_does_not_duplicate_obligations_for_reworded_gaps(
+    tmp_path: Path,
+) -> None:
+    """fisk-toeplitz-minors, 2026-08-19: a sketch refinement reworded GAP-1 and the
+    campaign minted a duplicate obligation next to the open one (5 open obligations for
+    3 gaps). The same (source proof, gap marker) is never proposed twice."""
+    from opentorus.campaign.models import Obligation
+    from opentorus.campaign.workers.prover import ProverWorker
+
+    root, ot, pid = make_workspace(tmp_path)
+    provider = ScriptedProvider(
+        [tool_call("proof_write", _primary_proof_write(pid, scope="primary")), message("done")]
+    )
+    rt = _scripted_runtime(root, ot, provider)
+    ctx = _branch_ctx(
+        pid,
+        WorkerRole.prover,
+        branch_objective="Prove P(n) for every n by induction.",
+        root_relation="equivalent",
+        strategy_key="proof_sketch",
+    )
+    result = ProverWorker().run(ctx, rt)
+    assert result.status == "completed" and result.obligations
+    minted = tuple(
+        Obligation(
+            obligation_id=f"OBL-{i:04d}",
+            campaign_id="CAMPAIGN-0001",
+            statement=o.statement,
+            source_proof_id=o.source_proof_id,
+            gap_marker=o.gap_marker,
+        )
+        for i, o in enumerate(result.obligations, start=1)
+    )
+    # the refinement rewords the gap: same [GAP-1] marker, different statement text
+    reworded = _primary_proof_write(pid, scope="primary")
+    reworded["gaps"] = ["[GAP-1] the monotonicity lemma does not scale to n + 1"]
+    provider2 = ScriptedProvider([tool_call("proof_write", reworded), message("done")])
+    ctx2 = ctx.model_copy(
+        update={
+            "branch_artifact_ids": ("PROOF-0001",),
+            "work_item_id": "WI-0002",
+            "open_obligations": minted,
+        }
+    )
+    result2 = ProverWorker().run(ctx2, _scripted_runtime(root, ot, provider2))
+    assert result2.status == "completed", result2
+    assert result2.obligations == []  # same gap marker on the same proof: no duplicate

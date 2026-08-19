@@ -28,7 +28,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from opentorus.research.dossier.models import EvidenceRecord
 
 TargetScope = Literal["general", "fixed_instance", "unclear"]
 
@@ -81,6 +84,33 @@ def classify_target(statement: str) -> TargetScope:
     if _FIXED.search(text):
         return "fixed_instance"
     return "unclear"
+
+
+def _numerical_evidence_rationale(evidence: list[EvidenceRecord]) -> str:
+    """Direction-aware NUMERICAL_EVIDENCE rationale — honest about what the runs showed.
+
+    "Experiments support claims" was direction-blind: it was emitted even when the
+    strongest succeeded experiment purported to *refute* the claim, or when no
+    evidence was linked to any claim at all. The wording now states what the linked
+    evidence actually says; only linked supporting evidence with nothing contradicting
+    earns the word "support".
+    """
+    if any(e.direction == "contradicts" for e in evidence):
+        return (
+            "experiments/computations are recorded, including contradicting evidence; "
+            "nothing is verification-grade"
+        )
+    if not evidence:
+        return (
+            "experiments/computations are recorded (no evidence linked to any claim); "
+            "nothing is verification-grade"
+        )
+    if any(e.direction == "supports" for e in evidence):
+        return "recorded experiments/computations support claims; nothing is verification-grade"
+    return (
+        "experiments/computations are recorded (linked evidence is neutral); "
+        "nothing is verification-grade"
+    )
 
 
 def classify_outcome(ot_dir: Path, problem_id: str) -> tuple[str, str]:
@@ -162,10 +192,7 @@ def classify_outcome(ot_dir: Path, problem_id: str) -> tuple[str, str]:
     if any(e.status == "succeeded" for e in experiments) or any(
         e.type in ("EXPERIMENT", "COMPUTATION") for e in evidence
     ):
-        return (
-            "NUMERICAL_EVIDENCE",
-            "recorded experiments/computations support claims; nothing is verification-grade",
-        )
+        return ("NUMERICAL_EVIDENCE", _numerical_evidence_rationale(evidence))
     if failed or any(c.type == "FORMAL_PROOF_FAILED" for c in claims):
         return (
             "FAILED_ATTEMPT",

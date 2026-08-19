@@ -10,6 +10,7 @@ import yaml
 from opentorus.errors import OpenTorusError
 from opentorus.execution.environments import ENVIRONMENTS_FILENAME, resolve_environment
 from opentorus.execution.prepare import (
+    containerfile_sha256,
     local_image_tag,
     prepare_environment,
     resolve_build_paths,
@@ -22,6 +23,14 @@ def _dockerfile(tmp_path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("FROM scratch\n", encoding="utf-8")
     return path
+
+
+def _stub_matching_label(monkeypatch: pytest.MonkeyPatch, dockerfile: Path) -> None:
+    """Make the existing image carry the current Containerfile's hash label."""
+    monkeypatch.setattr(
+        "opentorus.execution.prepare._image_label",
+        lambda _runtime, _tag, _label: containerfile_sha256(dockerfile),
+    )
 
 
 def test_local_image_tag() -> None:
@@ -48,6 +57,7 @@ def test_prepare_writes_workspace_override(tmp_path: Path, monkeypatch: pytest.M
         "opentorus.execution.prepare._image_exists",
         lambda _runtime, _tag: True,
     )
+    _stub_matching_label(monkeypatch, dockerfile)
     build_calls: list[str] = []
     monkeypatch.setattr(
         "opentorus.execution.prepare._build_image",
@@ -103,6 +113,7 @@ def test_prepare_custom_dockerfile(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         "opentorus.execution.prepare._image_exists",
         lambda _runtime, _tag: True,
     )
+    _stub_matching_label(monkeypatch, dockerfile)
     built: list[tuple[Path, Path]] = []
 
     def _record_build(runtime: str, tag: str, **kw) -> None:
@@ -135,6 +146,7 @@ def test_prepare_reuses_saved_custom_dockerfile(
         "opentorus.execution.prepare._image_exists",
         lambda _runtime, _tag: True,
     )
+    _stub_matching_label(monkeypatch, dockerfile)
     monkeypatch.setattr(
         "opentorus.execution.prepare._build_image",
         lambda runtime, tag, **kw: None,
@@ -160,6 +172,7 @@ def test_prepare_custom_env_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         "opentorus.execution.prepare._image_exists",
         lambda _runtime, _tag: True,
     )
+    _stub_matching_label(monkeypatch, dockerfile)
     monkeypatch.setattr(
         "opentorus.execution.prepare._build_image",
         lambda runtime, tag, **kw: None,

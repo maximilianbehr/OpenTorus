@@ -2,9 +2,12 @@
 
 A run is identified by the content that determines its output: the ``run.py``
 source (which embeds the seed), the pinned image reference, the command, and any
-declared inputs. Identical content ⇒ identical key ⇒ the recorded result and
-manifest are reused (and the manifest says ``cache_hit: true``). Changing the
-seed/source/image/command changes the key and forces a fresh run.
+declared inputs (attached datasets and the sha256 of every workspace file the
+command references — see ``_cache_key_for`` in ``opentorus.research.experiments``).
+Identical content ⇒ identical key ⇒ the recorded result and manifest are reused
+(and the manifest says ``cache_hit: true`` with the original run's timing).
+Changing the seed/source/image/command/referenced-script changes the key and
+forces a fresh run.
 
 The cache lives under ``.opentorus/cache/<key>/`` and stores the result files
 plus the manifest, so a hit is fully reproducible from the workspace.

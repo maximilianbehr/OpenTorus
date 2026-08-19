@@ -178,7 +178,7 @@ opentorus campaign verify "${CAMPAIGN}"   # replay the event log against the sna
 
 # --- 8. Honest report, verdict, PDF ------------------------------------------
 opentorus problem report "${TARGET}"
-opentorus problem report "${TARGET}" --lint
+opentorus problem report "${TARGET}" --lint || true   # advisory: warnings are findings to read, not a reason to skip the verdict
 opentorus problem verdict "${TARGET}"
 opentorus problem export "${TARGET}" --pdf
 
