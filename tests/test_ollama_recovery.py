@@ -47,6 +47,17 @@ def test_build_ollama_chat_body_includes_tools() -> None:
     )
     assert body["options"]["num_predict"] == -1
     assert body["tools"][0]["function"]["name"] == "status"
+    assert "keep_alive" not in body  # unset = the server's own default
+
+
+def test_build_ollama_chat_body_forwards_keep_alive() -> None:
+    """A worker that pauses longer than Ollama's 5-minute default between calls pays a
+    cold reload on the next one (25 minutes for a 31B model on a cluster filesystem);
+    ``model.keep_alive`` is forwarded verbatim so the model stays resident."""
+    config = default_config()
+    config.model.keep_alive = "45m"
+    body = build_ollama_chat_body(config, [SessionMessage(role="user", content="hi")], None)
+    assert body["keep_alive"] == "45m"
 
 
 class FlakyToolParseProvider(BaseProvider):

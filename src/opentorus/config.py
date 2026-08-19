@@ -89,6 +89,12 @@ class ModelConfig(BaseModel):
     # Hard cap on output tokens for providers that require one (e.g. Anthropic).
     # Unset falls back to a provider default; raise it for long proofs.
     max_tokens: int | None = None
+    # Ollama-only: how long the server keeps the model loaded after a request ("30m",
+    # "2h", "-1" = until the server stops). Unset = the server's default (5 minutes).
+    # A campaign worker often pauses for longer than that between calls (an experiment
+    # runs, a paper is parsed) and the next call then pays a cold reload — 25 minutes
+    # for a 31B model on a cluster's network filesystem, observed as a stall.
+    keep_alive: str | None = None
     # Before an agent run, verify the model can call tools (a one-shot capability probe;
     # also reads Ollama /api/show). OpenTorus is useless without tool calling, so a model
     # that cannot is refused with a clear message. Set false to skip the check.

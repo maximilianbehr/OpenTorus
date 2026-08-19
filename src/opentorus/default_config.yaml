@@ -37,6 +37,10 @@ model:
   num_predict: null
   # Provider-neutral cap on generated tokens per response. null = provider default.
   max_tokens: null
+  # Ollama-only: keep the model loaded this long after a request ("30m", "2h", "-1" =
+  # forever). null = the server's default (5 minutes) — a worker that pauses longer
+  # between calls (an experiment runs) then pays a cold reload; slow on network disks.
+  keep_alive: null
   # Verify the model can call tools before an agent run (one-shot probe; reads Ollama
   # /api/show). OpenTorus is useless without tool calling, so a model that cannot is
   # refused with a clear message. Set false to skip the check.
