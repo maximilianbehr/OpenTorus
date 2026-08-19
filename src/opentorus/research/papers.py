@@ -635,16 +635,40 @@ def extract_paper(
     paper_id: str,
     extractor: Callable[[Path], str] | None = None,
 ) -> Paper:
-    """Extract text from a registered local PDF into ``text.txt``."""
+    """Extract text from a paper's locally cached PDF into ``text.txt``.
+
+    Any paper with a cached local PDF qualifies — fetched arXiv/DOI papers included,
+    not just ``source_type == "local_pdf"`` (gating on the source type refused
+    arXiv papers whose PDF was sitting right there in the cache). With no PDF but
+    already-parsed text on disk, that text is the extraction; only a paper with
+    neither is refused, and the error says exactly what is missing.
+    """
     paper = get_paper(ot_dir, paper_id)
     if paper is None:
         raise OpenTorusError(f"No paper with id '{paper_id}'.")
-    if paper.source_type != "local_pdf" or not paper.local_path:
+
+    pdf_path = (ot_dir / paper.local_path) if paper.local_path else None
+    if pdf_path is None or not pdf_path.is_file():
+        if paper.text_path and (ot_dir / paper.text_path).is_file():
+            # Parsed text already exists (e.g. written by ``read_paper``): extraction
+            # is already done; hand it back rather than refusing.
+            return paper
+        missing: list[str] = []
+        if paper.local_path:
+            missing.append(f"cached PDF missing on disk at .opentorus/{paper.local_path}")
+        else:
+            missing.append("no cached PDF (local_path is unset)")
+        if paper.text_path:
+            missing.append(f"parsed text missing on disk at .opentorus/{paper.text_path}")
+        else:
+            missing.append("no parsed text (text_path is unset)")
+        ident = paper_fetch_identifier(paper)
+        hint = f"`opentorus paper fetch {ident}`" if ident else "`opentorus paper fetch <id>`"
         raise OpenTorusError(
-            f"Paper '{paper_id}' has no local file to extract (source_type={paper.source_type})."
+            f"Paper '{paper_id}' has no local source to extract from: "
+            f"{'; '.join(missing)}. Fetch the full text first, e.g. {hint}."
         )
 
-    pdf_path = ot_dir / paper.local_path
     text = (extractor or _extract_pdf_text)(pdf_path)
 
     text_path = papers_dir(ot_dir) / paper_id / "text.txt"

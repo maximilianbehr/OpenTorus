@@ -175,7 +175,7 @@ def paper_read_unread() -> None:
 
 @paper_app.command("extract")
 def paper_extract(paper_id: str = typer.Argument(..., help="Paper id, e.g. PAPER-0001.")) -> None:
-    """Extract text from a registered local PDF."""
+    """Extract text from a paper's locally cached PDF (registered or fetched)."""
     from opentorus.research.papers import extract_paper
 
     base = _require_workspace_dir()

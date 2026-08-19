@@ -5,6 +5,17 @@ Ollama) fused with BM25. ``sentence-transformers`` remains an optional offline
 fallback when ``context.embeddings_backend`` is ``local`` or when no provider
 embedder is available (e.g. Anthropic chat has no embeddings API — try local
 ST or a local Ollama embed model).
+
+First-download exception (egress): the very first load of a local
+sentence-transformers model may download weights from huggingface.co. That request
+is made by the HF hub inside ``SentenceTransformer(...)`` and does not pass through
+the ``research.egress`` guard — ``load_embedder`` has no workspace handle, so there
+is no guard to route it through; the exception is logged here instead. Once the
+model is in the local HF cache, every subsequent load passes
+``local_files_only=True`` and makes zero network calls (without it the hub
+revalidates the ``main`` ref against huggingface.co on *every* init — observed
+live: a campaign stalled ~15 minutes on a dead CDN connection in CLOSE-WAIT even
+though the model was fully cached).
 """
 
 from __future__ import annotations
@@ -14,6 +25,7 @@ import logging
 import math
 import os
 import urllib.request
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from opentorus.config import Config, EmbeddingsBackend
@@ -59,14 +71,56 @@ def _truncate(texts: list[str]) -> list[str]:
     return [t[:_MAX_CHARS] if len(t) > _MAX_CHARS else t for t in texts]
 
 
+def _hf_cache_dir() -> Path:
+    """The huggingface_hub model cache directory, mirroring the hub's resolution."""
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        return Path(HF_HUB_CACHE).expanduser()
+    except Exception:  # pragma: no cover — hub not installed / constant moved
+        env = os.environ.get("HF_HUB_CACHE")
+        if env:
+            return Path(env).expanduser()
+        home = os.environ.get("HF_HOME")
+        if home:
+            return Path(home).expanduser() / "hub"
+        return Path("~/.cache/huggingface/hub").expanduser()
+
+
+def _model_in_local_cache(model_name: str) -> bool:
+    """True when the sentence-transformers model can load with zero network calls.
+
+    Either ``model_name`` is a local directory, or the HF hub cache already holds a
+    snapshot of the repo (bare names resolve under the ``sentence-transformers/`` org,
+    exactly as the library itself resolves them).
+    """
+    if Path(model_name).expanduser().is_dir():
+        return True
+    repo = model_name if "/" in model_name else f"sentence-transformers/{model_name}"
+    snapshots = _hf_cache_dir() / f"models--{repo.replace('/', '--')}" / "snapshots"
+    return snapshots.is_dir() and any(snapshots.iterdir())
+
+
 class SentenceTransformerEmbedder:
-    """Adapter over ``sentence-transformers`` (loaded lazily, offline)."""
+    """Adapter over ``sentence-transformers`` (loaded lazily, offline once cached)."""
 
     def __init__(self, model_name: str) -> None:
         from sentence_transformers import SentenceTransformer
 
         self.model_name = model_name
-        self._model = SentenceTransformer(model_name)
+        cached = _model_in_local_cache(model_name)
+        if not cached:
+            # The one permitted network call: see the module docstring for the
+            # first-download egress exception.
+            logger.info(
+                "Embedding model '%s' is not in the local HF cache; the first load "
+                "downloads it from huggingface.co (one-time network egress — all "
+                "subsequent loads are fully offline).",
+                model_name,
+            )
+        # A warm start must make zero network calls: local_files_only=True stops the
+        # HF hub from revalidating the 'main' ref against huggingface.co on init.
+        self._model = SentenceTransformer(model_name, local_files_only=cached)
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         vectors = self._model.encode(

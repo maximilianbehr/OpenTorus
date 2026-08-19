@@ -59,6 +59,14 @@ def proof_submit(
     elif attempt.accepted:
         version = f" ({attempt.backend_version})" if attempt.backend_version else ""
         console.print(f"[green]{attempt.id} accepted[/green] by {attempt.backend}{version}.")
+    elif attempt.inconclusive:
+        # Timeout/crash/parse failure: the checker gave up. Rendering this as
+        # "rejected" told the model its mathematics was wrong when nothing of the
+        # sort was established.
+        console.print(
+            f"[yellow]{attempt.id} inconclusive[/yellow] — {attempt.backend} did not "
+            "reach a verdict (not a rejection)."
+        )
     else:
         console.print(f"[red]{attempt.id} rejected[/red] by {attempt.backend}.")
     console.print(f"Recorded at .opentorus/{attempt.source_path}")
@@ -84,6 +92,10 @@ def proof_list() -> None:
             status = "[yellow]unavailable[/yellow]"
         elif proof.accepted:
             status = "[green]accepted[/green]"
+        elif proof.inconclusive:
+            # The checker gave up (timeout/crash/unparseable input) — distinct from a
+            # genuine rejection, and rendered as such.
+            status = "[yellow]inconclusive[/yellow]"
         else:
             status = "[red]rejected[/red]"
         table.add_row(proof.id, proof.backend, status, proof.claim_id or "—")
