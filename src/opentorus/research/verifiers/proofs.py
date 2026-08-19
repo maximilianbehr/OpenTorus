@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from opentorus.errors import OpenTorusError
-from opentorus.jsonl import append_jsonl, next_sequential_id, read_jsonl
+from opentorus.jsonl import append_jsonl, next_id, read_jsonl
 
 if TYPE_CHECKING:
     from opentorus.config import Config
@@ -190,7 +190,11 @@ def submit_proof(
     result = verifier.verify(source)
 
     existing = list_proofs(ot_dir)
-    proof_id = next_sequential_id("PROOF", len(existing))
+    # The PROOF-NNNN prefix is shared with dossier proof attempts — mint across both
+    # so a backend submission never reuses the id of an NL sketch (or vice versa).
+    from opentorus.research.dossier.store import all_dossier_proof_ids
+
+    proof_id = next_id("PROOF", [*(p.id for p in existing), *all_dossier_proof_ids(ot_dir)])
     pdir = proofs_dir(ot_dir)
     pdir.mkdir(parents=True, exist_ok=True)
     suffix = _SUFFIX.get(result.backend, _SUFFIX.get(backend, ".txt"))

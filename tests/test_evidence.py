@@ -87,7 +87,16 @@ def test_invalid_fields_rejected(tmp_path: Path) -> None:
 
 def test_list_filters_by_claim(tmp_path: Path) -> None:
     ot = _ws(tmp_path)
-    add_evidence(ot, "CLAIM-0001", source_type="paper")
-    add_evidence(ot, "CLAIM-0002", source_type="paper")
-    assert len(list_evidence(ot, "CLAIM-0001")) == 1
+    first = new_claim(ot, "first statement").id
+    second = new_claim(ot, "second statement").id
+    add_evidence(ot, first, source_type="paper")
+    add_evidence(ot, second, source_type="paper")
+    assert len(list_evidence(ot, first)) == 1
     assert len(list_evidence(ot)) == 2
+
+
+def test_add_evidence_refuses_a_dangling_claim_id(tmp_path: Path) -> None:
+    """Evidence for a claim no store can resolve is unauditable — refuse it."""
+    ot = _ws(tmp_path)
+    with pytest.raises(OpenTorusError, match="no such claim"):
+        add_evidence(ot, "CLAIM-0099", source_type="paper")

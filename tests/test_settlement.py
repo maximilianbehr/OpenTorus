@@ -167,7 +167,15 @@ def test_ledger_four_checks_and_source_proof_id_is_never_looked_up_in_the_ledger
     # a workspace ledger entry with the same id as the dossier sketch this obligation
     # came from must not close it: source_proof_id names the *dossier* attempt
     sketch = add_proof_attempt(ot, pid, title="sketch", body="[GAP-1] todo", gaps=["[GAP-1] todo"])
-    assert sketch.id == proof_id  # the two id spaces collide, by construction
+    # The shared PROOF- mint now prevents API-level collisions; force one (as found in
+    # pre-fix workspaces) so the no-cross-lookup behavior stays pinned.
+    from opentorus.research.dossier.store import list_proof_attempts, rewrite_proof_attempts
+
+    attempts = list_proof_attempts(ot, pid)
+    attempts[-1] = attempts[-1].model_copy(update={"id": proof_id})
+    rewrite_proof_attempts(ot, pid, attempts)
+    sketch = attempts[-1]
+    assert sketch.id == proof_id  # the two id spaces collide, by (forced) construction
     verdict = can_close_obligation(ot, pid, _ob(source_proof_id=sketch.id, supporting_artifacts=[]))
     assert not verdict.allowed
     # ... nor via supporting_artifacts (a live run closed thirteen gaps that way)
@@ -602,7 +610,15 @@ def test_a_sketch_id_cited_as_support_is_never_resolved_in_the_verifier_ledger(
     sketch = add_proof_attempt(
         ot, pid, title="sketch", body="[GAP-1] general case", gaps=["[GAP-1] general case"]
     )
-    assert sketch.id == ledger_id  # both PROOF-0001: the id spaces collide by construction
+    # The shared PROOF- mint now prevents API-level collisions; force one (as found in
+    # pre-fix workspaces) so the no-cross-lookup behavior stays pinned.
+    from opentorus.research.dossier.store import list_proof_attempts, rewrite_proof_attempts
+
+    attempts = list_proof_attempts(ot, pid)
+    attempts[-1] = attempts[-1].model_copy(update={"id": ledger_id})
+    rewrite_proof_attempts(ot, pid, attempts)
+    sketch = attempts[-1]
+    assert sketch.id == ledger_id  # both PROOF-0001: forced collision, as pre-fix
     ob = _ob(
         supporting_artifacts=[sketch.id],
         dependencies=[claim.id],

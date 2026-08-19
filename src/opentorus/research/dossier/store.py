@@ -437,8 +437,28 @@ def rewrite_claims(ot_dir: Path, problem_id: str, claims: list[ClaimRecord]) -> 
     rewrite_jsonl(_claims_path(ot_dir, problem_id), claims)
 
 
+def all_dossier_claim_ids(ot_dir: Path) -> list[str]:
+    """Every dossier claim id in the workspace, across all problem dossiers."""
+    ids: list[str] = []
+    for path in sorted((ot_dir / "problems").glob("*/claims.jsonl")):
+        ids += [c.id for c in read_jsonl(path, ClaimRecord)]
+    return ids
+
+
+def dossier_claim_exists(ot_dir: Path, claim_id: str) -> bool:
+    return claim_id in all_dossier_claim_ids(ot_dir)
+
+
 def next_claim_id(ot_dir: Path, problem_id: str) -> str:
-    return next_id("CLAIM", (c.id for c in list_claims(ot_dir, problem_id)))
+    # Workspace research claims and every problem dossier share the CLAIM-NNNN prefix;
+    # a live campaign had two different CLAIM-0001s in one workspace, with evidence
+    # reading against the wrong one. Minting across all stores keeps ids unambiguous.
+    from opentorus.research.claims import list_claims as workspace_claims
+
+    return next_id(
+        "CLAIM",
+        [*all_dossier_claim_ids(ot_dir), *(c.id for c in workspace_claims(ot_dir))],
+    )
 
 
 # --- Claim status changelog ---------------------------------------------------
@@ -498,8 +518,23 @@ def rewrite_proof_attempts(ot_dir: Path, problem_id: str, proofs: list[ProofAtte
     rewrite_jsonl(_proofs_path(ot_dir, problem_id), proofs)
 
 
+def all_dossier_proof_ids(ot_dir: Path) -> list[str]:
+    """Every dossier proof-attempt id in the workspace, across all problem dossiers."""
+    ids: list[str] = []
+    for path in sorted((ot_dir / "problems").glob("*/proof_attempts/index.jsonl")):
+        ids += [p.id for p in read_jsonl(path, ProofAttempt)]
+    return ids
+
+
 def next_proof_id(ot_dir: Path, problem_id: str) -> str:
-    return next_id("PROOF", (p.id for p in list_proof_attempts(ot_dir, problem_id)))
+    # Shares the PROOF-NNNN prefix with the workspace verifier ledger (proofs.jsonl);
+    # mint across both so a dossier sketch and a backend submission never collide.
+    from opentorus.research.verifiers.proofs import list_proofs as workspace_proofs
+
+    return next_id(
+        "PROOF",
+        [*all_dossier_proof_ids(ot_dir), *(p.id for p in workspace_proofs(ot_dir))],
+    )
 
 
 # --- Theorem references -------------------------------------------------------
