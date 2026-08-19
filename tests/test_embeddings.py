@@ -51,7 +51,13 @@ def test_openai_embedder_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
             out.data = [row]
             return out
 
-    fake_openai = SimpleNamespace(OpenAI=lambda: SimpleNamespace(embeddings=_FakeEmbeddings()))
+    seen_kwargs: list[dict] = []
+
+    def _client(**kwargs):  # noqa: ANN003
+        seen_kwargs.append(kwargs)
+        return SimpleNamespace(embeddings=_FakeEmbeddings())
+
+    fake_openai = SimpleNamespace(OpenAI=_client)
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
     embedder = OpenAIEmbedder(config, "text-embedding-3-small")
@@ -59,6 +65,12 @@ def test_openai_embedder_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(vectors) == 1
     assert abs(vectors[0][0] - 0.6) < 1e-6
     assert abs(vectors[0][1] - 0.8) < 1e-6
+    assert "base_url" not in seen_kwargs[-1]  # unset: the SDK's default endpoint
+    # A configured endpoint (a local vLLM) is where the embeddings go too: the embedder
+    # used to send workspace text to api.openai.com regardless of ``model.base_url``.
+    config.model.base_url = "http://localhost:8000/v1"
+    OpenAIEmbedder(config, "text-embedding-3-small").encode(["hello"])
+    assert seen_kwargs[-1]["base_url"] == "http://localhost:8000/v1"
 
 
 def test_ollama_embedder_parses_response(monkeypatch: pytest.MonkeyPatch) -> None:

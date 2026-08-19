@@ -863,3 +863,22 @@ def test_openai_provider_honours_base_url_timeout_and_sampling() -> None:
     )
     assert (shaped["max_tokens"], shaped["top_p"], shaped["seed"]) == (4096, 0.9, 7)
     assert shaped["tools"][0]["function"]["name"] == "status"
+
+
+def test_openai_parser_strips_gemma4_channel_markers() -> None:
+    """A vLLM server without ``--reasoning-parser gemma4`` leaks Gemma 4's thinking
+    channel into the content (observed live: ``<|channel>thought\\n<channel|>The …``).
+    The thinking block is dropped; ordinary content is untouched."""
+    from types import SimpleNamespace
+
+    from opentorus.providers.openai_provider import parse_openai_message, strip_channel_markers
+
+    leaked = SimpleNamespace(
+        content="<|channel>thought\nLet me think about it.<channel|>The workspace is empty.",
+        tool_calls=None,
+    )
+    assert parse_openai_message(leaked).content == "The workspace is empty."
+    empty_thought = SimpleNamespace(content="<|channel>thought\n<channel|>Done.", tool_calls=None)
+    assert parse_openai_message(empty_thought).content == "Done."
+    assert strip_channel_markers('plain {"a": 1}') == 'plain {"a": 1}'
+    assert strip_channel_markers("<channel|>tail only") == "tail only"

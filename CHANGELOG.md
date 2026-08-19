@@ -221,6 +221,13 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   resume` is the signal that the endpoint is back. The first live resume had re-paused
   on the very three failures that paused it, and a mock resume with a working registry
   suspended every branch and completed the campaign without trying once.
+- **The OpenAI embedder honours `model.base_url` too, and the parser strips Gemma 4's
+  thinking channel.** With a local vLLM configured as the chat provider, hybrid retrieval
+  used to build the embeddings client with the SDK defaults and send workspace text
+  (artifact titles and bodies) to api.openai.com before failing on the key — off-machine,
+  against the workspace's own locality; it now goes to the configured endpoint. And a vLLM
+  server started without `--reasoning-parser gemma4` leaks `<|channel>thought … <channel|>`
+  into the content (observed live); the OpenAI provider drops the block.
 - **The OpenAI provider honours `model.base_url`, `timeout_seconds` and the sampling
   shape.** `base_url` used to be ignored (the client was built with the SDK defaults),
   so a config pointing at a vLLM / llama.cpp / proxy endpoint silently talked to
