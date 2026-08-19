@@ -125,6 +125,10 @@ class RetryChanges:
     parameter_regime_changed: bool = False
     verification_backend_changed: bool = False
     human_override: bool = False
+    # A provider/transport failure is an infrastructure fact, not a verdict on the
+    # strategy: once the campaign has been resumed *after* the failure was recorded,
+    # the endpoint may be back and one identical attempt is a fair test of that.
+    provider_recovered: bool = False
     details: tuple[str, ...] = field(default=())
 
     def any(self) -> bool:
@@ -137,6 +141,7 @@ class RetryChanges:
             or self.parameter_regime_changed
             or self.verification_backend_changed
             or self.human_override
+            or self.provider_recovered
         )
 
     def describe(self) -> str:
@@ -157,6 +162,8 @@ class RetryChanges:
             parts.append("verification backend changed")
         if self.human_override:
             parts.append("human override")
+        if self.provider_recovered:
+            parts.append("campaign resumed after a provider outage (endpoint may be back)")
         text = "; ".join(parts)
         if self.details:
             text = f"{text} ({'; '.join(self.details)})" if text else "; ".join(self.details)
@@ -205,6 +212,7 @@ def reactivation_conditions_for(
     evidence_count: int,
     verifier_backends: Sequence[str],
     accepted_theorem_refs: int,
+    last_resume_seq: int = 0,
 ) -> list[ReactivationCondition]:
     """The conditions under which a branch suspended for ``sig`` may run again.
 
@@ -239,6 +247,17 @@ def reactivation_conditions_for(
                 reference=sig.branch_id,
                 threshold=float(accepted_theorem_refs + 1),
                 observed_at_suspension=float(accepted_theorem_refs),
+            )
+        )
+    if category == "provider_unavailable":
+        # The endpoint, not the strategy, failed: the next ``campaign resume`` (a human
+        # saying "the provider is back") is the trigger — recorded as the resume seq
+        # observed now, so "resumed since" is checkable.
+        conditions.append(
+            ReactivationCondition(
+                kind="campaign_resumed",
+                reference=sig.branch_id,
+                observed_at_suspension=float(last_resume_seq),
             )
         )
     if not conditions:

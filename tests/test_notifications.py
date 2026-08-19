@@ -70,3 +70,20 @@ def test_notify_permission_required(monkeypatch) -> None:
     with patch("opentorus.notifications.send_notification", return_value=True) as send:
         assert notify_permission_required(config.ui, description="run pytest") is True
         send.assert_called_once()
+
+
+def test_send_notification_survives_a_backend_timeout(monkeypatch) -> None:
+    """A native backend that hits its subprocess timeout (a slow PowerShell on a Windows
+    CI runner did) is a courtesy that failed, never an exception out of the agent turn:
+    the bell fallback is tried and the call returns normally."""
+    import subprocess
+
+    def _slow(title: str, message: str) -> bool:
+        raise subprocess.TimeoutExpired(cmd=["powershell"], timeout=5)
+
+    with (
+        patch("opentorus.notifications._notify_native", side_effect=_slow),
+        patch("opentorus.notifications._notify_bell", return_value=False) as bell,
+    ):
+        assert send_notification("Title", "Body") is False
+        bell.assert_called_once_with("Title", "Body")

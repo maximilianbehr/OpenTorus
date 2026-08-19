@@ -101,12 +101,15 @@ def provider_outage(snap: CampaignSnapshot) -> str | None:
     finished work items all failed with ``provider_unavailable``; else ``None``.
 
     Only work items that reached a worker count (scheduled-but-refused retries do not
-    finish), and any success or differently-failed item breaks the streak.
+    finish), any success or differently-failed item breaks the streak, and only items
+    created after the last resume count — otherwise a resumed campaign re-paused on the
+    very failures that paused it, without trying the endpoint again (observed live).
     """
+    since = int(snap.counters.get("last_resume_seq", 0))
     finished = [
         wi
         for wi in sorted(snap.work_items.values(), key=lambda w: w.created_seq)
-        if wi.status.value in ("completed", "failed")
+        if wi.status.value in ("completed", "failed") and wi.created_seq > since
     ]
     tail = finished[-PROVIDER_OUTAGE_STREAK:]
     if len(tail) < PROVIDER_OUTAGE_STREAK:

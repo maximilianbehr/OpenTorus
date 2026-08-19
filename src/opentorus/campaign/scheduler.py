@@ -393,7 +393,8 @@ def reactivation_due(
     compare the derived counts with their thresholds; ``branch_completed`` looks the
     referenced branch up; ``obligation_closed`` checks the named obligation;
     ``assumption_changed`` compares the branch's assumption context with the recorded
-    one; ``human_override`` is never satisfied automatically.
+    one; ``campaign_resumed`` (provider outages) fires once the campaign has been
+    resumed after the suspension; ``human_override`` is never satisfied automatically.
     """
     for cond in branch.reactivation_conditions:
         if cond.kind == "verification_backend_changed":
@@ -419,6 +420,10 @@ def reactivation_due(
         elif cond.kind == "assumption_changed":
             recorded = cond.reference or ""
             if "|".join(sorted(branch.assumption_context)) != recorded:
+                return cond
+        elif cond.kind == "campaign_resumed":
+            resumed_at = int(snapshot.counters.get("last_resume_seq", 0))
+            if resumed_at > int(cond.observed_at_suspension or 0):
                 return cond
         # human_override: only a human decision reactivates; nothing to evaluate here.
     return None

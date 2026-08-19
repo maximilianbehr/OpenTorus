@@ -490,6 +490,10 @@ def _apply_campaign_resumed(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseMod
         return
     s.status = CampaignStatus.running
     s.pause_reason = None
+    # A resume is a fresh start for streak-based judgements (the provider-outage
+    # breaker): failures before it belong to the paused episode. Kept in ``counters`` so
+    # older snapshots (without the key) keep validating and replay reproduces it.
+    s.counters["last_resume_seq"] = e.seq
 
 
 def _apply_campaign_stopped(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:

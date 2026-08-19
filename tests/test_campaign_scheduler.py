@@ -408,3 +408,46 @@ def test_budget_exhaustion_is_a_clean_pause_and_resume_completes(tmp_path: Path)
     final = open_campaign(ot, record.id).load().snapshot
     assert final.status is CampaignStatus.completed
     assert "budget exhausted" in (final.completion_reason or "")
+
+
+def test_a_provider_outage_suspension_is_reactivated_by_the_next_resume_only() -> None:
+    """``provider_unavailable`` is an infrastructure failure: the recorded condition is
+    "the campaign was resumed after this suspension" — the human's signal that the
+    endpoint is back. Nothing else (evidence, backends) reactivates it, and a resume
+    that happened *before* the suspension does not count."""
+    from opentorus.campaign.failures import (
+        RetryChanges,
+        build_failure_signature,
+        reactivation_conditions_for,
+        retry_verdict,
+    )
+
+    snap = _snapshot()
+    snap.counters["last_resume_seq"] = 40
+    e = _branch("BRANCH-0001", BranchKind.proof, RootRelation.equivalent)
+    sig = build_failure_signature(
+        role=WorkerRole.prover,
+        strategy_class="proof",
+        tool_or_solver="provider",
+        error_category="provider_unavailable",
+        counterargument="ProviderError: connection refused",
+        branch_id=e.branch_id,
+        work_item_id="WI-0001",
+    )
+    sig.signature_id = "FSIG-0001"
+    sig.last_seq = 41
+    conds = reactivation_conditions_for(
+        sig, evidence_count=0, verifier_backends=(), accepted_theorem_refs=0, last_resume_seq=40
+    )
+    assert [c.kind for c in conds] == ["campaign_resumed"]
+    e.status = BranchStatus.suspended
+    e.reactivation_conditions = conds
+    snap.branches = {e.branch_id: e}
+    snap.failure_signatures = {sig.signature_id: sig}
+    richer = DossierFacts(evidence_count=9, verifier_backends=("lean4",))
+    assert reactivation_due(e, snap, richer) is None
+    assert retry_verdict(sig.key, snap, RetryChanges()).allowed is False
+    snap.counters["last_resume_seq"] = 50  # a resume after the outage
+    assert reactivation_due(e, snap, DossierFacts()).kind == "campaign_resumed"  # type: ignore[union-attr]
+    verdict = retry_verdict(sig.key, snap, RetryChanges(provider_recovered=True))
+    assert verdict.allowed and "provider outage" in verdict.why_different

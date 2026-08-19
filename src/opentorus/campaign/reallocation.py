@@ -130,6 +130,9 @@ def retry_changes(
     backend_changed = bool(sig.verifier_backends) and sorted(sig.verifier_backends) != backends_now
     if not sig.verifier_backends and str(sig.error_category) == "tool_unavailable":
         backend_changed = bool(formal_backends(config))
+    provider_recovered = str(sig.error_category) == "provider_unavailable" and since < int(
+        snap.counters.get("last_resume_seq", 0)
+    )
     details: list[str] = []
     if backend_changed:
         details.append(f"backends now: {', '.join(backends_now) or 'none'}")
@@ -145,6 +148,7 @@ def retry_changes(
         parameter_regime_changed=False,
         verification_backend_changed=backend_changed,
         human_override=False,
+        provider_recovered=provider_recovered,
         details=tuple(details),
     )
 
@@ -165,6 +169,7 @@ def suspend(
             evidence_count=facts.evidence_count,
             verifier_backends=facts.verifier_backends,
             accepted_theorem_refs=facts.accepted_theorem_ref_count,
+            last_resume_seq=int(run.snap.counters.get("last_resume_seq", 0)),
         )
         if sig is not None
         else []

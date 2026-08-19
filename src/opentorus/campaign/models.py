@@ -185,6 +185,7 @@ ReactivationKind = Literal[
     "verification_backend_changed",
     "human_override",
     "branch_completed",
+    "campaign_resumed",
 ]
 BudgetScope = Literal[
     "campaign", "branch", "work_item", "model_invocation", "tool_execution", "experiment"

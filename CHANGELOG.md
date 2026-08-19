@@ -213,6 +213,18 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   retry and the branch is suspended; three consecutive provider failures pause the whole
   campaign with a `PROVIDER_UNAVAILABLE` reason, resumable once the endpoint is back. A
   resumed real campaign had burned fifty work items in ten minutes against a dead socket.
+  And a resume is a fresh start for that judgement: the reducer records the resume seq
+  (`counters.last_resume_seq`), the outage streak counts only work items created after
+  it, the retry gate allows one identical attempt of a `provider_unavailable` signature
+  recorded before it (`provider_recovered`), and a branch suspended for a provider
+  outage carries a `campaign_resumed` reactivation condition — the human's `campaign
+  resume` is the signal that the endpoint is back. The first live resume had re-paused
+  on the very three failures that paused it, and a mock resume with a working registry
+  suspended every branch and completed the campaign without trying once.
+- **A desktop notification that times out is a courtesy that failed, not an error.**
+  `send_notification` now swallows `subprocess.TimeoutExpired` (a slow PowerShell toast
+  on a Windows CI runner escaped and failed an unrelated agent-loop test) along with the
+  `OSError`s it already caught.
 - **A container-backed experiment that outruns its timeout is stopped, not orphaned.**
   A timeout (or a Ctrl-C) used to kill only the `docker run`/`podman run` client; the
   container kept running — twelve orphaned experiment containers were still burning CPU
