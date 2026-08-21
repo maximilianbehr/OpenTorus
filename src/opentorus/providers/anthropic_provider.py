@@ -8,6 +8,7 @@ rather than OpenAI-style tool messages, so it has its own message conversion.
 from __future__ import annotations
 
 import os
+from types import ModuleType
 
 from opentorus.agent.session import SessionMessage
 from opentorus.config import Config
@@ -25,11 +26,24 @@ from opentorus.providers.base import (
 _DEFAULT_MAX_TOKENS = 4096
 
 
+def _require_anthropic_sdk() -> ModuleType:
+    """Return the ``anthropic`` module, or raise the actionable install error."""
+    try:
+        import anthropic
+    except ImportError as exc:
+        raise ProviderError(
+            "The 'anthropic' package is not installed. Install it with: pip install anthropic"
+        ) from exc
+    return anthropic
+
+
 class AnthropicProvider(BaseProvider):
     name = "anthropic"
 
     def __init__(self, config: Config) -> None:
         self.config = config
+        # Checked at construction, not at the first call — see OpenAIProvider.
+        _require_anthropic_sdk()
 
     def generate(
         self, messages: list[SessionMessage], tools: list[dict] | None = None
@@ -39,12 +53,7 @@ class AnthropicProvider(BaseProvider):
                 "ANTHROPIC_API_KEY is not set. Put it in a .env file in your project "
                 "(ANTHROPIC_API_KEY=sk-ant-…) or export it to use the Anthropic provider."
             )
-        try:
-            import anthropic
-        except ImportError as exc:
-            raise ProviderError(
-                "The 'anthropic' package is not installed. Install it with: pip install anthropic"
-            ) from exc
+        anthropic = _require_anthropic_sdk()
 
         system, convo = to_anthropic_messages(messages)
         kwargs: dict = {

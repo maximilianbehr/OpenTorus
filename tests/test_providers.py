@@ -24,10 +24,21 @@ def test_get_provider_unknown_raises() -> None:
         get_provider(config)
 
 
-def test_get_provider_real_lazy_without_key_raises() -> None:
+def test_get_provider_real_lazy_without_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+
+    # Construction now checks that the optional SDK is importable, so stub it:
+    # the point of this test is the *key*, and it must hold whether or not the
+    # real package is installed in the environment running the suite.
+    stub = types.ModuleType("openai")
+    stub.OpenAI = object  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", stub)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
     config = set_dotted(default_config(), "model.provider", "openai")
     provider = get_provider(config)  # construction must not require a key
-    with pytest.raises(ProviderError):
+    with pytest.raises(ProviderError, match="OPENAI_API_KEY"):
         provider.generate([])
 
 
@@ -67,3 +78,20 @@ def test_repl_context_and_model_show(tmp_path: Path) -> None:
     assert any("available tools" in m for m in ctx.messages)
     model = dispatch("/model", tmp_path)
     assert any("provider" in m for m in model.messages)
+
+
+def test_get_provider_openai_reports_a_missing_sdk_at_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The optional SDK is checked when the provider is built, not one step in.
+
+    Without it, a run initialised its workspace, fetched papers and built a
+    container before dying inside the first agent step — the whole session's
+    setup was the price of finding out.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "openai", None)
+    config = set_dotted(default_config(), "model.provider", "openai")
+    with pytest.raises(ProviderError, match="pip install openai"):
+        get_provider(config)
