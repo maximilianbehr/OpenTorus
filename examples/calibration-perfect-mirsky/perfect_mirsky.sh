@@ -100,7 +100,12 @@ opentorus problem list
 # mandatory parsed-papers gate is unattainable and would block the direct
 # counterexample search — the first real run confirmed exactly that (the
 # draft-phase no-progress guard ended it with zero parsed papers).
-opentorus --verbose prove "${TARGET}" --disprove
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --disprove || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -112,3 +117,5 @@ echo "Done. See .opentorus/problems/${TARGET}/report.md"
 echo "Calibration check: an explicit 5x5 doubly stochastic counterexample, its eigenvalue"
 echo "certified outside the Perfect-Mirsky region (COUNTEREXAMPLE_VERIFIED), and an honest"
 echo "note that the exact region Theta_5 remains unknown."
+
+exit "${PROVE_RC}"

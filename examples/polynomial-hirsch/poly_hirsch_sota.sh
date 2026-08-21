@@ -112,12 +112,19 @@ opentorus problem list
 # report; it asserts no resolution. Reports cite only local PAPER-* artifacts, and
 # missing bibliographic metadata is marked missing, never invented. --min-papers
 # gates report building on gathering at least N local papers first.
-opentorus --verbose prove "${TARGET}" --min-papers 10
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 10 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
-opentorus problem report "${TARGET}" --lint            # honesty linter flags overclaiming || true   # advisory: warnings are findings to read, not a reason to skip the verdict
+opentorus problem report "${TARGET}" --lint || true   # advisory: warnings are findings to read, not a reason to skip the verdict
 opentorus problem export "${TARGET}" --pdf
 
 echo
 echo "Done. See .opentorus/problems/${TARGET}/report.md"
+
+exit "${PROVE_RC}"

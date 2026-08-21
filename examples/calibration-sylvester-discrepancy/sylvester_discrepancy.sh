@@ -115,7 +115,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Refutation run ------------------------------------------------------
-opentorus --verbose prove "${TARGET}" --disprove --min-papers 2
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --disprove --min-papers 2 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -128,3 +133,5 @@ echo "Calibration check: an explicit x in {+-1}^512 with ||H_9 x||_inf = 28 < 32
 echo "certified by an exact integer Walsh-Hadamard transform (COUNTEREXAMPLE_VERIFIED);"
 echo "the report states the conjecture holds for k = 1,3,5,7 and fails for all odd k >= 9,"
 echo "keeps disc(H_9) in {24,26,28} open, and leaves Conjecture 12 open."
+
+exit "${PROVE_RC}"

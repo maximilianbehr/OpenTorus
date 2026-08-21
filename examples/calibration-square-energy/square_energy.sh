@@ -123,7 +123,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Survey + certified numerics ------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 4
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 4 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -136,3 +141,5 @@ echo "Calibration check: part (1) labelled claimed/under review (arXiv:2607.1803
 echo "with the pre-2026 3n/4 theorem layer kept separate; parts (2)-(4) labelled refuted with"
 echo "the Godsil S+ decrease and the 5-vertex S- non-unimodality reproduced EXACTLY and"
 echo "recorded as verified counterexamples to the auxiliary claims."
+
+exit "${PROVE_RC}"

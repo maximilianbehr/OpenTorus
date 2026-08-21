@@ -101,7 +101,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Survey + numerics ---------------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 3
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 3 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -114,3 +119,5 @@ echo "Calibration check: the report must surface the 2026-08-10 preprint (arXiv:
 echo "and label it claimed/under review, keep the 2023 constant-factor theorems and the"
 echo "EJP 2025 approximate-sharp theorem as the established layer, and keep SDP experiments"
 echo "at n ~ d^2/4 support-only (single-instance certificates aside)."
+
+exit "${PROVE_RC}"

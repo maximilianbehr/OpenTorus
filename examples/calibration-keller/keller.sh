@@ -99,7 +99,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Survey + verification run --------------------------------------------
-opentorus --verbose prove "${TARGET}" --disprove --min-papers 3
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --disprove --min-papers 3 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -112,3 +117,5 @@ echo "Calibration check: per-dimension status map (true n <= 7: Perron + certifi
 echo "false n >= 8: Mackey 256-clique, Lagarias-Shor n >= 10), the 256-clique verified"
 echo "pairwise as an exact recorded check (COUNTEREXAMPLE_VERIFIED for the n = 8"
 echo "instance), and no unqualified 'true'/'false' anywhere."
+
+exit "${PROVE_RC}"
