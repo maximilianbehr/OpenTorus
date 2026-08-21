@@ -85,6 +85,16 @@ STATIC_CAPABILITIES: dict[str, frozenset[ProviderCapability]] = {
         }
     ),
     "ollama": frozenset({ProviderCapability.streaming, ProviderCapability.local_only}),
+    # la Plateforme speaks OpenAI's wire format; the models it routes to differ in what
+    # they can do, so only what every one of them offers is declared statically here.
+    # A model with more (vision, a 1M window) is reached through a profile's own
+    # `capabilities` or the cached probe, which is what those two mechanisms are for.
+    "mistral": frozenset(
+        {
+            ProviderCapability.tool_calling,
+            ProviderCapability.structured_output,
+        }
+    ),
 }
 
 # Environment variable that must be set for a provider kind to work (names only —
@@ -92,6 +102,7 @@ STATIC_CAPABILITIES: dict[str, frozenset[ProviderCapability]] = {
 CREDENTIAL_ENV_VARS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
 }
 
 

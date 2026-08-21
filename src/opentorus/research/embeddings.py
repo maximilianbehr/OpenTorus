@@ -311,8 +311,11 @@ def _attempt_order(config: Config, backend: EmbeddingsBackend) -> list[str]:
         return ["local", "openai", "ollama"]
     if provider == "ollama":
         return ["ollama", "local"]
-    if provider == "anthropic":
-        # Anthropic has no public embeddings API; local ST or Ollama sidecar.
+    if provider in ("anthropic", "mistral"):
+        # Anthropic has no public embeddings API. Mistral has one, but it is a separate
+        # model behind the same key and this resolver only knows the openai/ollama/local
+        # backends — so both take local ST first, Ollama sidecar second, rather than
+        # opening with an Ollama probe that is almost never what is running.
         return ["local", "ollama"]
     # mock and others
     return ["ollama", "local"]

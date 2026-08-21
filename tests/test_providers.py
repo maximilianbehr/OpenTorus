@@ -107,6 +107,8 @@ def _stub_sdk(monkeypatch, *, raises=None, captured=None):  # noqa: ANN001, ANN2
 
     class FakeCompletions:
         def create(self, **kwargs):  # noqa: ANN003, ANN201
+            if captured is not None:
+                captured["request"] = kwargs
             if raises is not None:
                 raise raises
             return types.SimpleNamespace(
@@ -177,6 +179,93 @@ def test_an_unrecognised_sdk_failure_still_becomes_a_provider_error(
     config = set_dotted(default_config(), "model.provider", "openai")
     with pytest.raises(ProviderError, match="ValueError"):
         get_provider(config).generate([])
+
+
+def test_yaml_bare_off_is_accepted_for_literal_fields() -> None:
+    """YAML 1.1 reads a bare ``off`` as False; a config written the way the shipped
+    comment documents it must not take the whole workspace config down."""
+    import yaml
+
+    from opentorus.config import Config
+
+    parsed = yaml.safe_load("dlp_pii: off\nembeddings_backend: off\n")
+    assert parsed["dlp_pii"] is False, "this is the YAML behaviour being defended against"
+
+    config = default_config()
+    config = set_dotted(config, "governance.dlp_pii", "off")
+    assert config.governance.dlp_pii == "off"
+
+    # …and straight through model validation, which is the path a config file takes.
+    revalidated = Config.model_validate(
+        {
+            **config.model_dump(mode="python"),
+            "governance": {**config.governance.model_dump(mode="python"), "dlp_pii": False},
+        }
+    )
+    assert revalidated.governance.dlp_pii == "off"
+
+
+def test_an_unknown_literal_value_is_still_rejected() -> None:
+    """Coercing False must not turn the field into a free-text one."""
+    with pytest.raises(ConfigError):
+        set_dotted(default_config(), "governance.dlp_pii", "sometimes")
+
+
+def test_mistral_provider_targets_la_plateforme(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`provider: mistral` reaches Mistral with MISTRAL_API_KEY and no hand-set base_url."""
+    from opentorus.providers.mistral_provider import API_BASE
+
+    captured: dict = {}
+    _stub_sdk(monkeypatch, captured=captured)
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-key-not-a-real-secret")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    config = set_dotted(default_config(), "model.provider", "mistral")
+    config = set_dotted(config, "model.name", "zai-glm-5-2")
+    response = get_provider(config).generate([])
+
+    assert captured["client"]["base_url"] == API_BASE
+    assert captured["client"]["api_key"] == "test-key-not-a-real-secret"
+    assert captured["request"]["model"] == "zai-glm-5-2"
+    assert response.content == "ok"
+
+
+def test_mistral_base_url_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit base_url still wins — that is how a proxy or region is reached."""
+    captured: dict = {}
+    _stub_sdk(monkeypatch, captured=captured)
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-key-not-a-real-secret")
+
+    config = set_dotted(default_config(), "model.provider", "mistral")
+    config = set_dotted(config, "model.base_url", "https://proxy.internal/v1")
+    get_provider(config).generate([])
+
+    assert captured["client"]["base_url"] == "https://proxy.internal/v1"
+
+
+def test_mistral_without_key_names_its_own_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The error must name MISTRAL_API_KEY — not the inherited OPENAI_API_KEY."""
+    import sys
+    import types
+
+    stub = types.ModuleType("openai")
+    stub.OpenAI = object  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", stub)
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    # A stray OpenAI key must not make the Mistral provider look configured.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-be-used")
+
+    config = set_dotted(default_config(), "model.provider", "mistral")
+    provider = get_provider(config)
+    with pytest.raises(ProviderError, match="MISTRAL_API_KEY"):
+        provider.generate([])
+
+
+def test_mistral_api_key_is_scrubbed_from_provider_context() -> None:
+    """The key must never ride along in context — it is in the credential list."""
+    from opentorus.privacy import CREDENTIAL_ENV_NAMES
+
+    assert "MISTRAL_API_KEY" in CREDENTIAL_ENV_NAMES
 
 
 def test_yaml_bare_off_is_accepted_for_literal_fields() -> None:
