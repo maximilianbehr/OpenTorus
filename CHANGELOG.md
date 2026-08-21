@@ -6,6 +6,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **arXiv papers are stored with their real bibliographic metadata.** `paper_fetch`
+  had a crossref lookup for a DOI but no counterpart for an arXiv id, so it
+  synthesised `title=f"arXiv:{id}"` and went straight to the PDF: every arXiv paper
+  landed carrying its own id as its title, with `year`, `authors` and `abstract` left
+  null, while a DOI fetched by the same tool one branch over got all of them. Found
+  by reading the paper artifacts of a targeted run — 18 of 18 arXiv papers were
+  affected, and literature is the gate in front of `proof_write`. A title field
+  holding a string that reads as a title but is really the id is the failure the
+  honesty rules exist to prevent: unlike an honest blank, nothing downstream can tell
+  it is missing. `ArxivSource` gained `lookup_id()` (the arXiv API's `id_list`
+  query, mirroring `CrossrefSource.lookup_doi`), and the fallback when it finds
+  nothing is now `"(untitled)"` — what every other connector already stores for a
+  title it does not have.
+- **A placeholder title no longer sticks.** `acquire_paper` upgrades a cached record
+  via `paper.title or record.title`, and a placeholder is truthy, so an affected
+  paper could never be repaired. Worse, a paper whose full text was already cached
+  returned early and never reached that path at all — the download it skips is
+  exactly the evidence that the paper is already there. Placeholder titles are now
+  recognised as absent and refilled from a fresher record on both paths, so existing
+  workspaces repair themselves on the next fetch. A title that is already known is
+  never overwritten.
+
+### Changed
+
+- `paper fetch` on an arXiv identifier now contacts `export.arxiv.org` for metadata
+  in addition to `arxiv.org` for the PDF. In `ask` mode that is a second host to
+  consent to; `lit_search` already requests the same host. Declining, or an
+  unreachable metadata API, degrades to a fetch without metadata rather than failing
+  — the PDF is the point, the metadata is a bonus.
+
 ## [0.0.16] — 2026-08-21
 
 A load test against a self-hosted vLLM endpoint became a bug hunt. Across 167 example
