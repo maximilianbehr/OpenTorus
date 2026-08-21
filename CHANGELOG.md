@@ -6,6 +6,47 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.17] — 2026-08-21
+
+The day OpenTorus was pointed at a paid endpoint for the first time.
+
+Every release before this one was validated against local models — 185 example runs
+against vLLM and Ollama, all of them clean. That was not thorough testing of a narrow
+kind; it was thorough testing of a *lopsided* kind. Five of the eight defects below sit
+in code that a local endpoint cannot reach: there is no DLP scan for a loopback host, no
+price to look up, no rate limit, no strict request validator, and no SDK whose signature
+has moved on. The first cloud run found three of them inside two hours.
+
+The flagship workflow was the casualty. OpenTorus fetches papers, reads them and reasons
+about them — and academic PDFs carry author email addresses, which the pre-egress DLP
+scan blocked outright. The run reported `exit 0` having done nothing, and the error
+advised disabling `governance.dlp`, i.e. giving up all secret protection to get past a
+correspondence address. Secrets still fail closed; PII is redacted now, and the send is
+blocked outright if anything survives the rewrite.
+
+Two defects came from putting a real budget on a real model. `cost_budget_usd` sat at
+`$0 / $50` for an entire run because the model was not in the price table, and a
+configured spend cap that cannot move is worse than none. And a rate limit killed a run
+after sixteen minutes and four euros of work with a forty-line traceback, because the
+SDK's own two retries were all a multi-hour agent run had.
+
+Two more came from the epistemic layer being exercised for real. A formal check could
+never run longer than 120 seconds — no schema field to ask for more, no config key to
+set it — which capped the one path the invariants say can promote a claim, while
+`exp_run` in the same run was allowed 10,800. And the message reporting an inconclusive
+check named the configured limit as though it were elapsed time, so eight submissions
+that had failed to parse in milliseconds all read as timeouts.
+
+Three of the eight are self-inflicted, found by reviewing the day's own changes: a
+redaction that reported PII as removed while still putting it on the wire, a `dlp_pii:
+off` written exactly as the shipped comment documented it that YAML turns into `false`
+and that took the whole workspace config down, and the timeout message above. An
+adversarial review of the DLP change threw out 31 of 37 candidate findings and kept six —
+all six in that change.
+
+Nothing here is a new capability. It is the difference between a tool that has been
+tested and a tool that has been used.
+
 ### Added
 
 - **Mistral provider** (`model.provider: mistral`), reading `MISTRAL_API_KEY` and
@@ -27,6 +68,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `capabilities` or the cached probe.
 
 ### Fixed
+
+- **An OpenAI-compatible endpoint is not OpenAI: a rejected request field is dropped
+  and remembered.** Mistral answers `422 {'type': 'extra_forbidden', 'loc': ['body',
+  'seed']}`, so any run with `model.seed` set died on its first call. The rejected field
+  is now read out of the error and the call retried once without it — the shape
+  `providers/tool_support.py` already uses for `tool_choice="required"` — and remembered
+  per endpoint, because re-sending it every turn doubled both the request count and the
+  bill (a live run logged 14 rejections in its first 28 requests). Only optional sampling
+  knobs are droppable; a rejection of `messages`, `model` or `tools` still raises, since
+  silently retrying without those would ask a different question.
+- **The Anthropic provider works with the current SDK again.** anthropic 1.0 removed
+  `temperature` from `Messages.create`, and this provider passed it unconditionally, so
+  every single call raised `TypeError` before a request left the machine — unusable, not
+  merely degraded. The parameter did not move to `output_config` either. Arguments are
+  now filtered against the *installed* signature rather than a table of which SDK version
+  takes what, which holds in both directions. SDK exceptions are translated into
+  `ProviderError` the way the OpenAI provider already did, so a failure names the knob
+  that fixes it instead of arriving as a traceback.
+- **Anthropic tool pairing survives compaction.** Anthropic rejects the whole request
+  with HTTP 400 when a `tool_result` has no `tool_use` of the same id in the message
+  before it — exactly what compaction produces when the window starts mid-exchange. The
+  OpenAI converter has carried this repair for a while; its counterpart now drops an
+  orphan result and closes an unanswered call with a placeholder.
+- **An inconclusive verification no longer implies a timeout.** The message introduced
+  with the verifier-timeout fix printed `after {seconds}s` unconditionally, where
+  `seconds` is the configured *limit*, not elapsed time — so a certificate that failed to
+  parse in milliseconds read as `INCONCLUSIVE after 600s`. Eight of nine submissions in
+  one run looked like timeouts when none was, which sends the model (and the reader)
+  hunting for compute instead of fixing the source. The limit is named only when the
+  checker actually hit it.
 
 - **Formal verification is no longer capped at 120 seconds with no way to raise it.**
   Every backend took `timeout: int = 120` in its constructor and `registry.py` passed
