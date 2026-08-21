@@ -616,8 +616,17 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   `governance.dlp_pii` (`redact` | `block` | `off`). The redaction rewrites the whole
   outbound payload, message text *and* `metadata["tool_calls"][…]["args"]` — the latter
   is serialised into what `to_openai_messages` sends, so redacting only `content` would
-  have reported the PII as removed while still putting it on the wire. docs/privacy.md,
-  docs/safety.md and README no longer promise fail-closed on PII.
+  have reported the PII as removed while still putting it on the wire. The allow
+  decision is re-earned *after* the rewrite: the scan reads `json.dumps(...)`, which
+  escapes non-ASCII, so `hoﬀmann@…` (a U+FB00 ligature — ordinary pdftotext output for
+  a TeX paper) is detected through its `\uXXXX` escape while `\b[A-Za-z0-9._%+-]+@`
+  cannot match the raw text, and the rewrite is a no-op; whatever survives now blocks.
+  A bare `dlp_pii: off` — the way the shipped comment documented it — reaches pydantic
+  as YAML's boolean `False` and used to fail validation, taking the whole workspace
+  config with it; `False` is now mapped back (`embeddings_backend` had the same latent
+  trap). docs/privacy.md, docs/safety.md and README no longer promise fail-closed on
+  PII, and no longer claim the redaction keeps PII out of `session.jsonl` — a message
+  is logged before the turn carrying it is screened, so it cannot.
 
 A stress run of twenty-three campaigns against a local vLLM, audited workspace by
 workspace, produced these. Each was reproduced in the code before it was changed.

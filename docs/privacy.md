@@ -46,7 +46,9 @@ is sent — and the privacy filter applies:
   workflow for every cloud provider, and the only way out was disabling DLP entirely,
   which gave up secret protection as well. The redaction rewrites the outbound payload
   in full — message text *and* tool-call arguments — so the address never reaches the
-  wire, nor the session log.
+  wire, and the send is blocked outright if any PII survives the rewrite. It is not a
+  disk control: a message is appended to `session.jsonl` before the turn carrying it is
+  screened, so the workspace log still holds the original text.
 - With model routing, the DLP scan (and the cost estimate) follow the provider
   that is **leased** for the task, not the workspace default: a cloud profile
   routed for one task class under a local default is screened and priced as a

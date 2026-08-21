@@ -540,3 +540,29 @@ def test_a_local_provider_is_still_exempt(tmp_path: Path) -> None:
     msgs = [SessionMessage(role="user", content="mail ada@uni-example.ac.uk")]
     assert runner.screen_outbound(msgs) is None
     assert "ada@uni-example.ac.uk" in msgs[0].content
+
+
+def test_pii_the_redactor_cannot_remove_is_blocked_not_sent(tmp_path: Path) -> None:
+    """A detected address that survives the rewrite must stop the send.
+
+    The scan reads ``json.dumps(...)``, which escapes non-ASCII, so an address with a
+    ligature in its local part — ``hoﬀmann@…``, ordinary pdftotext output for a TeX
+    paper — is detected through its \\uXXXX escape. ``\\b[A-Za-z0-9._%+-]+@`` then
+    cannot match the raw text, because it may not start inside a word, and the rewrite
+    is a no-op. Deciding to allow *before* the rewrite would send it unredacted while
+    reporting it as removed.
+    """
+    runner = _cloud_runner(tmp_path)
+    msgs = [SessionMessage(role="user", content="Corresponding author: ho\ufb00mann@uni.de")]
+    decision = runner.screen_outbound(msgs)
+    assert decision is not None, "an unredactable address must not be waved through"
+    assert "could not remove" in decision.message
+    assert "ho\ufb00mann@uni.de" in msgs[0].content, "blocked, so nothing was rewritten"
+
+
+def test_an_ordinary_address_is_still_redacted_and_allowed(tmp_path: Path) -> None:
+    """The re-scan must not turn the common case back into a block."""
+    runner = _cloud_runner(tmp_path)
+    msgs = [SessionMessage(role="user", content="Correspondence: ada@uni-example.ac.uk")]
+    assert runner.screen_outbound(msgs) is None
+    assert "[redacted: email]" in msgs[0].content

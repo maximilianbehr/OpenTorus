@@ -293,7 +293,8 @@ execution:
 governance:
   # Pre-egress scan for secrets/PII before network sends (fails closed)
   dlp: true
-  # PII (email addresses) in an outbound payload: redact | block | off.
+  # PII (email addresses) in an outbound payload: redact | block | "off".
+  # Quote "off" — YAML reads a bare off as false (it is accepted either way).
   # Secrets (API keys, private keys) always block, whatever this says.
   dlp_pii: redact
   budgets:

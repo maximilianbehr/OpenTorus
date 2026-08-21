@@ -247,11 +247,7 @@ class TurnRunner:
         from opentorus.governance import redact_pii, scan_secrets, split_findings
 
         mode = getattr(self.config.governance, "dlp_pii", "redact")
-        try:
-            payload = json.dumps(messages, default=str)
-        except (TypeError, ValueError):
-            payload = str(messages)
-        secrets, pii = split_findings(scan_secrets(payload, scan_pii=mode != "off"))
+        secrets, pii = split_findings(scan_secrets(self._payload(messages), scan_pii=mode != "off"))
         if secrets or (pii and mode == "block"):
             kinds = ", ".join(sorted({f.kind for f in secrets + pii}))
             fix = (
@@ -266,7 +262,36 @@ class TurnRunner:
             )
         if pii and mode == "redact":
             self._redact_messages(messages, redact_pii)
+            # The allow decision above was taken BEFORE the rewrite, so it has to be
+            # re-earned: a scan that finds PII the redactor cannot remove would
+            # otherwise report it as redacted and send it anyway. That is real, not
+            # theoretical — the scan reads `json.dumps(...)`, which escapes non-ASCII,
+            # so `hoﬀmann@uni-example.de` (a U+FB00 ligature, ordinary pdftotext output
+            # for a TeX paper) is detected through its \uXXXX escape while
+            # `\b[A-Za-z0-9._%+-]+@` cannot match the raw text, because it may not start
+            # inside a word. Fail closed on whatever survives, whatever the cause.
+            residual = split_findings(scan_secrets(self._payload(messages)))[1]
+            if residual:
+                kinds = ", ".join(sorted({f.kind for f in residual}))
+                return PolicyDecision(
+                    action=PolicyAction.STOP,
+                    reason_code=ReasonCode.EGRESS_BLOCKED,
+                    message=(
+                        f"[stopped] Pre-egress DLP blocked the request: detected {kinds} "
+                        "that the redactor could not remove, so it was not sent. Remove "
+                        "it from the conversation, or set governance.dlp_pii=off to send "
+                        "it deliberately."
+                    ),
+                )
         return None
+
+    @staticmethod
+    def _payload(messages: list[SessionMessage]) -> str:
+        """What the DLP scan reads — the serialised turn, exactly as before."""
+        try:
+            return json.dumps(messages, default=str)
+        except (TypeError, ValueError):
+            return str(messages)
 
     @classmethod
     def _redact_messages(cls, messages: list[SessionMessage], redact) -> None:  # noqa: ANN001
@@ -276,8 +301,11 @@ class TurnRunner:
         ``metadata["tool_calls"][i]["args"]`` into the ``arguments`` field it sends, and
         the DLP scan reads ``json.dumps(messages)`` — so redacting only ``content``
         would report PII as removed while still putting it on the wire, which is worse
-        than the block it replaced. Every string in the message is rewritten, which also
-        keeps the PII out of the session log this message is appended to.
+        than the block it replaced. Every string in the message is rewritten.
+
+        This is about the wire, not about disk: a message is appended to session.jsonl
+        before the turn that carries it is screened, so the log already holds the raw
+        text and rewriting the outbound copy cannot retroactively clean it.
         """
         for message in messages:
             content = getattr(message, "content", None)
