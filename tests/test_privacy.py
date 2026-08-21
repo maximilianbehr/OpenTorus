@@ -108,3 +108,45 @@ def test_provider_context_notice_states_posture() -> None:
     notice = provider_context_notice(default_config(), ["status", "git_diff"])
     assert "excluded by default" in notice
     assert "status" in notice
+
+
+def test_known_credential_values_never_reach_the_provider() -> None:
+    """A secret that arrives without touching a sensitive path must still be scrubbed.
+
+    The flag-based filter only fires on messages someone marked `sensitive`, and
+    nothing in the codebase ever marks one — so a credential printed by
+    `git config --list`, matched by a grep, or echoed by a script went to the
+    provider verbatim. Matching the literal value of a credential this process holds
+    can only ever redact a real secret.
+    """
+    from opentorus.privacy import scrub_known_secrets
+
+    secret = "sk-proj-0123456789abcdefghij"
+    env = {"OPENAI_API_KEY": secret}
+    text = f"user.token={secret} in the config dump"
+    scrubbed = scrub_known_secrets(text, environ=env)
+    assert secret not in scrubbed
+    assert "[redacted: OPENAI_API_KEY]" in scrubbed
+
+
+def test_placeholder_keys_are_not_scrubbed() -> None:
+    """A local-vLLM setup uses `OPENAI_API_KEY=x`; scrubbing that would shred the text."""
+    from opentorus.privacy import scrub_known_secrets
+
+    text = "the matrix X has exactly x nonzero entries"
+    assert scrub_known_secrets(text, environ={"OPENAI_API_KEY": "x"}) == text
+
+
+def test_redact_for_provider_scrubs_secrets_even_when_sensitive_context_is_allowed() -> None:
+    """`allow_sensitive_context` opts into workspace content, not into leaking our key."""
+    import os
+    from unittest import mock
+
+    from opentorus.agent.session import SessionMessage
+    from opentorus.privacy import redact_for_provider
+
+    secret = "sk-ant-0123456789abcdefghij"
+    message = SessionMessage(role="tool", content=f"ANTHROPIC_API_KEY={secret}")
+    with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": secret}):
+        out = redact_for_provider([message], allow_sensitive=True)
+    assert secret not in out[0].content

@@ -38,7 +38,9 @@ def test_doctor_probe_times_out_instead_of_hanging(tmp_path: Path, monkeypatch) 
     # Provider SDKs default to multi-minute read timeouts; an accept-then-stall
     # endpoint must not hang the diagnostics command, and the timeout must not
     # swallow the remaining checks.
+    import sys
     import time
+    import types
 
     import opentorus.doctor as doctor_mod
     import opentorus.providers.tool_support as tool_support
@@ -47,6 +49,13 @@ def test_doctor_probe_times_out_instead_of_hanging(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(
         tool_support, "provider_supports_tool_calling", lambda *a, **k: time.sleep(5)
     )
+    # The provider now checks its SDK when it is built, so without this stub the run
+    # fails on the missing package instead of reaching the probe — and the test would
+    # otherwise mean something different depending on whether `openai` happens to be
+    # installed in the environment running it.
+    stub = types.ModuleType("openai")
+    stub.OpenAI = object  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", stub)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     init_workspace(tmp_path)
     ot = workspace_dir(tmp_path)

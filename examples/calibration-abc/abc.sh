@@ -104,7 +104,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Survey + exact numerics ----------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 3
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 3 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -117,3 +122,5 @@ echo "Calibration check: the report must label abc as a contested claimed proof"
 echo "(PRIMS-published, Scholze-Stix objection at Cor. 3.12, Joshi claims unendorsed,"
 echo "2026 Lean effort inconclusive), keep the unconditional theorem layer separate,"
 echo "and certify the record triple qualities exactly."
+
+exit "${PROVE_RC}"

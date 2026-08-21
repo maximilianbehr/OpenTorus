@@ -94,7 +94,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Survey + certified numerics ------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 3
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 3 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -108,3 +113,5 @@ echo "Discrete Analysis) with Polymath5 credited for the reduction, reproduce C=
 echo "(max length 11) with an UNSAT certificate at 12, find a length-1160"
 echo "discrepancy-2 sequence, and keep the C=3 exact maximum honestly open"
 echo "(127,645 is the multiplicative case, not the general one)."
+
+exit "${PROVE_RC}"

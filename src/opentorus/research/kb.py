@@ -21,12 +21,16 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from opentorus.atomicio import file_lock
 from opentorus.errors import OpenTorusError
 from opentorus.jsonl import append_jsonl, next_sequential_id, read_jsonl, rewrite_jsonl
+
+if TYPE_CHECKING:
+    from opentorus.research.papers import Paper
 
 KBEntryKind = Literal["paper", "note", "citation"]
 DEFAULT_STALENESS_DAYS = 90
@@ -112,6 +116,15 @@ def promote_paper(
         raise OpenTorusError(f"No paper with id '{paper_id}' in this workspace.")
 
     root = kb_root(kb_dir)
+    # The KB is shared by every workspace on the machine, so two projects promoting
+    # at the same moment is the *ordinary* case, not an edge case. Read, dedup, mint
+    # and append under one lock: otherwise both miss the duplicate check and both
+    # derive the same KB id from the same count.
+    with file_lock(_entries_path(root)):
+        return _promote_paper_locked(ot_dir, paper, root=root)
+
+
+def _promote_paper_locked(ot_dir: Path, paper: Paper, *, root: Path) -> tuple[KBEntry, bool]:
     entries = read_jsonl(_entries_path(root), KBEntry)
 
     text = paper.title or paper.source or ""
@@ -156,9 +169,16 @@ def promote_citations(ot_dir: Path, *, kb_dir: Path | None = None) -> list[KBEnt
     edge is deduplicated, so citation provenance is preserved without inventing
     links between works the KB does not hold.
     """
+    root = kb_root(kb_dir)
+    # Same shared-KB window: the citation ids come from a count over what was just
+    # read, and the dedup set is built from it too.
+    with file_lock(_entries_path(root)):
+        return _promote_citations_locked(ot_dir, root=root)
+
+
+def _promote_citations_locked(ot_dir: Path, *, root: Path) -> list[KBEntry]:
     from opentorus.research.graph import list_edges
 
-    root = kb_root(kb_dir)
     entries = read_jsonl(_entries_path(root), KBEntry)
     by_origin = {
         (e.origin_workspace, e.origin_id): e for e in entries if e.kind == "paper" and e.origin_id
@@ -237,13 +257,16 @@ def mark_checked(
     evidence in a workspace; here we only reset the staleness clock.
     """
     root = kb_root(kb_dir)
-    entries = read_jsonl(_entries_path(root), KBEntry)
-    updated: KBEntry | None = None
-    for entry in entries:
-        if entry.id == entry_id:
-            entry.last_checked = now or _utcnow()
-            updated = entry
-    if updated is None:
-        raise OpenTorusError(f"No KB entry with id '{entry_id}'.")
-    rewrite_jsonl(_entries_path(root), entries)
+    # Read-modify-write on the shared KB: without the lock a concurrent promote
+    # from another workspace is overwritten by this rewrite.
+    with file_lock(_entries_path(root)):
+        entries = read_jsonl(_entries_path(root), KBEntry)
+        updated: KBEntry | None = None
+        for entry in entries:
+            if entry.id == entry_id:
+                entry.last_checked = now or _utcnow()
+                updated = entry
+        if updated is None:
+            raise OpenTorusError(f"No KB entry with id '{entry_id}'.")
+        rewrite_jsonl(_entries_path(root), entries)
     return updated

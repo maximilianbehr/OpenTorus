@@ -134,12 +134,21 @@ ACCEPTED proof_submit does. The claim's status still changes only through the ga
 update after the formal artifact exists. Report exactly which identities are
 machine-checked and which (Laderman entries, if unfinished) are not.
 NOTES
-sed -i "s/__BACKEND__/${BACKEND}/g" notes.md
+# `sed -i` without a backup suffix is GNU-only: BSD/macOS sed reads the next word as
+# the suffix and then chokes on the filename ("extra characters at the end of n
+# command"), which killed this driver five seconds in. Write through a temp file so
+# the substitution is portable.
+sed "s/__BACKEND__/${BACKEND}/g" notes.md > notes.md.tmp && mv notes.md.tmp notes.md
 opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Verify formally ------------------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 2
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 2 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -150,3 +159,5 @@ echo
 echo "Done. See .opentorus/problems/${TARGET}/report.md"
 echo "Calibration check: at least one ACCEPTED ${BACKEND} proof_submit (PROOF-* with"
 echo "'validates' edge); rejected attempts preserved; numeric checks stay support-only."
+
+exit "${PROVE_RC}"

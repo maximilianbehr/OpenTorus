@@ -190,6 +190,16 @@ _DESTRUCTIVE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\b(drop|truncate)\s+table\b",
         r"\bmv\b",
         r"\btruncate\b",
+        # Deleting without spelling "rm". A stress probe ran all of these in
+        # trusted+autonomous with no confirmation at all, including `find / -delete`.
+        r"\bfind\b[^|]*\s-delete\b",
+        r"\bfind\b[^|]*\s-exec\s+(rm|unlink|shred)\b",
+        r"\bshred\b",
+        r"\bunlink\b",
+        r"\brmdir\b",
+        r"\bgit\s+stash\s+(clear|drop)\b",
+        r"\bgit\s+branch\s+-D\b",
+        r"\bgit\s+worktree\s+remove\b",
     )
 )
 
@@ -225,9 +235,19 @@ def is_destructive_command(command: str) -> bool:
     return any(pattern.search(command) for pattern in _DESTRUCTIVE_PATTERNS)
 
 
+# Shell syntax that lets a second command ride along on a harmless-looking one, or
+# sends its output into a file. Classifying on the first token alone let
+# ``ls && rm foo``, ``echo x > notes.md`` and ``ls | tee out.txt`` through as
+# "harmless inspection" — in review mode, which promises to be strictly read-only.
+# A harmless command is therefore *one* command, unchained and unredirected.
+_COMMAND_CHAINING_OR_REDIRECT = re.compile(r"[;&|<>`\n]|\$\(")
+
+
 def _is_harmless_command(command: str) -> bool:
     stripped = command.strip()
     if not stripped:
+        return False
+    if _COMMAND_CHAINING_OR_REDIRECT.search(stripped):
         return False
     first = stripped.split()[0]
     if first in _HARMLESS_FIRST_TOKENS:
@@ -247,6 +267,47 @@ def command_reads_sensitive_path(command: str) -> bool:
     if not tokens or tokens[0] not in _FILE_READERS:
         return False
     return any(not tok.startswith("-") and is_sensitive_path(tok) for tok in tokens[1:])
+
+
+# Commands that print the process environment — where the credentials live that the
+# sensitive-path guard exists to protect. ``cat .env`` was gated while ``env`` and
+# ``echo $OPENAI_API_KEY`` ran unguarded in trusted+autonomous, and their output goes
+# into the session and then to the configured provider. The guard has to cover the
+# contents, not just the filename.
+_ENV_DUMPERS = frozenset({"env", "printenv", "set", "export", "declare"})
+_ENV_EXPANSION = re.compile(
+    r"\$\{?(?:[A-Za-z_][A-Za-z0-9_]*_)?"
+    r"(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS|API_KEY)\b",
+    re.IGNORECASE,
+)
+_ENVIRON_ACCESS = re.compile(r"os\.environ|process\.env|getenv\s*\(", re.IGNORECASE)
+
+
+def command_exposes_environment(command: str) -> bool:
+    """True when ``command`` would print environment variables or a credential value.
+
+    Gated like a sensitive read: allowed, but only with explicit confirmation, in
+    every mode and style. ``env`` is a perfectly ordinary thing for a model to run
+    while debugging, and this workspace's own ``OPENAI_API_KEY`` is in that output.
+    """
+    stripped = command.strip()
+    if not stripped:
+        return False
+    if _ENV_EXPANSION.search(stripped) or _ENVIRON_ACCESS.search(stripped):
+        return True
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = stripped.split()
+    if not tokens:
+        return False
+    if tokens[0] == "printenv":
+        return True  # with or without a variable name, it prints a value
+    if tokens[0] in _ENV_DUMPERS:
+        # ``env FOO=bar cmd`` sets a variable and runs something else; ``env`` alone
+        # (or with only flags) dumps everything.
+        return all(tok.startswith("-") for tok in tokens[1:])
+    return False
 
 
 def is_sensitive_path(path: Path | str) -> bool:
@@ -297,7 +358,25 @@ def evaluate_command(
             risk_level="high",
         )
 
-    harmless = _is_harmless_command(command)
+    # Same guarantee, applied to the environment rather than the filesystem: the
+    # output of `env` or `echo $OPENAI_API_KEY` enters the session and is sent to the
+    # configured provider on the next turn.
+    if command_exposes_environment(command):
+        return PermissionDecision(
+            allowed=True,
+            reason=(
+                "Command prints environment variables, which hold credentials; "
+                "explicit confirmation required."
+            ),
+            requires_confirmation=True,
+            risk_level="high",
+        )
+
+    destructive = is_destructive_command(command)
+    # The harmless allowlist matches on prefixes, so ``git branch`` covered
+    # ``git branch -D main`` — deleting a branch was classified as inspection and ran
+    # unconfirmed, because this check used to come first. Destruction wins.
+    harmless = _is_harmless_command(command) and not destructive
 
     if review:
         if harmless:
@@ -329,8 +408,6 @@ def evaluate_command(
             requires_confirmation=False,
             risk_level="high",
         )
-
-    destructive = is_destructive_command(command)
 
     if mode == "trusted":
         # Autonomous only takes effect in trusted mode.

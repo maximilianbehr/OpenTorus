@@ -24,6 +24,8 @@ inspectable and Git-friendly. There is no database. A dossier lives under
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TypeVar
 
@@ -435,6 +437,22 @@ def append_claim(ot_dir: Path, claim: ClaimRecord) -> ClaimRecord:
 
 def rewrite_claims(ot_dir: Path, problem_id: str, claims: list[ClaimRecord]) -> None:
     rewrite_jsonl(_claims_path(ot_dir, problem_id), claims)
+
+
+@contextmanager
+def claims_lock(ot_dir: Path, problem_id: str) -> Iterator[None]:
+    """Hold the dossier's claim ledger across a read-modify-write.
+
+    Every status transition reads all claims, edits one, and rewrites the file.
+    Two processes doing that — a campaign worker and someone running
+    ``opentorus problem claim`` in another terminal — would each write back their
+    own view, and the loser's transition would vanish with no error. Not
+    re-entrant: never nest it.
+    """
+    from opentorus.atomicio import file_lock
+
+    with file_lock(_claims_path(ot_dir, problem_id)):
+        yield
 
 
 def all_dossier_claim_ids(ot_dir: Path) -> list[str]:

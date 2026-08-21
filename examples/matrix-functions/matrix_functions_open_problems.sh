@@ -72,13 +72,20 @@ opentorus problem list
 # The prove loop reads the dossier + local papers, may write/run experiments via
 # exp_run, and records claims/evidence/attempts. Numerical evidence only *supports*
 # a claim; a verified claim requires a verification artifact.
-opentorus --verbose prove "${TARGET}"
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
-opentorus problem report "${TARGET}" --lint            # honesty linter flags overclaiming || true   # advisory: warnings are findings to read, not a reason to skip the verdict
+opentorus problem report "${TARGET}" --lint || true   # advisory: warnings are findings to read, not a reason to skip the verdict
 opentorus problem export "${TARGET}" --pdf
 
 echo
 echo "Done. See .opentorus/problems/${TARGET}/report.md"
 echo "Attack another problem with, e.g.: ./matrix_functions_open_problems.sh PROBLEM-0002"
+
+exit "${PROVE_RC}"

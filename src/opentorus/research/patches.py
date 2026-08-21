@@ -16,6 +16,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from opentorus.atomicio import file_lock
 from opentorus.errors import OpenTorusError
 from opentorus.jsonl import append_jsonl, next_sequential_id, read_jsonl, rewrite_jsonl
 from opentorus.paths import resolve_workspace_path
@@ -214,31 +215,36 @@ def _require(ot_dir: Path, patch_id: str, expected: set[str]) -> tuple[list[Patc
 
 def apply_patch_artifact(root: Path, ot_dir: Path, patch_id: str) -> PatchArtifact:
     """Apply a proposed patch to the working tree and mark it applied."""
-    patches, index = _require(ot_dir, patch_id, {"proposed"})
-    for change in _load_changes(ot_dir, patch_id):
-        target = resolve_workspace_path(root, change.path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(change.new_content, encoding="utf-8")
-    patches[index].status = "applied"
-    patches[index].applied_at = _utcnow()
-    _save_index(ot_dir, patches)
-    return patches[index]
+    # The status transition is read-modify-write on the index; hold the lock across
+    # it so a concurrent reject/revert cannot be overwritten (see jsonl.update_jsonl).
+    with file_lock(_index_path(ot_dir)):
+        patches, index = _require(ot_dir, patch_id, {"proposed"})
+        for change in _load_changes(ot_dir, patch_id):
+            target = resolve_workspace_path(root, change.path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(change.new_content, encoding="utf-8")
+        patches[index].status = "applied"
+        patches[index].applied_at = _utcnow()
+        _save_index(ot_dir, patches)
+        return patches[index]
 
 
 def reject_patch(ot_dir: Path, patch_id: str) -> PatchArtifact:
     """Reject a proposed patch without touching the working tree."""
-    patches, index = _require(ot_dir, patch_id, {"proposed"})
-    patches[index].status = "rejected"
-    _save_index(ot_dir, patches)
-    return patches[index]
+    with file_lock(_index_path(ot_dir)):
+        patches, index = _require(ot_dir, patch_id, {"proposed"})
+        patches[index].status = "rejected"
+        _save_index(ot_dir, patches)
+        return patches[index]
 
 
 def revert_patch(root: Path, ot_dir: Path, patch_id: str) -> PatchArtifact:
     """Revert an applied patch by restoring the recorded old contents."""
-    patches, index = _require(ot_dir, patch_id, {"applied"})
-    for change in _load_changes(ot_dir, patch_id):
-        target = resolve_workspace_path(root, change.path)
-        target.write_text(change.old_content, encoding="utf-8")
-    patches[index].status = "reverted"
-    _save_index(ot_dir, patches)
-    return patches[index]
+    with file_lock(_index_path(ot_dir)):
+        patches, index = _require(ot_dir, patch_id, {"applied"})
+        for change in _load_changes(ot_dir, patch_id):
+            target = resolve_workspace_path(root, change.path)
+            target.write_text(change.old_content, encoding="utf-8")
+        patches[index].status = "reverted"
+        _save_index(ot_dir, patches)
+        return patches[index]

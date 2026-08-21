@@ -275,3 +275,53 @@ def test_interrupt_exits_130_with_a_resume_note(
     res = runner.invoke(app, ["campaign", "start", "PROBLEM-0001", "--mode", "exploration"])
     assert res.exit_code == 130
     assert "paused" in res.output and "campaign resume" in res.output
+
+
+def test_verdict_names_the_other_claim_store_instead_of_reading_as_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workspace claim tagged with the dossier must not read as "nothing here".
+
+    ``claim_new`` writes into the workspace claim store and stamps the active
+    dossier id; ``problem verdict`` derives only from the dossier's own store.
+    After a full prove session that used the tool, the verdict said no claims
+    were recorded for the dossier while ``opentorus claim list`` showed one —
+    both true, of different files. The classification stays untouched (a
+    workspace ``idea`` is not dossier evidence); only the rationale gains the
+    pointer that makes it legible.
+    """
+    _init(tmp_path, monkeypatch)
+    from opentorus.research.claims import new_claim
+    from opentorus.workspace import workspace_dir
+
+    ot = workspace_dir(tmp_path)
+    new_claim(ot, "Some idea worth recording.", problem_id="PROBLEM-0001")
+
+    res = runner.invoke(app, ["problem", "verdict", "PROBLEM-0001"])
+    assert res.exit_code == 0, res.output
+    flat = _flat(res.output)
+    assert "STATUS_UNCERTAIN" in flat
+    assert "1 workspace claim(s) name PROBLEM-0001" in flat
+    assert "CLAIM-0001" in flat
+
+
+def test_verdict_stays_quiet_when_the_dossier_has_its_own_claims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init(tmp_path, monkeypatch)
+    res = runner.invoke(
+        app,
+        [
+            "problem",
+            "claim",
+            "PROBLEM-0001",
+            "--type",
+            "CONJECTURE",
+            "--statement",
+            "For every n >= 1, P(n) holds.",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    verdict = runner.invoke(app, ["problem", "verdict", "PROBLEM-0001"])
+    assert verdict.exit_code == 0, verdict.output
+    assert "workspace claim(s) name" not in _flat(verdict.output)

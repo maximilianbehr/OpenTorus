@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import TypeVar
 
@@ -18,6 +18,37 @@ from pydantic import BaseModel, ValidationError
 logger = logging.getLogger("opentorus")
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+ResultT = TypeVar("ResultT")
+
+
+def update_jsonl(
+    path: Path,
+    model_cls: type[ModelT],
+    mutate: Callable[[list[ModelT]], ResultT],
+) -> ResultT:
+    """Read-modify-write a mutable ledger under a cross-process lock.
+
+    ``mutate`` receives every record and edits the list in place (appending,
+    removing, or changing entries); whatever it returns is returned to the caller.
+    The read, the mutation and the rewrite happen inside one
+    :func:`~opentorus.atomicio.file_lock`, which is the whole point: doing them
+    unlocked lets a second process's rewrite drop this one's records, and lets both
+    derive the same next artifact id from the same read. Four processes creating ten
+    claims each once reported forty successes and left thirteen records behind.
+
+    The lock is **not** re-entrant: a ``mutate`` that calls another function which
+    locks the same path will block until the timeout. Keep the callback to record
+    manipulation.
+    """
+    from opentorus.atomicio import file_lock
+
+    with file_lock(path):
+        records = read_jsonl(path, model_cls)
+        result = mutate(records)
+        rewrite_jsonl(path, records)
+        return result
 
 
 def append_jsonl(path: Path, model: BaseModel) -> None:

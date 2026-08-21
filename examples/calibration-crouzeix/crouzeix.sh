@@ -81,7 +81,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Survey + numerics ---------------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 5
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 5 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -92,3 +97,5 @@ echo
 echo "Done. See .opentorus/problems/${TARGET}/report.md"
 echo "Calibration check: the report must label the 2026 proofs as claimed/under review,"
 echo "keep 1+sqrt(2) as the established constant, and keep numerics support-only."
+
+exit "${PROVE_RC}"

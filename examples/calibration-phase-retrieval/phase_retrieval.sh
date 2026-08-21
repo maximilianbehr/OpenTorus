@@ -117,7 +117,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Survey + certification run --------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 3
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 3 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -130,3 +135,5 @@ echo "Calibration check: four labels kept apart - generic 4M-4 injective (theore
 echo "'4M-4 necessary' (false, Vinzant's 11-vector certificate reproduced); part (a) and"
 echo "the 10-vector nonexistence (claimed, unrefereed 2026 preprints - one AI-generated);"
 echo "part (b) (open) - plus at least one exact instance certificate via proof_submit."
+
+exit "${PROVE_RC}"

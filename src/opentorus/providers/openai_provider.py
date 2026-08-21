@@ -23,11 +23,27 @@ from opentorus.providers.base import (
 )
 
 
+def _require_openai_sdk() -> type:
+    """Return the ``OpenAI`` client class, or raise the actionable install error."""
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise ProviderError(
+            "The 'openai' package is not installed. Install it with: pip install openai"
+        ) from exc
+    return OpenAI
+
+
 class OpenAIProvider(BaseProvider):
     name = "openai"
 
     def __init__(self, config: Config) -> None:
         self.config = config
+        # Fail here rather than at the first model call. The SDK is an optional
+        # dependency, and when it was missing a run set up its whole workspace,
+        # fetched papers, built a container and only then died inside step 1 —
+        # the cost of finding out was an entire session's setup.
+        _require_openai_sdk()
 
     def generate(
         self, messages: list[SessionMessage], tools: list[dict] | None = None
@@ -37,12 +53,7 @@ class OpenAIProvider(BaseProvider):
                 "OPENAI_API_KEY is not set. Put it in a .env file in your project "
                 "(OPENAI_API_KEY=sk-…) or export it to use the OpenAI provider."
             )
-        try:
-            from openai import OpenAI
-        except ImportError as exc:
-            raise ProviderError(
-                "The 'openai' package is not installed. Install it with: pip install openai"
-            ) from exc
+        OpenAI = _require_openai_sdk()
 
         kwargs = build_openai_request(self.config, messages, tools)
         client = OpenAI(**openai_client_kwargs(self.config))

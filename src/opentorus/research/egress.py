@@ -80,25 +80,68 @@ class EgressGuard:
     def _today(self) -> str:
         return datetime.now(UTC).strftime("%Y-%m-%d")
 
-    def _load_budget(self) -> tuple[str, int]:
-        today = self._today()
+    def _read_ledger(self) -> dict:
         if self._ledger_path and self._ledger_path.is_file():
             try:
                 data = json.loads(self._ledger_path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
-                data = {}
-            if data.get("day") == today:
-                return today, int(data.get("count", 0))
+                return {}
+            return data if isinstance(data, dict) else {}
+        return {}
+
+    def _load_budget(self) -> tuple[str, int]:
+        today = self._today()
+        data = self._read_ledger()
+        if data.get("day") == today:
+            return today, int(data.get("count", 0))
         return today, 0
 
-    def _persist_budget(self) -> None:
+    def _recent_on_disk(self, host: str, wall_now: float) -> list[float]:
+        """Wall-clock timestamps of this host's requests inside the last minute.
+
+        The in-memory window cannot throttle anything in production: the tools build
+        a **fresh guard for every call**, so its window is always empty. Measured with
+        a 2/min limit — one guard blocks the third request, a fresh guard per request
+        allows six in a row, which is exactly the bulk-harvesting the daily budget
+        alone was never meant to be the only defence against. Wall clock, not the
+        injected ``clock``: ``time.monotonic`` is process-local and meaningless to the
+        next process reading this file.
+        """
+        hosts = self._read_ledger().get("hosts")
+        if not isinstance(hosts, dict):
+            return []
+        stamps = hosts.get(host)
+        if not isinstance(stamps, list):
+            return []
+        return [float(t) for t in stamps if isinstance(t, (int, float)) and wall_now - t < 60.0]
+
+    def _persist_budget(self, host: str | None = None, wall_now: float | None = None) -> None:
         if not self._ledger_path:
             return
-        from opentorus.atomicio import atomic_write_text
+        from opentorus.atomicio import atomic_write_text, file_lock
 
-        atomic_write_text(
-            self._ledger_path, json.dumps({"day": self._day, "count": self._day_count})
-        )
+        # Read-modify-write on a file other runs share: hold the lock across both.
+        with file_lock(self._ledger_path):
+            data = self._read_ledger()
+            hosts = data.get("hosts")
+            hosts = dict(hosts) if isinstance(hosts, dict) else {}
+            if host is not None and wall_now is not None:
+                kept = [
+                    float(t)
+                    for t in hosts.get(host, [])
+                    if isinstance(t, (int, float)) and wall_now - t < 60.0
+                ]
+                kept.append(wall_now)
+                hosts[host] = kept
+            # Drop hosts whose window has fully elapsed so the ledger stays small.
+            if wall_now is not None:
+                hosts = {
+                    h: ts for h, ts in hosts.items() if any(wall_now - float(t) < 60.0 for t in ts)
+                }
+            atomic_write_text(
+                self._ledger_path,
+                json.dumps({"day": self._day, "count": self._day_count, "hosts": hosts}),
+            )
 
     def authorize(self, url_or_host: str) -> str:
         """Authorize one request; returns the host or raises :class:`EgressBlocked`.
@@ -137,12 +180,16 @@ class EgressGuard:
 
     def _enforce_rate_limit(self, host: str, now: float) -> None:
         window = [t for t in self._recent.get(host, []) if now - t < 60.0]
-        if len(window) >= self.rate_limit_per_minute:
+        self._recent[host] = window
+        # With a ledger the on-disk window is authoritative — it is the only one that
+        # survives the per-call guard the tools construct. Without one (unit tests,
+        # a bare guard) the in-memory window keeps its old, clock-injectable meaning.
+        count = len(self._recent_on_disk(host, time.time())) if self._ledger_path else len(window)
+        if count >= self.rate_limit_per_minute:
             raise EgressBlocked(
                 f"Rate limit reached for '{host}' "
                 f"({self.rate_limit_per_minute}/min); throttling to respect the source."
             )
-        self._recent[host] = window
 
     def _enforce_budget(self) -> None:
         if self._today() != self._day:
@@ -166,4 +213,4 @@ class EgressGuard:
         if disk_day == self._day:
             self._day_count = max(self._day_count, disk_count)
         self._day_count += 1
-        self._persist_budget()
+        self._persist_budget(host=host, wall_now=time.time())

@@ -940,6 +940,38 @@ def problem_replay(
             console.print(f"  → {result.status}: {result.result_summary}")
 
 
+def _note_unlinked_workspace_claims(ot_dir: Path, problem_id: str) -> None:
+    """Point at workspace claims that name this dossier but are not artifacts in it.
+
+    The ``claim_new`` tool writes into the workspace claim store and stamps the
+    active dossier id on the record; ``problem verdict`` derives only from the
+    dossier's own claim store. A session that filled the first and left the
+    second empty is classified correctly — a workspace ``idea`` is not dossier
+    evidence and must not move a verdict — but "no claims are recorded for this
+    dossier" then reads as if the session had produced nothing at all. Naming
+    the other store keeps the rationale true *and* legible.
+    """
+    from opentorus.research.claims import list_claims as list_workspace_claims
+    from opentorus.research.dossier import store as dossier_store
+
+    try:
+        if dossier_store.list_claims(ot_dir, problem_id):
+            return
+        unlinked = list_workspace_claims(ot_dir, problem_id=problem_id)
+    except (OpenTorusError, OSError):
+        return
+    if not unlinked:
+        return
+    ids = ", ".join(claim.id for claim in unlinked[:3])
+    more = f" (+{len(unlinked) - 3} more)" if len(unlinked) > 3 else ""
+    console.print(
+        f"  [dim]note: {len(unlinked)} workspace claim(s) name {problem_id} "
+        f"({ids}{more}) but are not dossier artifacts, so they do not enter this "
+        f"classification. See 'opentorus claim list'; promote one with "
+        f"'opentorus problem claim {problem_id}'.[/dim]"
+    )
+
+
 @problem_app.command("verdict")
 def problem_verdict(
     problem_id: str = typer.Argument(..., help="Dossier id, e.g. PROBLEM-0001."),
@@ -988,3 +1020,4 @@ def problem_verdict(
     console.print(f"Primary claim: {primary}")
     console.print(f"Classification: [bold]{label}[/bold]")
     console.print(f"  {rationale}")
+    _note_unlinked_workspace_claims(base, pid)

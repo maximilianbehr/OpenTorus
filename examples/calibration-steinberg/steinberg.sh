@@ -104,7 +104,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Refutation run ------------------------------------------------------
-opentorus --verbose prove "${TARGET}" --disprove --min-papers 2
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --disprove --min-papers 2 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -118,3 +123,5 @@ echo "all three properties machine-verified (planarity + cycle enumeration + UNS
 echo "certificate), recorded as COUNTEREXAMPLE_VERIFIED; the report must credit the"
 echo "2016/17 refutation (Cohen-Addad et al., JCTB 122) and keep the Bordeaux"
 echo "conjecture and the minimum-counterexample question honestly open."
+
+exit "${PROVE_RC}"

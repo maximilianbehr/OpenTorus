@@ -75,9 +75,27 @@ def campaign_start(
     max_steps: int | None = typer.Option(
         None, "--max-steps", help="Model turns across all workers; 0 = unlimited on this axis."
     ),
-    token_budget: int | None = typer.Option(None, "--token-budget", help="0 = unlimited."),
-    max_wall_seconds: int | None = typer.Option(None, "--max-wall-seconds", help="0 = unlimited."),
-    cost_budget: float | None = typer.Option(None, "--cost-budget", help="USD; 0 = unlimited."),
+    # These three are checked *between work items*, not before each model call, so a
+    # campaign stops at the first check past the limit rather than at the limit. The
+    # overshoot is one work item's consumption, which is not small: a 5,000-token
+    # budget was measured stopping at 29,422. Say so here — read as a hard cap, the
+    # number would be misleading, and on --cost-budget it would be misleading about
+    # money. --max-steps is the fine-grained axis: its unit is one model turn.
+    token_budget: int | None = typer.Option(
+        None,
+        "--token-budget",
+        help="Checked between work items; may overshoot by one work item. 0 = unlimited.",
+    ),
+    max_wall_seconds: int | None = typer.Option(
+        None,
+        "--max-wall-seconds",
+        help="Checked between work items; may overshoot by one work item. 0 = unlimited.",
+    ),
+    cost_budget: float | None = typer.Option(
+        None,
+        "--cost-budget",
+        help="USD, checked between work items; may overshoot by one work item. 0 = unlimited.",
+    ),
     no_primary_claim: bool = typer.Option(
         False,
         "--no-primary-claim",

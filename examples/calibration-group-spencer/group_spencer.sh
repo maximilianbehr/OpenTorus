@@ -113,7 +113,12 @@ opentorus problem new --from-markdown notes.md --structured
 opentorus problem list
 
 # --- 6. Survey + exact numerics ----------------------------------------------
-opentorus --verbose prove "${TARGET}" --min-papers 3
+# `prove` gates on the honesty linter: a report that still overclaims exits non-zero.
+# That is a finding to read, not a crash — but under `set -e` it aborted this driver
+# right here, before the report/verdict/PDF steps below ever ran. Keep the signal,
+# finish the workflow, and exit with it at the end.
+PROVE_RC=0
+opentorus --verbose prove "${TARGET}" --min-papers 3 || PROVE_RC=$?
 
 # --- 7. Honest report + PDF -------------------------------------------------
 opentorus problem report "${TARGET}"
@@ -127,3 +132,5 @@ echo "arXiv:2606.16005) and label the conjecture claimed/under review (not prove
 echo "plain open); keep simple/abelian groups as the established layer; ship exact,"
 echo "exhaustively certified sign minima for small groups; and state that general Matrix"
 echo "Spencer remains open."
+
+exit "${PROVE_RC}"

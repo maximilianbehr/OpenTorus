@@ -19,6 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from opentorus.atomicio import file_lock
 from opentorus.errors import OpenTorusError
 from opentorus.jsonl import append_jsonl, next_sequential_id, read_jsonl, rewrite_jsonl
 
@@ -364,19 +365,22 @@ def resolve_finding(
     """Record a resolution (accepted/disputed/deferred) for a finding."""
     if resolution not in ("open", "accepted", "disputed", "deferred"):
         raise OpenTorusError(f"Invalid resolution '{resolution}'.")
-    reviews = list_reviews(ot_dir)
-    target = next((r for r in reviews if r.id == review_id), None)
-    if target is None:
-        raise OpenTorusError(f"No review with id '{review_id}'.")
-    found = False
-    for f in target.findings:
-        if f.finding_id == finding_id:
-            f.resolution = resolution
-            f.resolution_note = note
-            found = True
-    if not found:
-        raise OpenTorusError(f"No finding '{finding_id}' in review '{review_id}'.")
-    rewrite_jsonl(_index_path(ot_dir), reviews)
+    # Read-modify-write on the review index: two resolutions recorded at once would
+    # otherwise keep only whichever rewrite landed last.
+    with file_lock(_index_path(ot_dir)):
+        reviews = list_reviews(ot_dir)
+        target = next((r for r in reviews if r.id == review_id), None)
+        if target is None:
+            raise OpenTorusError(f"No review with id '{review_id}'.")
+        found = False
+        for f in target.findings:
+            if f.finding_id == finding_id:
+                f.resolution = resolution
+                f.resolution_note = note
+                found = True
+        if not found:
+            raise OpenTorusError(f"No finding '{finding_id}' in review '{review_id}'.")
+        rewrite_jsonl(_index_path(ot_dir), reviews)
     (reviews_dir(ot_dir) / f"{target.id}.md").write_text(render_review(target), encoding="utf-8")
     return target
 

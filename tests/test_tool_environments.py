@@ -138,3 +138,63 @@ def test_plain_experiment_still_runs_locally(tmp_path: Path) -> None:
     manifest = _manifest(ot, exp)
     assert manifest["backend"] == "local"
     assert manifest["tool_environment"] is None
+
+
+def _seed_hashed_env(ot: Path, name: str, image: str, cf_hash: str) -> None:
+    (ot / ENVIRONMENTS_FILENAME).write_text(
+        yaml.safe_dump(
+            {
+                "environments": {
+                    name: {
+                        "image": image,
+                        "containerfile": "docker/Dockerfile",
+                        "build_context": "docker",
+                        "containerfile_sha256": cf_hash,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_run_refuses_an_image_built_from_another_workspaces_containerfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Executing in someone else's environment must fail loudly, not silently.
+
+    A locally built image is named by a mutable tag. In a parallel stress run a
+    second workspace's ``env prepare`` replaced the tag, and experiments then ran
+    in a container without their own dependencies — reported as ordinary
+    ModuleNotFoundErrors, indistinguishable from the model writing bad code.
+    """
+    ot = _ot(tmp_path)
+    _seed_hashed_env(ot, "julia", "opentorus-julia:aaaaaaaaaaaa", "a" * 64)
+    monkeypatch.setattr(backends_mod, "_which", lambda binary: binary == "docker")
+    # The tag now carries an image built from a different Containerfile.
+    monkeypatch.setattr("opentorus.execution.prepare._image_label", lambda *_a, **_kw: "b" * 64)
+    monkeypatch.setattr("opentorus.execution.prepare._image_exists", lambda *_a, **_kw: True)
+
+    exp = new_experiment(ot, "Julia run", environment="julia")
+    exp, code = run_experiment(ot, exp.id, timeout=20)
+
+    assert code == 127
+    assert exp.status == "failed"
+    stderr = (ot / exp.path / "results" / "stderr.txt").read_text(encoding="utf-8")
+    assert "different Containerfile" in stderr
+    assert "Nothing was executed" in stderr
+    manifest = _manifest(ot, exp)
+    assert manifest["backend"] == "unavailable"
+
+
+def test_run_proceeds_when_the_image_matches_the_recorded_containerfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ot = _ot(tmp_path)
+    _seed_hashed_env(ot, "julia", "opentorus-julia:aaaaaaaaaaaa", "a" * 64)
+    monkeypatch.setattr(backends_mod, "_which", lambda binary: binary == "docker")
+    monkeypatch.setattr("opentorus.execution.prepare._image_label", lambda *_a, **_kw: "a" * 64)
+    exp = new_experiment(ot, "Julia run", environment="julia")
+    exp, _code = run_experiment(ot, exp.id, timeout=20)
+    manifest = _manifest(ot, exp)
+    assert manifest["backend"] == "docker"

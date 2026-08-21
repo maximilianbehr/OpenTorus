@@ -127,3 +127,49 @@ def test_apptainer_records_sif_cache(tmp_path: Path, monkeypatch: pytest.MonkeyP
     manifest = yaml.safe_load((ot / exp.path / "results" / "manifest.yaml").read_text())
     assert manifest["backend"] == "apptainer"
     assert manifest["sif_cache"] == str(sif_cache_path(digest))
+
+
+def _seed_locally_built(ot: Path, name: str = "python-sci") -> None:
+    (ot / ENVIRONMENTS_FILENAME).write_text(
+        yaml.safe_dump(
+            {
+                "environments": {
+                    name: {
+                        "image": f"opentorus-{name}:a0173492e081",
+                        "containerfile": "docker/Dockerfile",
+                        "build_context": "docker",
+                        "containerfile_sha256": "a0173492e081" + "0" * 52,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_locally_built_environments_are_not_reported_unpinned(tmp_path: Path) -> None:
+    """`env verify` could never pass on a workspace the shipped examples produce.
+
+    A local build has no registry digest — `RepoDigests` is empty — so every
+    `env prepare`d environment was flagged, with advice that cannot be followed.
+    It carries the Containerfile hash instead, which is checked against the image's
+    build-time label before every run.
+    """
+    ot = _ot(tmp_path)
+    _seed_locally_built(ot)
+    assert unpinned_environments(ot) == []
+    verify_pinned(ot)  # must not raise
+
+
+def test_pinning_a_local_image_is_refused_rather_than_breaking_the_workspace(
+    tmp_path: Path,
+) -> None:
+    """Following the old advice wrote a reference docker could only try to *pull*.
+
+    `env pin` accepted a local image id, wrote `repo:tag@sha256:<id>` into
+    environments.yaml, and every later experiment failed with "pull access denied".
+    """
+    ot = _ot(tmp_path)
+    _seed_locally_built(ot)
+    with pytest.raises(OpenTorusError, match="no registry digest"):
+        pin_environment(ot, "python-sci", "sha256:" + "0" * 64)

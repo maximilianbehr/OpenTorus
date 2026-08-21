@@ -107,3 +107,46 @@ def test_institutional_session_files_are_sensitive() -> None:
     assert is_sensitive_path("cookies.txt")
     assert is_sensitive_path("/home/u/springer_api_key")
     assert is_sensitive_path(Path("session.cookies"))
+
+
+def test_rate_limit_survives_the_per_call_guard_the_tools_build(tmp_path: Path) -> None:
+    """The throttle has to live in the ledger, not in one guard's memory.
+
+    Every literature tool constructs a **fresh** EgressGuard per invocation, so the
+    in-memory window is always empty and never throttled anything in production.
+    Measured at 2/min: one reused guard blocks the third request, a fresh guard per
+    request allowed six in a row — the bulk harvesting the daily budget alone was
+    never meant to be the only defence against.
+    """
+    ledger = tmp_path / "egress.json"
+
+    def fresh() -> EgressGuard:
+        return EgressGuard(
+            "trusted",
+            style="autonomous",
+            rate_limit_per_minute=2,
+            daily_request_budget=1000,
+            ledger_path=ledger,
+        )
+
+    fresh().authorize("https://api.openalex.org/works")
+    fresh().authorize("https://api.openalex.org/works")
+    with pytest.raises(EgressBlocked, match="Rate limit"):
+        fresh().authorize("https://api.openalex.org/works")
+
+    # Per host, not globally: a different source is unaffected.
+    fresh().authorize("https://arxiv.org/abs/1234.5678")
+
+
+def test_rate_limit_ledger_tolerates_a_file_written_before_it_existed(tmp_path: Path) -> None:
+    """An older ledger has only day/count; it must not break the guard."""
+    ledger = tmp_path / "egress.json"
+    ledger.write_text('{"day": "1999-01-01", "count": 7}', encoding="utf-8")
+    guard = EgressGuard(
+        "trusted",
+        style="autonomous",
+        rate_limit_per_minute=2,
+        daily_request_budget=1000,
+        ledger_path=ledger,
+    )
+    assert guard.authorize("https://api.openalex.org/works") == "api.openalex.org"

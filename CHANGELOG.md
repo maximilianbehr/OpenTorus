@@ -6,6 +6,231 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+A load test against a self-hosted vLLM endpoint became a bug hunt. Across 167 example
+driver runs — 82 hours of driver time, 4,959 model requests, not one provider error —
+the shipped examples ran in parallel cohorts against a local `gemma-4-31b-it-nvfp4`,
+and each wave was read back through the artifact ledgers rather than through its exit
+code. Parallelism itself was measured first: at the ~26k-token contexts a campaign
+actually sends, throughput peaks at four concurrent requests and collapses past eight,
+so eight parallel drivers (≈6 requests in flight) is the working point.
+
+The execution-layer defects surfaced early and stopped surfacing after about the sixth
+cohort: a container tag that was machine-global rather than workspace-local, a
+container that outlived the process that started it, a `config set` that silently
+truncated any value past PyYAML's wrap width, an example that could never have run on
+macOS. What those share is that running more examples found them — and that each fix
+uncovered the next one behind it.
+
+The findings that matter did not come from more examples. They came from taking each
+guarantee this project states about itself and trying to break it, in the most
+permissive configuration it offers. Four did not hold. `--mode review`, documented as
+strictly read-only, admitted `echo hi > notes.md`, because the harmless-command check
+read only the first token. The second privacy layer turned out to have no producer at
+all — nothing in the codebase sets the `sensitive` flag that `redact_for_provider`
+filters on — while `env` and `echo $OPENAI_API_KEY` ran unguarded, so a configured
+cloud provider could receive the whole environment. Four processes writing one
+workspace reported 40 successful `claim new` calls and left 13 records behind, with
+`CLAIM-0003` handed out four times. And the per-host egress rate limit never throttled
+anything, because every literature tool builds a fresh guard per call: measured at two
+requests per minute, one reused guard blocks the third request while a fresh guard per
+request allows six in a row.
+
+The epistemic invariants held throughout, which is the result that matters most in a
+tool built to be honest about what it knows. Across the campaign waves 28 dossier
+claims exist — 22 `unverified`, 6 `supported`, none `verified` or `formally_verified` —
+with 11 accepted `proof_submit` certificates in circulation: an accepted certificate
+for a finite instance still does not promote a general conjecture, and the locking work
+below leaves that gate exactly where it was. 3,761 JSONL ledgers holding 48,303 records
+contained no torn line, no duplicate id and no gap in a campaign event sequence.
+Re-linting 80 finished reports reproduced exactly what each run had reported, so the
+honesty linter is idempotent and the report step does not wash a warning away. A
+campaign killed with SIGKILL mid-phase verified clean and resumed to completion, and a
+hand-truncated event log was named as torn and exited 1.
+
+Four things are reported rather than changed, each because the fix is a policy decision
+and not a patch: budget granularity, a bare shell redirect that writes past
+`evaluate_write`, the compaction lock that would have to span a model call, and egress
+host consent. Each is written up where it lives, with the measurement that found it.
+
+### Fixed
+- **A locally prepared environment is no longer machine-global.** `env prepare`
+  tagged every image `opentorus-{name}:local`, with no workspace component and no
+  lock, and all 66 shipped examples name their environment `python-sci` — so a
+  second workspace's prepare silently replaced the image the first one was pinned
+  to, and that workspace's experiments then ran against another workspace's
+  dependency set while its own `environments.yaml` still named its own
+  Dockerfile. Found in a 16-way parallel example run, where fourteen workspaces
+  rebuilt the one tag over each other and nine experiments failed with
+  `ModuleNotFoundError` for packages their own Dockerfile declared. The tag is
+  now content-addressed (`opentorus-python-sci:<containerfile-sha12>`), so
+  differing build inputs land on differing images and identical ones still share
+  one; `environments.yaml` records `containerfile_sha256`; and `exp_run` verifies
+  that recorded hash against the image's build-time label before executing,
+  refusing with exit 127 rather than attributing a run to the wrong environment.
+  Environments prepared before this release keep working — an entry without a
+  recorded hash is not checked. The check resolves the tag to an image id
+  (`images -q`) and inspects that: `image inspect <tag>` is not a reliable
+  existence test, and on a daemon where several concurrent builds had written one
+  tag it answered "No such image" for a tag `run` resolved perfectly well —
+  refusing six runnable experiments, which is worse than the wrong environment
+  the check exists to prevent.
+- **An experiment container no longer outlives the process that started it.** The
+  existing cleanup ran in a `finally` block, which a SIGKILL/SIGALRM of the
+  OpenTorus process skips; a stress run left a container running 26 minutes after
+  its owner died, holding the image it was built from. Containers now carry
+  `org.opentorus.owner-pid`/`owner-host` labels, and every container run first
+  reaps containers on this host whose owning process is gone.
+- **A missing provider SDK is reported when the provider is built**, not on the
+  first model call: a run with `model.provider=openai` and no `openai` package
+  installed initialised its workspace, fetched papers and built a container
+  before failing inside step 1. Same for `anthropic`.
+- **`problem verdict` names the other claim store** instead of reading as empty.
+  `claim_new` records into the workspace claim store with the active dossier id;
+  the verdict derives only from the dossier's own store, so a session that used
+  the tool was told "no claims are recorded for this dossier" while
+  `opentorus claim list` showed one. The classification is unchanged — a
+  workspace `idea` is not dossier evidence and must not move a verdict — and the
+  rationale now points at the claims it is not counting.
+- **The local embedding backend no longer draws a progress bar into command
+  output**: loading `sentence-transformers` printed a "Loading weights" tqdm bar
+  interleaved with OpenTorus's own diagnostics on every command that touches
+  retrieval. `HF_HUB_DISABLE_PROGRESS_BARS` is now defaulted on (still
+  overridable from the environment).
+- **The per-host egress rate limit never throttled anything.** Each literature tool
+  builds a **fresh `EgressGuard` per invocation**, and the guard kept its rate-limit
+  window in memory — so the window was always empty. Measured at 2 requests/minute:
+  one reused guard blocks the third request; a fresh guard per request allowed six
+  in a row. The module promises to refuse "systematic bulk harvesting by design",
+  and this was the mechanism for it; only the daily budget survived, because that
+  one is reconciled with the ledger on every check. The window now lives in the
+  same `egress.json` ledger, in wall-clock time (the injected `clock` defaults to
+  `time.monotonic`, which is process-local and meaningless to the next process
+  reading the file), written under the shared-file lock. A guard without a ledger
+  keeps the old in-memory, clock-injectable behaviour, so unit tests are unaffected,
+  and a ledger written before this release is read without complaint.
+  **Also weaker than documented, not changed:** "each new host confirmed once in ask
+  mode" is per guard instance too, so ask mode re-confirms on every request. That is
+  annoying rather than unsafe, and persisting consent across runs is a policy
+  decision — a workspace file that silently remembers "yes, contact this host" is
+  not obviously the right default.
+- **Following `env verify`'s advice broke the workspace.** `env verify` flagged every
+  environment `env prepare` had built — a local image has no registry digest, its
+  `RepoDigests` is empty — and told the user to run `env pin`. `env pin` accepted the
+  local image *id* and wrote `repo:tag@sha256:<id>` into `environments.yaml`; docker
+  can only try to *pull* such a reference, so every later experiment failed with
+  "pull access denied". The check could therefore never pass in the workflow all 66
+  examples use, and its remedy made things worse. `env pin` now refuses a
+  locally-built environment with an explanation, `env verify` treats one as
+  reproducibly referenced by its recorded Containerfile hash (verified against the
+  image's build-time label before every run), and its success line says which kind
+  each environment is rather than calling a content-addressed local build
+  "digest-pinned".
+- **The whole environment — API keys included — could be sent to the provider.**
+  `cat .env` is gated, but `env`, `printenv OPENAI_API_KEY`, `echo $OPENAI_API_KEY`,
+  `set` and `python -c 'print(os.environ)'` all ran **unguarded** in trusted +
+  autonomous, and their output enters the session as an ordinary tool result. The
+  second privacy layer should have caught that, except it never fires: nothing in
+  the codebase sets the `sensitive` metadata flag that `redact_for_provider` looks
+  for, so the filter has no producer. With a cloud provider configured this is a
+  credential leak to a third party, initiated by a command a model runs while
+  simply debugging. Two fixes: `command_exposes_environment` now gates such
+  commands with confirmation in every mode and style, mirroring the sensitive-path
+  guard; and `privacy.scrub_known_secrets` removes the *values* of known credential
+  variables from anything bound for the provider — including when
+  `allow_sensitive_context` is on, since that opts into sending workspace content,
+  not into forwarding this process's own keys. Value matching means it can only ever
+  redact a real secret; a placeholder key (`OPENAI_API_KEY=x`, as the local-vLLM
+  examples use) is left alone. **Still uncovered by the command gate:**
+  `git config --list` and greps that happen to match a secret — those are
+  content-dependent, which is precisely what layer 3 is for.
+- **`--mode review` was not read-only.** It is documented as a non-bypassable hard
+  guarantee, but the harmless-command check looked at the *first token only*, so
+  everything after `&&`, `||`, `|` or `>` was invisible: `echo hi > notes.md`,
+  `cat a > b`, `ls | tee out.txt` and `ls && rm foo` were all admitted as
+  "read-only inspection". A harmless command is now one command — unchained and
+  unredirected — while plain inspection (`ls`, `git log --oneline`, `cat notes.md`)
+  still runs.
+- **Deleting without spelling `rm` needed no confirmation.** Destructive
+  classification keyed on the word `rm`, so `find . -delete`, `find / -delete`,
+  `shred -u`, `rmdir -p`, `git stash clear` and `git branch -D` all ran unguarded in
+  the most permissive configuration (trusted + autonomous). They now require
+  confirmation like any other destructive operation.
+- **The harmless allowlist shadowed the destructive check.** `_HARMLESS_PREFIXES`
+  matches on prefixes and was consulted first, so `git branch` covered
+  `git branch -D main`: deleting a branch was classified as inspection. Destruction
+  is now decided before harmlessness. Found by the regression test written for the
+  entry above — the fix for one gap exposed the next.
+  **Known and left as-is:** a bare shell redirect (`> file`, `: > file`,
+  `cp /dev/null file`) truncates a file without naming a destructive command, and so
+  writes past `evaluate_write`. Making every redirect confirm would change
+  autonomous behaviour broadly and affect the shipped examples; that is a design
+  call, not a patch, so it is reported rather than changed.
+- **Two OpenTorus processes in one workspace silently lost each other's artifacts.**
+  A mutable ledger is updated read-modify-write — read every record, add one,
+  replace the file — so a concurrent writer's records vanish under the second
+  rename, and since each writer derives the next artifact id from what it just
+  read, both mint the same id. Measured: four processes creating ten claims each
+  reported **40 successes and left 13 records**, with `CLAIM-0003` handed out four
+  times. A REPL in one terminal and a CLI in another is an ordinary way to use this
+  tool. New `atomicio.file_lock` (portable `O_EXCL` lock file, reclaims a lock left
+  by a dead holder, raises rather than falling through on timeout) now spans the
+  read *and* the write in `claim new` / `claim update` and in the three write paths
+  of the cross-workspace KB in `~/.opentorus/kb/`, which every project on the
+  machine shares. Same probe after the fix: 40 successes, 40 records, 40 distinct
+  ids. Pinned by `tests/test_concurrent_ledger.py` (real processes — threads in one
+  interpreter do not reproduce it). The same lock now spans the read-modify-write in
+  the dossier's four claim transitions (including the one path that reaches
+  `verified`), the theorem reference store, the three patch status transitions and
+  the review index; `jsonl.update_jsonl` packages the pattern for new call sites.
+  **Deliberately left unlocked:** `agent/compaction.py`, whose read-to-write span
+  contains a provider call — a lock held across a model call would stall every other
+  process for minutes, which is a worse failure than the one it prevents. Compaction
+  rewrites the session of the process that owns it.
+- **`calibration-strassen-formal` used GNU-only `sed -i`** and so could not run on
+  macOS or any BSD at all: without a backup suffix, BSD sed reads the next word as
+  the suffix and fails with "extra characters at the end of n command". The driver
+  died five seconds in. Now substitutes through a temp file, which is portable.
+  (This one was hidden behind the `config set` truncation below — the driver never
+  reached the `sed` line until that was fixed.)
+- **`config set` could not store a value longer than 80 characters.** The
+  commented-config renderer emitted each scalar with `yaml.safe_dump` and kept the
+  first line of the dump; PyYAML wraps plain scalars at its default width, so
+  anything longer lost everything after the wrap. `write_config`'s own read-back
+  check caught the mismatch and refused the write — the value was never silently
+  corrupted, but it could not be set at all, and the driver that sets it exited
+  nine seconds in. Found by `calibration-strassen-formal`, whose Coq container
+  command carries two bind mounts. Scalars are now emitted without wrapping.
+- **Every `prove` example driver aborted at the honesty-linter gate** instead of
+  finishing its workflow. `opentorus prove` exits non-zero when the report it
+  generated still overclaims — a deliberate gate, so a scripted run cannot mistake
+  an overclaiming report for a clean one — but under the drivers' `set -euo
+  pipefail` that ended the driver at the prove call, before the `problem report`,
+  `--lint`, `problem export --pdf` and calibration-check steps below it ever ran.
+  The artifacts a reader most needs when the linter has something to say were
+  exactly the ones never produced. Six of seven calibration drivers hit this in a
+  stress wave and finished with no verdict at all. The 32 `prove` drivers now
+  capture the exit code, complete the documented workflow, and exit with it at the
+  end — the gate keeps its signal, the run keeps its output.
+- **Eight example drivers lost their `|| true` to a comment**: the line read
+  `... --lint            # honesty linter flags overclaiming || true   # advisory: …`,
+  so under `set -euo pipefail` an *advisory* honesty-linter warning aborted the
+  whole driver before `problem export --pdf` — the opposite of what the comment
+  beside it promised. Affected `backward-error-convergence`, `matrix-functions`,
+  `matrix-sign-approximation`, `nystrom-submodularity`, `polynomial-hirsch`,
+  `random-nla`, `simons-eigenvalue-problems` and `tensor-concentration`.
+
+### Changed
+- **`--token-budget` / `--cost-budget` / `--max-wall-seconds` now say what they are.**
+  They are checked between work items, so a campaign stops at the first check past
+  the limit, not at the limit: a measured run with `--token-budget 5000` paused at
+  **29,422 tokens**, and one with `--max-wall-seconds 2100` at 2,547s. The mechanism
+  is correct — `budget_exhausted` is recorded and the campaign pauses resumably —
+  but the help said only "0 = unlimited", which reads as a hard cap, and on
+  `--cost-budget` reads as a cap on money. The help now states the granularity.
+  `--max-steps` remains the fine-grained axis; its unit is one model turn. Charging
+  tokens per model turn rather than per work item would tighten this, but it changes
+  the event log that every replay test pins, so it is reported rather than done here.
+
 ## [0.0.15] — 2026-08-19
 
 OpenTorus ran three mostly linear loops. `prove` was one budgeted session with its
