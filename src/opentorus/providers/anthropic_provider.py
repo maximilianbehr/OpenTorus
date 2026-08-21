@@ -7,6 +7,8 @@ rather than OpenAI-style tool messages, so it has its own message conversion.
 
 from __future__ import annotations
 
+import inspect
+import logging
 import os
 from types import ModuleType
 
@@ -24,6 +26,9 @@ from opentorus.providers.base import (
 # Fallback output-token cap when the model config does not set one. 1024 was too
 # low for long proofs/tool arguments; this is configurable via model.max_tokens.
 _DEFAULT_MAX_TOKENS = 4096
+
+
+_logger = logging.getLogger("opentorus.providers")
 
 
 def _require_anthropic_sdk() -> ModuleType:
@@ -68,8 +73,57 @@ class AnthropicProvider(BaseProvider):
 
         timeout = self.config.model.timeout_seconds
         client = anthropic.Anthropic(timeout=timeout) if timeout else anthropic.Anthropic()
-        message = client.messages.create(**kwargs)
+        try:
+            message = client.messages.create(**supported_kwargs(client.messages.create, kwargs))
+        except Exception as exc:  # noqa: BLE001 - translate, never leak the SDK's own type
+            raise _provider_error(exc) from exc
         return parse_anthropic_message(message)
+
+
+def supported_kwargs(create: object, kwargs: dict) -> dict:
+    """``kwargs`` minus whatever this installed SDK's ``messages.create`` will not take.
+
+    anthropic 1.0 removed ``temperature`` from ``Messages.create``, so passing it — which
+    this provider did unconditionally — raises ``TypeError`` before a single request
+    leaves the machine. The parameter did not move to ``output_config`` either (that
+    carries ``effort`` and ``format`` only); it is simply gone. Reading the installed
+    signature is version-proof in both directions: an older SDK keeps every argument, and
+    a future removal degrades instead of crashing.
+    """
+    try:
+        parameters = inspect.signature(create).parameters  # type: ignore[arg-type]
+    except (TypeError, ValueError):  # a C-implemented or wrapped callable
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return kwargs
+    dropped = [k for k in kwargs if k not in parameters]
+    if dropped:
+        _logger.info("anthropic SDK does not accept %s; sending without.", ", ".join(dropped))
+    return {k: v for k, v in kwargs.items() if k in parameters}
+
+
+def _provider_error(exc: Exception) -> ProviderError:
+    """An SDK failure as something the loop can handle and the user can act on.
+
+    The loop only knows ProviderError; anything else reached the user as a raw
+    traceback. Matched by name so the SDK's exception hierarchy stays unimported.
+    """
+    name = type(exc).__name__
+    if name == "RateLimitError" or getattr(exc, "status_code", None) == 429:
+        return ProviderError(
+            "Anthropic rate-limited the request (HTTP 429) and the configured retries "
+            f"were exhausted. Raise model.max_retries or run fewer drivers. ({exc})"
+        )
+    if name == "AuthenticationError" or getattr(exc, "status_code", None) == 401:
+        return ProviderError(
+            f"Anthropic rejected the credentials (HTTP 401). Check ANTHROPIC_API_KEY. ({exc})"
+        )
+    if name in {"APITimeoutError", "APIConnectionError"}:
+        return ProviderError(
+            f"Could not reach Anthropic ({name}); check the network or raise "
+            f"model.timeout_seconds. ({exc})"
+        )
+    return ProviderError(f"Anthropic request failed ({name}): {exc}")
 
 
 def to_anthropic_tools(specs: list[dict]) -> list[dict]:
@@ -143,7 +197,85 @@ def to_anthropic_messages(messages: list[SessionMessage]) -> tuple[str, list[dic
                 convo.append({"role": "assistant", "content": blocks})
             else:
                 convo.append({"role": "assistant", "content": message.content})
-    return system, convo
+    return system, _repair_anthropic_tool_pairing(convo)
+
+
+def _tool_use_ids(entry: dict | None) -> set[str]:
+    """The ids of tool_use blocks this assistant message offers."""
+    if entry is None or entry.get("role") != "assistant":
+        return set()
+    content = entry.get("content")
+    if not isinstance(content, list):
+        return set()
+    return {b.get("id", "") for b in content if b.get("type") == "tool_use"}
+
+
+def _tool_result_ids(entry: dict | None) -> set[str]:
+    """The ids this user message answers."""
+    if entry is None or entry.get("role") != "user":
+        return set()
+    content = entry.get("content")
+    if not isinstance(content, list):
+        return set()
+    return {b.get("tool_use_id", "") for b in content if b.get("type") == "tool_result"}
+
+
+def _repair_anthropic_tool_pairing(convo: list[dict]) -> list[dict]:
+    """Make the conversation satisfy Anthropic's strict tool_use/tool_result pairing.
+
+    Anthropic rejects the whole request with HTTP 400 when a ``tool_result`` block has
+    no ``tool_use`` of the same id in the immediately preceding message:
+
+        messages.0.content.0: unexpected `tool_use_id` found in `tool_result` blocks
+
+    which is exactly what compaction produces — the window starts mid-exchange, the
+    result survives and the call that produced it does not. A live Fable 5 run died on
+    it. The OpenAI converter has carried this repair for a while
+    (``_repair_openai_tool_pairing``); this is its counterpart: an orphan result is
+    dropped, and a call left unanswered gets a placeholder so the pair closes rather
+    than the turn being lost.
+    """
+    # Pass 1 — drop results whose call is not in the message right before them.
+    kept_entries: list[dict] = []
+    for entry in convo:
+        content = entry.get("content")
+        if entry.get("role") == "user" and isinstance(content, list):
+            offered = _tool_use_ids(kept_entries[-1] if kept_entries else None)
+            kept = [
+                b
+                for b in content
+                if b.get("type") != "tool_result" or b.get("tool_use_id", "") in offered
+            ]
+            if not kept:
+                # Every block was an orphan result; an empty message is rejected too.
+                continue
+            entry = {**entry, "content": kept}
+        kept_entries.append(entry)
+
+    # Pass 2 — close any call the following message does not answer.
+    out: list[dict] = []
+    for index, entry in enumerate(kept_entries):
+        out.append(entry)
+        offered = _tool_use_ids(entry)
+        if not offered:
+            continue
+        nxt = kept_entries[index + 1] if index + 1 < len(kept_entries) else None
+        missing = sorted(offered - _tool_result_ids(nxt))
+        if missing:
+            out.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": "(no result recorded for this call)",
+                        }
+                        for tool_id in missing
+                    ],
+                }
+            )
+    return out
 
 
 def _anthropic_usage(message: object) -> TokenUsage | None:
