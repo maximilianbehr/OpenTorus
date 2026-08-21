@@ -12,8 +12,9 @@ import json
 import pytest
 
 from opentorus.config import default_config
+from opentorus.research.sources import arxiv as arxiv_module
 from opentorus.research.sources import available_sources, search_all
-from opentorus.research.sources.arxiv import parse_arxiv
+from opentorus.research.sources.arxiv import ArxivSource, parse_arxiv
 from opentorus.research.sources.base import LiteratureSource, SourceError, SourceRecord
 from opentorus.research.sources.crossref import parse_crossref, parse_crossref_single
 from opentorus.research.sources.ieee import parse_ieee
@@ -320,3 +321,51 @@ def test_unexpected_source_error_is_warned(
 def test_source_record_serializable() -> None:
     record = SourceRecord(source="arxiv", title="T", authors=["A"])
     assert json.loads(record.model_dump_json())["title"] == "T"
+
+
+_ATOM_ONE = """<?xml version='1.0'?>
+<feed xmlns='http://www.w3.org/2005/Atom'>
+  <entry>
+    <id>http://arxiv.org/abs/2407.19341v1</id>
+    <title>Spectral Bounds for Cliques</title>
+    <summary>An abstract.</summary>
+    <published>2024-07-27T00:00:00Z</published>
+    <author><name>Ada Lovelace</name></author>
+  </entry>
+</feed>"""
+
+# What the API really answers for an id that does not exist: one entry whose id is an
+# error anchor, so no arXiv id parses out of it.
+_ATOM_ERROR = """<?xml version='1.0'?>
+<feed xmlns='http://www.w3.org/2005/Atom'>
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format</id>
+    <title>Error</title>
+    <summary>incorrect id format for nope</summary>
+  </entry>
+</feed>"""
+
+
+def test_arxiv_lookup_id_returns_real_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An arXiv id resolves to title, year and abstract — the counterpart to lookup_doi.
+
+    Without this, ``paper_fetch`` stored ``arXiv:2407.19341`` as the paper's title.
+    """
+    seen: list[str] = []
+
+    def fake_get(url: str, **kw: object) -> str:
+        seen.append(url)
+        return _ATOM_ONE
+
+    monkeypatch.setattr(arxiv_module, "http_get_text", fake_get)
+    record = ArxivSource().lookup_id("2407.19341")
+    assert record is not None
+    assert record.title == "Spectral Bounds for Cliques"
+    assert record.year == 2024
+    assert record.abstract == "An abstract."
+    assert "id_list=2407.19341" in seen[0]
+
+
+def test_arxiv_lookup_id_treats_error_document_as_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(arxiv_module, "http_get_text", lambda url, **kw: _ATOM_ERROR)
+    assert ArxivSource().lookup_id("nope") is None
