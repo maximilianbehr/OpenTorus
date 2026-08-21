@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
+from opentorus.atomicio import file_lock
 from opentorus.errors import OpenTorusError
 from opentorus.jsonl import append_jsonl, next_id, read_jsonl, rewrite_jsonl
 from opentorus.research.theorems.models import (
@@ -179,19 +180,22 @@ def set_review_status(
         changes["root_relation"] = root_relation
     if problem_id is not None:
         changes["problem_id"] = _pid(problem_id)
-    refs = list_references(ot_dir)
-    wanted = ref_id.strip().upper()
-    updated: TheoremReference | None = None
-    rewritten: list[TheoremReference] = []
-    for ref in refs:
-        if ref.id.upper() == wanted:
-            updated = ref.model_copy(update={**changes, "updated_at": utcnow()})
-            rewritten.append(updated)
-        else:
-            rewritten.append(ref)
-    if updated is None:
-        raise OpenTorusError(f"No theorem reference '{ref_id}'. See `opentorus theorem list`.")
-    rewrite_jsonl(references_path(ot_dir), rewritten)
+    # Read-modify-write: hold the ledger lock across the read and the rewrite, or a
+    # concurrent edit to a different reference is silently reverted by this one.
+    with file_lock(references_path(ot_dir)):
+        refs = list_references(ot_dir)
+        wanted = ref_id.strip().upper()
+        updated: TheoremReference | None = None
+        rewritten: list[TheoremReference] = []
+        for ref in refs:
+            if ref.id.upper() == wanted:
+                updated = ref.model_copy(update={**changes, "updated_at": utcnow()})
+                rewritten.append(updated)
+            else:
+                rewritten.append(ref)
+        if updated is None:
+            raise OpenTorusError(f"No theorem reference '{ref_id}'. See `opentorus theorem list`.")
+        rewrite_jsonl(references_path(ot_dir), rewritten)
     return updated
 
 

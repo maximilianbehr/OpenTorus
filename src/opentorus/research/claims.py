@@ -165,21 +165,28 @@ def get_claim(ot_dir: Path, claim_id: str) -> Claim | None:
 
 def new_claim(ot_dir: Path, statement: str, *, problem_id: str | None = None) -> Claim:
     path = claims_path(ot_dir)
-    existing = read_jsonl(path, Claim)
-    # Workspace and dossier claims share the CLAIM-NNNN prefix; a live campaign had
-    # two different CLAIM-0001s in one workspace, with evidence reading against the
-    # wrong one. Minting across both stores keeps the id space unambiguous.
-    from opentorus.research.dossier.store import all_dossier_claim_ids
+    # Read, mint and write under one lock. Without it two processes in the same
+    # workspace (a REPL and a CLI, say) each read the same file, derive the same next
+    # id, and the second whole-file rewrite drops the first one's claim — both
+    # reporting success. Measured before this: 40 calls, 40 successes, 13 records.
+    from opentorus.atomicio import file_lock
 
-    claim = Claim(
-        id=next_id("CLAIM", [*(c.id for c in existing), *all_dossier_claim_ids(ot_dir)]),
-        statement=statement,
-        problem_id=problem_id,
-        status="idea",
-        allowed_usage=ALLOWED_USAGE["idea"],
-    )
-    existing.append(claim)
-    rewrite_jsonl(path, existing)
+    with file_lock(path):
+        existing = read_jsonl(path, Claim)
+        # Workspace and dossier claims share the CLAIM-NNNN prefix; a live campaign had
+        # two different CLAIM-0001s in one workspace, with evidence reading against the
+        # wrong one. Minting across both stores keeps the id space unambiguous.
+        from opentorus.research.dossier.store import all_dossier_claim_ids
+
+        claim = Claim(
+            id=next_id("CLAIM", [*(c.id for c in existing), *all_dossier_claim_ids(ot_dir)]),
+            statement=statement,
+            problem_id=problem_id,
+            status="idea",
+            allowed_usage=ALLOWED_USAGE["idea"],
+        )
+        existing.append(claim)
+        rewrite_jsonl(path, existing)
     return claim
 
 
@@ -195,6 +202,24 @@ def update_claim(
     if status is not None and status not in VALID_STATUSES:
         raise OpenTorusError(f"Invalid claim status '{status}'. Valid: {', '.join(VALID_STATUSES)}")
 
+    from opentorus.atomicio import file_lock
+
+    # Same read-modify-write window as new_claim: without the lock a concurrent
+    # update reverts this one, or drops a claim created in between.
+    with file_lock(claims_path(ot_dir)):
+        return _update_claim_locked(
+            ot_dir, claim_id, status=status, add_support=add_support, confirm=confirm
+        )
+
+
+def _update_claim_locked(
+    ot_dir: Path,
+    claim_id: str,
+    *,
+    status: ClaimStatus | None,
+    add_support: str | None,
+    confirm: ConfirmCallback | None,
+) -> Claim:
     claims = list_claims(ot_dir)
     target = next((c for c in claims if c.id == claim_id), None)
     if target is None:

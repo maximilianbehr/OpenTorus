@@ -266,26 +266,27 @@ def add_evidence(
         advisory = f"Evidence path '{path}' does not exist on disk yet."
 
     # Update the claim's links and (honestly) its status.
-    claims = store.list_claims(ot_dir, problem_id)
     transition: tuple[str, str] | None = None
-    for c in claims:
-        if c.id != claim_id:
-            continue
-        if evidence.id not in c.evidence_links:
-            c.evidence_links.append(evidence.id)
-        old_status = c.status
-        if direction == "supports" and c.status == "unverified":
-            c.status = "supported"
-        elif direction == "contradicts" and c.status in ("unverified", "supported"):
-            c.status = "contradicted"
-            advisory = (
-                f"{evidence.id} contradicts {claim_id}; status set to 'contradicted'. "
-                "Review the claim — contradictory evidence is preserved, not discarded."
-            )
-        if c.status != old_status:
-            transition = (old_status, c.status)
-        c.updated_at = utcnow()
-    store.rewrite_claims(ot_dir, problem_id, claims)
+    with store.claims_lock(ot_dir, problem_id):
+        claims = store.list_claims(ot_dir, problem_id)
+        for c in claims:
+            if c.id != claim_id:
+                continue
+            if evidence.id not in c.evidence_links:
+                c.evidence_links.append(evidence.id)
+            old_status = c.status
+            if direction == "supports" and c.status == "unverified":
+                c.status = "supported"
+            elif direction == "contradicts" and c.status in ("unverified", "supported"):
+                c.status = "contradicted"
+                advisory = (
+                    f"{evidence.id} contradicts {claim_id}; status set to 'contradicted'. "
+                    "Review the claim — contradictory evidence is preserved, not discarded."
+                )
+            if c.status != old_status:
+                transition = (old_status, c.status)
+            c.updated_at = utcnow()
+        store.rewrite_claims(ot_dir, problem_id, claims)
     if transition is not None:
         _log_status_change(
             ot_dir,
@@ -303,20 +304,23 @@ def set_claim_status(
     ot_dir: Path, problem_id: str, claim_id: str, new_status: ClaimStatus
 ) -> ClaimRecord:
     """Set a claim's status, enforcing that verified statuses need a verification artifact."""
-    claim = store.get_claim(ot_dir, problem_id, claim_id)
-    if claim is None:
-        raise OpenTorusError(f"No claim '{claim_id}' in dossier '{problem_id}'.")
-    assert_can_set_status(
-        new_status,
-        has_verification_artifact=_has_verification_artifact(ot_dir, problem_id, claim),
-    )
-    old_status = claim.status
-    claims = store.list_claims(ot_dir, problem_id)
-    for c in claims:
-        if c.id == claim_id:
-            c.status = new_status
-            c.updated_at = utcnow()
-    store.rewrite_claims(ot_dir, problem_id, claims)
+    # The gate check and the write must see the same ledger: without the lock a
+    # concurrent transition is silently reverted by whichever rewrite lands second.
+    with store.claims_lock(ot_dir, problem_id):
+        claim = store.get_claim(ot_dir, problem_id, claim_id)
+        if claim is None:
+            raise OpenTorusError(f"No claim '{claim_id}' in dossier '{problem_id}'.")
+        assert_can_set_status(
+            new_status,
+            has_verification_artifact=_has_verification_artifact(ot_dir, problem_id, claim),
+        )
+        old_status = claim.status
+        claims = store.list_claims(ot_dir, problem_id)
+        for c in claims:
+            if c.id == claim_id:
+                c.status = new_status
+                c.updated_at = utcnow()
+        store.rewrite_claims(ot_dir, problem_id, claims)
     _log_status_change(
         ot_dir, problem_id, claim_id, old_status, new_status, reason="manual status update"
     )
@@ -345,21 +349,22 @@ def downgrade_claim_type(
             f"downgrade_claim_type only weakens a claim; '{new_type}' is not a downgrade. "
             "Use the verification CRUD to assert a settled result."
         )
-    claim = store.get_claim(ot_dir, problem_id, claim_id)
-    if claim is None:
-        raise OpenTorusError(f"No claim '{claim_id}' in dossier '{problem_id}'.")
-    old_type = claim.type
-    old_status = claim.status
-    claims = store.list_claims(ot_dir, problem_id)
-    for c in claims:
-        if c.id == claim_id:
-            c.type = new_type
-            # A downgraded claim is, by construction, not settled; mark it for review
-            # unless it is already in a terminal/non-verified state.
-            if c.status in ("verified", "formally_verified", "supported", "unverified"):
-                c.status = "needs_review"
-            c.updated_at = utcnow()
-    store.rewrite_claims(ot_dir, problem_id, claims)
+    with store.claims_lock(ot_dir, problem_id):
+        claim = store.get_claim(ot_dir, problem_id, claim_id)
+        if claim is None:
+            raise OpenTorusError(f"No claim '{claim_id}' in dossier '{problem_id}'.")
+        old_type = claim.type
+        old_status = claim.status
+        claims = store.list_claims(ot_dir, problem_id)
+        for c in claims:
+            if c.id == claim_id:
+                c.type = new_type
+                # A downgraded claim is, by construction, not settled; mark it for review
+                # unless it is already in a terminal/non-verified state.
+                if c.status in ("verified", "formally_verified", "supported", "unverified"):
+                    c.status = "needs_review"
+                c.updated_at = utcnow()
+        store.rewrite_claims(ot_dir, problem_id, claims)
     updated = store.get_claim(ot_dir, problem_id, claim_id)
     assert updated is not None
     _log_status_change(
@@ -541,17 +546,20 @@ def verify_counterexample(
             "as verified."
         )
     old_status = claim.status
-    claims = store.list_claims(ot_dir, problem_id)
-    for c in claims:
-        if c.id == claim_id:
-            c.type = "COUNTEREXAMPLE_VERIFIED"
-            c.status = "verified"
-            if verification_artifact not in c.source_artifacts:
-                c.source_artifacts.append(verification_artifact)
-            if summary:
-                c.notes = (c.notes + "\n" + summary).strip()
-            c.updated_at = utcnow()
-    store.rewrite_claims(ot_dir, problem_id, claims)
+    # This is the one transition that reaches 'verified'; it must not be written
+    # back over a concurrent change, nor be overwritten by one.
+    with store.claims_lock(ot_dir, problem_id):
+        claims = store.list_claims(ot_dir, problem_id)
+        for c in claims:
+            if c.id == claim_id:
+                c.type = "COUNTEREXAMPLE_VERIFIED"
+                c.status = "verified"
+                if verification_artifact not in c.source_artifacts:
+                    c.source_artifacts.append(verification_artifact)
+                if summary:
+                    c.notes = (c.notes + "\n" + summary).strip()
+                c.updated_at = utcnow()
+        store.rewrite_claims(ot_dir, problem_id, claims)
     _log_status_change(
         ot_dir,
         problem_id,
