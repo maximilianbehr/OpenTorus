@@ -402,3 +402,34 @@ def test_config_set_round_trips_campaign_key_on_old_file(tmp_path: Path, monkeyp
     result = CliRunner().invoke(app, ["config", "set", "campaign.token_budget", "1234"])
     assert result.exit_code == 0, result.output
     assert load_config(path).campaign.token_budget == 1234
+
+
+def test_write_config_keeps_a_scalar_longer_than_yamls_wrap_width(tmp_path: Path) -> None:
+    """A long value must survive the round trip intact.
+
+    The commented-config renderer emitted each scalar with ``yaml.safe_dump`` and
+    kept the first line of the dump. PyYAML wraps plain scalars at 80 columns, so
+    anything longer lost everything after the wrap: a Coq container command with
+    two bind mounts came back ending at the second mount, and ``config set``
+    refused the write because it no longer re-read as what it was given. The
+    example driver that sets it died nine seconds in.
+    """
+    from opentorus.config import CONFIG_FILENAME, set_dotted, write_config
+
+    init_workspace(tmp_path)
+    path = workspace_dir(tmp_path) / CONFIG_FILENAME
+    long_value = (
+        "docker run --rm -v /tmp:/tmp "
+        "-v /var/folders/rf/b7v4cdrj15384l8gx5pgb85w0000gp/T/:"
+        "/var/folders/rf/b7v4cdrj15384l8gx5pgb85w0000gp/T/ "
+        "coqorg/coq:8.20 coqtop -batch -load-vernac-source"
+    )
+    assert len(long_value) > 80  # the wrap width that used to truncate it
+
+    write_config(path, set_dotted(load_config(path), "tools.verifiers.coq_command", long_value))
+
+    assert load_config(path).tools.verifiers.coq_command == long_value
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert raw["tools"]["verifiers"]["coq_command"] == long_value
+    # The comments the renderer exists to preserve are still there.
+    assert path.read_text(encoding="utf-8").lstrip().startswith("#")

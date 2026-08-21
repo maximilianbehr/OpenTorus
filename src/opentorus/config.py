@@ -563,9 +563,18 @@ def write_default_config(path: Path) -> None:
 _CONFIG_KEY_RE = re.compile(r"^(\s*)([A-Za-z0-9_]+):(?:[ \t]+(\S.*))?$")
 
 
+# PyYAML wraps plain scalars at ``width`` (default 80). This renderer keeps only the
+# first line of the dump, so any wrap silently truncated the value — a container
+# command with two bind mounts lost everything after the second one, and
+# ``config set`` could not store it at all. Emit on one line instead of trimming one.
+_NO_WRAP = 1 << 30
+
+
 def _format_scalar(value: object) -> str:
     """Render a Python scalar as a single-line YAML value (``null``, ``true``, …)."""
-    return yaml.safe_dump(value, default_flow_style=True, allow_unicode=True).split("\n", 1)[0]
+    return yaml.safe_dump(value, default_flow_style=True, allow_unicode=True, width=_NO_WRAP).split(
+        "\n", 1
+    )[0]
 
 
 def _lookup(data: dict, path: list[str]) -> tuple[bool, object]:
