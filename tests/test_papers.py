@@ -222,7 +222,12 @@ def test_paper_fetch_cli_normalises_a_full_arxiv_url(tmp_path: Path, monkeypatch
         return papers_mod.add_paper(ot_dir, f"https://arxiv.org/abs/{record.arxiv_id}")
 
     monkeypatch.setattr("opentorus.research.papers.acquire_paper", _fake_acquire)
-    result = CliRunner().invoke(app, ["paper", "fetch", "https://arxiv.org/abs/2002.01682"])
+    # "no" to the metadata lookup on export.arxiv.org: it keeps this test off the
+    # network, and it pins the degrade path — a declined (or unreachable) title lookup
+    # must still fetch the paper, since the PDF lives on the separate host arxiv.org.
+    result = CliRunner().invoke(
+        app, ["paper", "fetch", "https://arxiv.org/abs/2002.01682"], input="no\n"
+    )
     assert result.exit_code == 0, result.output
     assert seen["arxiv_id"] == "2002.01682"
     bad = CliRunner().invoke(app, ["paper", "fetch", "not-an-identifier"])

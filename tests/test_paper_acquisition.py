@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from opentorus.config import default_config
 from opentorus.research.papers import (
     Resolution,
     acquire_paper,
@@ -141,3 +142,83 @@ def test_resolution_model_defaults() -> None:
     res = Resolution()
     assert res.accessible is False
     assert res.pdf_url is None
+
+
+def test_arxiv_placeholder_title_is_replaced_by_the_real_one(tmp_path: Path) -> None:
+    """A stored ``arXiv:<id>`` title must not survive a fetch that knows the real one.
+
+    The upgrade path reads ``paper.title or record.title``, and a placeholder is
+    truthy — so every arXiv paper kept its id as its title forever, including the ones
+    already on disk. Re-fetching now repairs them.
+    """
+    ot = _ot(tmp_path)
+    stub = SourceRecord(source="arxiv", title="arXiv:2407.19341", arxiv_id="2407.19341")
+    first = acquire_paper(ot, stub, downloader=lambda u: b"%PDF")
+    assert first.title == "arXiv:2407.19341"
+
+    real = SourceRecord(
+        source="arxiv",
+        title="Spectral Bounds for Cliques",
+        arxiv_id="2407.19341v1",
+        year=2024,
+    )
+    again = acquire_paper(ot, real, downloader=lambda u: b"%PDF")
+    assert again.id == first.id, "must upgrade in place, not duplicate the paper"
+    assert again.title == "Spectral Bounds for Cliques"
+    assert again.year == 2024
+
+
+def test_a_real_title_is_never_overwritten(tmp_path: Path) -> None:
+    """The repair only touches placeholders — a known title stays put."""
+    ot = _ot(tmp_path)
+    good = SourceRecord(source="arxiv", title="Spectral Bounds", arxiv_id="2407.19341")
+    first = acquire_paper(ot, good, downloader=lambda u: b"%PDF")
+    later = SourceRecord(source="arxiv", title="(untitled)", arxiv_id="2407.19341")
+    again = acquire_paper(ot, later, downloader=lambda u: b"%PDF")
+    assert again.id == first.id
+    assert again.title == "Spectral Bounds"
+
+
+def test_paper_fetch_stores_the_looked_up_arxiv_title(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """``paper_fetch`` on an arXiv id stores the real title, year and abstract.
+
+    It used to store ``arXiv:<id>`` as the title with year and abstract left null,
+    while a DOI fetched by the same tool got all three from crossref. A title field
+    holding a string that reads as a title but is really the id is worse than an
+    honest blank: nothing downstream can tell it is missing.
+    """
+    from opentorus.research.sources import arxiv as arxiv_module
+    from opentorus.tools.base import ToolCall
+    from opentorus.tools.research import PaperFetchTool
+
+    ot = _ot(tmp_path)
+    config = default_config()
+    # trusted + autonomous is the only combination that needs no per-host prompt;
+    # the point here is the stored metadata, not the consent path.
+    config.permissions.mode = "trusted"
+    config.agent.style = "autonomous"
+
+    monkeypatch.setattr(
+        arxiv_module.ArxivSource,
+        "lookup_id",
+        lambda self, ident: SourceRecord(
+            source="arxiv",
+            title="Spectral Bounds for Cliques",
+            arxiv_id=ident,
+            year=2024,
+            abstract="An abstract.",
+        ),
+    )
+    monkeypatch.setattr(
+        "opentorus.research.sources.base.http_get_bytes", lambda url, **kw: b"%PDF-1.4 x"
+    )
+
+    tool = PaperFetchTool(ot, config)
+    result = tool.run(ToolCall(name="paper_fetch", args={"identifier": "2407.19341"}))
+    assert result.ok, result.content
+
+    [paper] = list_papers(ot)
+    assert paper.title == "Spectral Bounds for Cliques"
+    assert paper.year == 2024
+    assert paper.abstract == "An abstract."
+    assert "arXiv:" not in paper.title

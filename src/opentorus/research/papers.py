@@ -194,6 +194,22 @@ def _is_url(source: str) -> bool:
 _ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/(?P<id>[^\s?#]+)", re.IGNORECASE)
 
 
+def _is_stub_title(title: str | None, arxiv_id: str | None) -> bool:
+    """True when a stored title is a placeholder rather than a real one.
+
+    ``paper_fetch`` used to store ``arXiv:2407.19341`` as an arXiv paper's title. The
+    upgrade path below reads ``paper.title or record.title``, and a placeholder is
+    truthy — so once a paper was stored that way, no later fetch carrying the real
+    title could ever replace it. Recognising the placeholders makes those records
+    repairable by re-fetching, including the ones already on disk.
+    """
+    text = (title or "").strip()
+    if not text or text == "(untitled)":
+        return True
+    bare = _normalize_arxiv_id(arxiv_id)
+    return bool(bare) and text.lower() in {f"arxiv:{bare}", str(bare)}
+
+
 def _normalize_arxiv_id(arxiv_id: str | None) -> str | None:
     """Bare arXiv id without a trailing version (e.g. ``2002.01682v1`` -> ``2002.01682``).
 
@@ -435,6 +451,28 @@ def resolve_full_text(
     )
 
 
+def _repair_stub_metadata(paper: Paper, record: SourceRecord) -> bool:
+    """Fill a cached paper's placeholder/absent fields from a fresher record.
+
+    Returns whether anything changed, so the caller only rewrites metadata.yaml when
+    there is something to write. Only fields that are *missing* are touched — a title
+    already known is never replaced, least of all by another placeholder.
+    """
+    changed = False
+    if _is_stub_title(paper.title, paper.arxiv_id or record.arxiv_id) and not _is_stub_title(
+        record.title, record.arxiv_id
+    ):
+        paper.title = record.title
+        changed = True
+    for field in ("year", "abstract", "citation_count"):
+        if getattr(paper, field, None) is None and getattr(record, field, None) is not None:
+            setattr(paper, field, getattr(record, field))
+            changed = True
+    if changed:
+        paper.updated_at = _utcnow()
+    return changed
+
+
 def _find_cached(ot_dir: Path, record: SourceRecord) -> Paper | None:
     doi = (record.doi or "").lower()
     arxiv_id = (_normalize_arxiv_id(record.arxiv_id) or "").lower()
@@ -463,8 +501,14 @@ def acquire_paper(
     with metadata + abstract only and an honest ``full_text_accessible=False``.
     """
     cached = _find_cached(ot_dir, record)
-    # A cached record that already has full text (or a local copy) is reused as-is.
+    # A cached record that already has full text (or a local copy) is reused as-is —
+    # but placeholder metadata is repaired first. A paper stored before the arXiv branch
+    # looked anything up carries "arXiv:<id>" as its title and no year, and this early
+    # return is what made that permanent: the download it skips is exactly the evidence
+    # that the paper is already here, so no later fetch ever reached the upgrade path.
     if cached is not None and (cached.full_text_accessible or cached.local_path):
+        if _repair_stub_metadata(cached, record):
+            _save_meta(ot_dir, cached)
         return _parse_full_text_if_needed(ot_dir, cached)
 
     download = downloader
@@ -482,7 +526,8 @@ def acquire_paper(
         paper = cached
         paper_dir = papers_dir(ot_dir) / paper.id
         paper_dir.mkdir(parents=True, exist_ok=True)
-        paper.title = paper.title or record.title
+        if _is_stub_title(paper.title, paper.arxiv_id or record.arxiv_id):
+            paper.title = record.title or paper.title
         paper.doi = paper.doi or record.doi
         paper.arxiv_id = _normalize_arxiv_id(paper.arxiv_id or record.arxiv_id)
         paper.year = paper.year or record.year

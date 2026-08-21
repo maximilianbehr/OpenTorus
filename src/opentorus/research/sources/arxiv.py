@@ -69,3 +69,20 @@ class ArxivSource(LiteratureSource):
             {"search_query": f"all:{query}", "start": 0, "max_results": limit},
         )
         return parse_arxiv(http_get_text(url))
+
+    def lookup_id(self, arxiv_id: str) -> SourceRecord | None:
+        """The record for one arXiv id, or ``None`` when the API knows no such paper.
+
+        The counterpart to :meth:`CrossrefSource.lookup_doi`. ``paper_fetch`` had no
+        arXiv equivalent, so it synthesised ``title=f"arXiv:{id}"`` and downloaded the
+        PDF: every arXiv paper landed carrying its own id as its title, with no year,
+        authors or abstract, while a DOI fetched right next to it got all of them.
+        """
+        url = build_url(API, {"id_list": arxiv_id, "max_results": 1})
+        records = parse_arxiv(http_get_text(url))
+        if not records:
+            return None
+        # An unknown id still yields one entry, but it is the API's error document:
+        # its id is ``.../api/errors#…`` rather than an ``/abs/`` link, so no arXiv id
+        # is parsed out of it. That is a miss, not a paper.
+        return records[0] if records[0].arxiv_id else None
