@@ -60,13 +60,22 @@ class OpenAIProvider(BaseProvider):
 
         kwargs = build_openai_request(self.config, messages, tools)
         client = OpenAI(**openai_client_kwargs(self.config))
+        endpoint = _endpoint_key(self.name, self.config.model.base_url)
+        known_bad = _REJECTED_FIELDS.setdefault(endpoint, set())
+        for stale in known_bad & kwargs.keys():
+            kwargs.pop(stale)
         try:
             completion = client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - translate, never leak the SDK's own type
             field = unsupported_request_field(exc)
             if field is None or field not in kwargs:
                 raise _provider_error(exc, self.name) from exc
-            _logger.info("%s rejected the request field %r; retrying without it.", self.name, field)
+            _logger.info(
+                "%s rejected the request field %r; dropping it for this endpoint.",
+                self.name,
+                field,
+            )
+            known_bad.add(field)
             kwargs.pop(field)
             try:
                 completion = client.chat.completions.create(**kwargs)
@@ -95,6 +104,16 @@ _EXTRA_FORBIDDEN = re.compile(
 # Optional sampling knobs only: never retry by dropping `messages`, `model` or `tools`,
 # where a silent retry would change the question rather than the request shape.
 _DROPPABLE_FIELDS = frozenset({"seed", "top_p", "max_tokens", "temperature", "stream_options"})
+
+
+# Remembered per endpoint for the life of the process. Without this the field is sent,
+# rejected and retried on EVERY turn: a live Mistral run logged 14 rejections in its
+# first 28 requests, doubling both the latency and the bill for the same answers.
+_REJECTED_FIELDS: dict[str, set[str]] = {}
+
+
+def _endpoint_key(provider: str, base_url: str | None) -> str:
+    return f"{provider}@{base_url or 'default'}"
 
 
 def unsupported_request_field(exc: Exception) -> str | None:

@@ -243,6 +243,56 @@ def test_a_rejected_field_is_dropped_and_the_call_retried(
     assert "seed" not in seen[1]
 
 
+def test_a_rejected_field_is_remembered_for_the_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sending it again every turn doubles the request count and the bill: a live run
+    logged 14 rejections in its first 28 requests for the same field."""
+    import sys
+    import types
+
+    from opentorus.providers import openai_provider
+
+    seen: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):  # noqa: ANN003, ANN201
+            seen.append(dict(kwargs))
+            if "seed" in kwargs:
+                raise ValueError(_MISTRAL_422)
+            return types.SimpleNamespace(
+                model="m",
+                usage=None,
+                choices=[
+                    types.SimpleNamespace(
+                        finish_reason="stop",
+                        message=types.SimpleNamespace(content="ok", tool_calls=None),
+                    )
+                ],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    stub = types.ModuleType("openai")
+    stub.OpenAI = FakeOpenAI  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", stub)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-a-real-secret")
+    monkeypatch.setattr(openai_provider, "_REJECTED_FIELDS", {})
+
+    config = set_dotted(default_config(), "model.provider", "openai")
+    config = set_dotted(config, "model.seed", "5")
+    provider = get_provider(config)
+    provider.generate([])
+    provider.generate([])
+    provider.generate([])
+
+    rejected = [k for k in seen if "seed" in k]
+    assert len(rejected) == 1, "the field must be rejected once, then never sent again"
+    assert len(seen) == 4, "one rejected call plus three clean ones"
+
+
 def test_a_rejection_of_something_undroppable_still_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
