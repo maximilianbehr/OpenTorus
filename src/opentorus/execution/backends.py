@@ -42,7 +42,16 @@ def _host_id() -> str:
 
 
 def _process_alive(pid: int) -> bool:
-    """True if ``pid`` names a live process on this host."""
+    """True if ``pid`` names a live process on this host.
+
+    POSIX only. On Windows ``os.kill(pid, 0)`` does **not** probe — CPython maps
+    every signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT to ``TerminateProcess``,
+    so the probe would kill the very process it asks about, and this answer decides
+    whether a container gets reaped. Reporting "alive" there costs an unreaped
+    container after a hard kill; the alternative costs a running OpenTorus.
+    """
+    if os.name == "nt":  # pragma: no cover - POSIX CI
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

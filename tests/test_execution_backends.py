@@ -254,3 +254,23 @@ def test_reap_orphans_kills_them_and_survives_a_failing_runtime(
         lambda *a, **kw: ShellResult(command="ps", stdout="", stderr="boom", exit_code=1),
     )
     assert backend.reap_orphans() == []
+
+
+def test_process_liveness_never_probes_with_a_signal_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`os.kill(pid, 0)` is not a probe on Windows — it terminates the process.
+
+    CPython maps every signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT to
+    TerminateProcess, and this answer decides whether a container is reaped, so a
+    probe there would kill the running OpenTorus it is asking about. Reporting
+    "alive" costs an unreaped container after a hard kill; the alternative costs a
+    live process.
+    """
+    monkeypatch.setattr(backends_mod.os, "name", "nt")
+
+    def _explode(*_a, **_kw):  # pragma: no cover - must never be reached
+        raise AssertionError("os.kill must not be called on Windows")
+
+    monkeypatch.setattr(backends_mod.os, "kill", _explode)
+    assert backends_mod._process_alive(999_999_000) is True
