@@ -8,6 +8,7 @@ fallback works offline.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from opentorus.execution import (
 )
 from opentorus.execution import backends as backends_mod
 from opentorus.execution.base import ExecutionRequest
+from opentorus.tools.shell import ShellResult
 
 
 def _req(tmp_path: Path, **kw) -> ExecutionRequest:
@@ -179,3 +181,76 @@ def test_docker_run_kills_the_named_container_when_the_client_times_out(
     )
     assert backend.run(_req(tmp_path, image="img", command="python ok.py")).exit_code == 0
     assert seen["killed"] == []
+
+
+def test_docker_argv_stamps_owner_labels(tmp_path: Path) -> None:
+    """A named container carries who started it, so orphans stay identifiable."""
+    argv = DockerBackend().build_argv(_req(tmp_path, image="img"), name="opentorus-abc")
+    labels = [argv[i + 1] for i, token in enumerate(argv) if token == "--label"]
+    assert f"{backends_mod.OWNER_PID_LABEL}={os.getpid()}" in labels
+    assert any(label.startswith(f"{backends_mod.OWNER_HOST_LABEL}=") for label in labels)
+
+
+def test_docker_argv_without_name_has_no_owner_labels(tmp_path: Path) -> None:
+    argv = DockerBackend().build_argv(_req(tmp_path, image="img"))
+    assert "--label" not in argv
+
+
+def _ps_line(name: str, pid: int, host: str) -> str:
+    return f"{name}\t{pid}\t{host}"
+
+
+def test_orphan_containers_lists_only_dead_owners_on_this_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A container whose OpenTorus process is gone is an orphan; a live one is not.
+
+    The ``finally`` cleanup in ``run`` cannot help when the owning process is
+    SIGKILLed — a stress run left an experiment container going 26 minutes after
+    its owner died. Reaping by owner label is what recovers that case.
+    """
+    here = backends_mod._host_id()
+    dead_pid = 999_999_000
+    monkeypatch.setattr(backends_mod, "_process_alive", lambda pid: pid != dead_pid)
+    lines = "\n".join(
+        [
+            _ps_line("opentorus-dead", dead_pid, here),
+            _ps_line("opentorus-live", os.getpid(), here),
+            _ps_line("opentorus-elsewhere", dead_pid, "some-other-host"),
+        ]
+    )
+    monkeypatch.setattr(
+        backends_mod,
+        "run_argv",
+        lambda *a, **kw: ShellResult(command="ps", stdout=lines, stderr="", exit_code=0),
+    )
+    assert DockerBackend().orphan_containers() == ["opentorus-dead"]
+
+
+def test_reap_orphans_kills_them_and_survives_a_failing_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(backends_mod, "_process_alive", lambda pid: False)
+    monkeypatch.setattr(
+        backends_mod,
+        "run_argv",
+        lambda *a, **kw: ShellResult(
+            command="ps",
+            stdout=_ps_line("opentorus-dead", 424242, backends_mod._host_id()),
+            stderr="",
+            exit_code=0,
+        ),
+    )
+    killed: list[str] = []
+    backend = DockerBackend()
+    monkeypatch.setattr(backend, "_kill", killed.append)
+    assert backend.reap_orphans() == ["opentorus-dead"]
+    assert killed == ["opentorus-dead"]
+
+    # A runtime that errors out must not take the run that noticed down with it.
+    monkeypatch.setattr(
+        backends_mod,
+        "run_argv",
+        lambda *a, **kw: ShellResult(command="ps", stdout="", stderr="boom", exit_code=1),
+    )
+    assert backend.reap_orphans() == []
