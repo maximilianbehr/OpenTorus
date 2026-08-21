@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.16] — 2026-08-21
+
 A load test against a self-hosted vLLM endpoint became a bug hunt. Across 167 example
 driver runs — 82 hours of driver time, 4,959 model requests, not one provider error —
 the shipped examples ran in parallel cohorts against a local `gemma-4-31b-it-nvfp4`,
