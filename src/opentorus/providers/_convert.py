@@ -90,7 +90,68 @@ def to_openai_messages(messages: list[SessionMessage]) -> list[dict]:
                     "content": message.content,
                 }
             )
-    return _repair_openai_tool_pairing(out)
+    return _repair_openai_tool_pairing(_fold_late_system_messages(out))
+
+
+def _append_text(content: str | list[dict], text: str) -> str | list[dict]:
+    """Add ``text`` to a user message's content, string or multimodal block list."""
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": text}]
+    joined = f"{content}\n\n{text}" if content else text
+    return joined.strip()
+
+
+def _fold_late_system_messages(out: list[dict]) -> list[dict]:
+    """Fold any ``system`` message past the leading run into a ``user`` turn.
+
+    OpenTorus deliberately places volatile state (workspace inventory, retrieval
+    hits) late, so everything ahead of it stays a reusable prefix for a local
+    server's KV cache — see ``agent.context`` and ``tests/test_stable_prefix.py``.
+    It carries that block as a ``system`` message, which the qwen-family chat
+    template rejects outright: vLLM answers ``400 System message must be at the
+    beginning`` and the run dies on its first call. Six campaign drivers died that
+    way 38 seconds in, against a model that had answered a tool-calling probe
+    moments earlier.
+
+    The fix belongs here rather than in the context builder: this is where the wire
+    format is produced, the internal message model stays untouched (transcripts and
+    the prefix reasoning with it), and *every* late system message is covered, not
+    just today's. Folding into an adjacent user turn — rather than emitting a
+    standalone ``user`` message — also avoids two same-role messages in a row, which
+    is what other strict local templates refuse.
+    """
+    head = 0
+    while head < len(out) and out[head].get("role") == "system":
+        head += 1
+    folded: list[dict] = out[:head]
+    pending = ""  # a folded block waiting for the user turn it belongs to
+    for message in out[head:]:
+        role = message.get("role")
+        if role == "system":
+            text = message.get("content") or ""
+            if folded and folded[-1].get("role") == "user":
+                folded[-1] = {**folded[-1], "content": _append_text(folded[-1]["content"], text)}
+            else:
+                # Nothing to merge into behind us; carry it to the next user turn so
+                # the user's own words still end that turn.
+                pending = f"{pending}\n\n{text}".strip() if pending else text
+            continue
+        if role == "user" and pending:
+            # Prepend, so the question remains the last thing the model reads.
+            folded.append({**message, "content": _prepend_text(message["content"], pending)})
+            pending = ""
+            continue
+        folded.append(message)
+    if pending:
+        folded.append({"role": "user", "content": pending})
+    return folded
+
+
+def _prepend_text(content: str | list[dict], text: str) -> str | list[dict]:
+    if isinstance(content, list):
+        return [{"type": "text", "text": text}, *content]
+    joined = f"{text}\n\n{content}" if content else text
+    return joined.strip()
 
 
 _INTERRUPTED_TOOL_RESULT = (
