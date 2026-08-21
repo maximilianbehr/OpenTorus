@@ -38,6 +38,11 @@ class ToolEnvironment(BaseModel):
     # to the workspace root unless absolute.
     build_context: str | None = None
     containerfile: str | None = None
+    # sha256 of the Containerfile this workspace's image was built from. A local
+    # image is named by a mutable tag, so the recorded hash is what lets a run
+    # verify it is about to execute in *this* workspace's environment and not in
+    # one another workspace left under the same tag.
+    containerfile_sha256: str | None = None
 
     @property
     def is_bring_your_own(self) -> bool:

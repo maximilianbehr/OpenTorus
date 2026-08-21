@@ -22,12 +22,17 @@ from opentorus.config import Config, default_config, load_config
 from opentorus.errors import OpenTorusError
 from opentorus.execution.environments import (
     ENVIRONMENTS_FILENAME,
+    ToolEnvironment,
     list_environments,
     resolve_environment,
 )
 from opentorus.tools.shell import run_argv
 
 _LOCAL_IMAGE_TAG = "opentorus-{name}:local"
+_LOCAL_IMAGE_TAG_HASHED = "opentorus-{name}:{short}"
+# How much of the Containerfile hash goes into the tag. 12 hex chars is git's
+# short-sha convention and far beyond collision range for one machine's images.
+_IMAGE_TAG_HASH_CHARS = 12
 _CONTAINERFILE_NAMES = ("Dockerfile", "Containerfile", "dockerfile", "containerfile")
 # Image label carrying the sha256 of the Containerfile the image was built from,
 # so `env prepare` can tell a current image from a stale one instead of blindly
@@ -52,8 +57,28 @@ class PrepareResult:
     reason: str = ""
 
 
-def local_image_tag(name: str) -> str:
-    return _LOCAL_IMAGE_TAG.format(name=name)
+def local_image_tag(name: str, containerfile_hash: str | None = None) -> str:
+    """Tag for a locally built environment image, addressed by build input.
+
+    The tag carries the first :data:`_IMAGE_TAG_HASH_CHARS` hex chars of the
+    Containerfile's sha256, so two workspaces that build *different*
+    Containerfiles under the same environment name can never share one image.
+    It used to be ``opentorus-{name}:local`` for every workspace on the machine,
+    and all shipped examples call their environment ``python-sci``: a second
+    workspace's ``env prepare`` then silently replaced the image the first one
+    was pinned to, and the first one's experiments ran against another
+    workspace's dependency set while its ``environments.yaml`` still named its
+    own Containerfile. Identical Containerfiles still converge on one tag, so
+    the common case shares an image instead of racing over it.
+
+    ``containerfile_hash=None`` keeps the legacy unqualified tag, which is what
+    an explicit ``--tag`` and pre-existing workspaces still resolve to.
+    """
+    if not containerfile_hash:
+        return _LOCAL_IMAGE_TAG.format(name=name)
+    return _LOCAL_IMAGE_TAG_HASHED.format(
+        name=name, short=containerfile_hash[:_IMAGE_TAG_HASH_CHARS]
+    )
 
 
 def workspace_root(ot_dir: Path) -> Path:
@@ -182,7 +207,26 @@ def _pick_container_runtime(config: Config) -> str:
     )
 
 
+def _resolve_image_id(runtime: str, tag: str) -> str | None:
+    """The image id a tag resolves to, the way ``run`` resolves it.
+
+    ``image inspect <tag>`` is not a reliable existence test: after several
+    concurrent builds wrote the same tag, a stress run left a daemon where
+    ``docker images -q`` and ``docker run`` both resolved the tag while
+    ``docker image inspect <tag>`` answered "No such image". Asking for the id
+    first, and inspecting *that*, keeps the check on the same lookup the run
+    itself will use.
+    """
+    result = run_argv([runtime, "images", "-q", tag], timeout=30)
+    if result.exit_code != 0:
+        return None
+    first = result.stdout.strip().splitlines()
+    return first[0].strip() if first and first[0].strip() else None
+
+
 def _image_exists(runtime: str, tag: str) -> bool:
+    if _resolve_image_id(runtime, tag):
+        return True
     result = run_argv([runtime, "image", "inspect", tag], timeout=30)
     return result.exit_code == 0
 
@@ -192,13 +236,57 @@ def containerfile_sha256(containerfile: Path) -> str:
     return hashlib.sha256(containerfile.read_bytes()).hexdigest()
 
 
+def environment_image_mismatch(env: ToolEnvironment, *, runtime: str) -> str | None:
+    """Explain why ``env.image`` is not the image this workspace built, else ``None``.
+
+    A locally built image is referenced by tag, and a tag is mutable: another
+    workspace's ``env prepare`` can leave a different image under it. Comparing
+    the recorded Containerfile hash against the label stamped on the image at
+    build time turns that from a silent wrong-environment run into a refusal.
+
+    Returns ``None`` when there is nothing to check (no recorded hash — an
+    environment prepared before the hash was recorded, or a bring-your-own
+    image) or when the image is the expected one.
+    """
+    expected = env.containerfile_sha256
+    if not expected or not env.image:
+        return None
+    if runtime not in ("docker", "podman"):
+        return None
+    stored = _image_label(runtime, env.image, CONTAINERFILE_LABEL)
+    if stored == expected:
+        return None
+    rebuild = f"Run: opentorus env prepare {env.name} --rebuild"
+    if not _image_exists(runtime, env.image):
+        return (
+            f"Environment '{env.name}' points at image '{env.image}', which no longer "
+            f"exists. Nothing was executed. {rebuild}"
+        )
+    if stored is None:
+        return (
+            f"Environment '{env.name}' points at image '{env.image}', which carries no "
+            f"{CONTAINERFILE_LABEL} label, so it cannot be shown to be the image this "
+            f"workspace built. Nothing was executed. {rebuild}"
+        )
+    return (
+        f"Environment '{env.name}' points at image '{env.image}', but that image was "
+        f"built from a different Containerfile (image {stored[:12]}, this workspace "
+        f"{expected[:12]}) — another workspace on this machine most likely replaced it. "
+        f"Nothing was executed, so no result is attributed to the wrong environment. "
+        f"{rebuild}"
+    )
+
+
 def _image_label(runtime: str, tag: str, label: str) -> str | None:
     """Return ``label``'s value on the image, or ``None`` if image/label is absent.
 
     Parses ``image inspect`` JSON rather than a Go template so the same code
     reads Docker (``.Config.Labels``) and Podman (also top-level ``.Labels``).
+    Inspects the *resolved id* where the daemon can give one — inspecting by tag
+    alone has been seen to fail on a tag that ``run`` resolves perfectly well.
     """
-    result = run_argv([runtime, "image", "inspect", tag], timeout=30)
+    reference = _resolve_image_id(runtime, tag) or tag
+    result = run_argv([runtime, "image", "inspect", reference], timeout=30)
     if result.exit_code != 0:
         return None
     try:
@@ -265,6 +353,7 @@ def _write_workspace_override(
     default_command: str,
     build_context: Path,
     containerfile: Path,
+    containerfile_hash: str | None = None,
 ) -> Path:
     root = workspace_root(ot_dir)
     path = ot_dir / ENVIRONMENTS_FILENAME
@@ -279,6 +368,10 @@ def _write_workspace_override(
     entry["default_command"] = default_command
     entry["build_context"] = _rel_to_workspace(root, build_context)
     entry["containerfile"] = _rel_to_workspace(root, containerfile)
+    # Recorded so a later run can check that the image still is the one this
+    # workspace built, rather than trusting the tag it happens to carry.
+    if containerfile_hash:
+        entry["containerfile_sha256"] = containerfile_hash
     environments[name] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
@@ -325,7 +418,6 @@ def prepare_environment(
         else default_config()
     )
     runtime = _pick_container_runtime(cfg)
-    tag = image_tag or local_image_tag(name)
     context, cf = resolve_build_paths(
         ot_dir,
         name,
@@ -333,6 +425,9 @@ def prepare_environment(
         build_context=build_context,
     )
     cf_hash = containerfile_sha256(cf)
+    # The tag is derived from the build input, so a differing Containerfile lands
+    # on a differing tag instead of overwriting another workspace's image.
+    tag = image_tag or local_image_tag(name, cf_hash)
     # Decide build-vs-reuse from the Containerfile hash stamped on the image at
     # build time — an image that merely carries the tag is not proof it was built
     # from the *current* Containerfile.
@@ -375,6 +470,7 @@ def prepare_environment(
         default_command=cmd,
         build_context=context,
         containerfile=cf,
+        containerfile_hash=cf_hash,
     )
     return PrepareResult(
         name=name,

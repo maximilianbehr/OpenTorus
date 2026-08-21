@@ -17,10 +17,13 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from opentorus.execution.environments import ToolEnvironment
 
 from opentorus.actions import log_action
 from opentorus.config import CONFIG_FILENAME, Config, default_config, load_config
@@ -490,6 +493,7 @@ def _run_via_backend(
 
     root = ot_dir.parent
     image: str | None = None
+    env: ToolEnvironment | None = None
     env_name = experiment.environment
     default_command = experiment.command or f"{sys.executable} run.py"
     if env_name is not None:
@@ -537,6 +541,26 @@ def _run_via_backend(
             backend="unavailable", tool_environment=env_name, image_ref=image
         )
         return result, provenance
+
+    # A local image is named by a mutable tag. Before running, check that the tag
+    # still carries the image this workspace built — otherwise the run would be
+    # attributed to this workspace's Containerfile while executing in someone
+    # else's dependency set.
+    if env is not None and image is not None:
+        from opentorus.execution.prepare import environment_image_mismatch
+
+        mismatch = environment_image_mismatch(env, runtime=backend.name)
+        if mismatch:
+            result = ShellResult(
+                command=in_container_command,
+                stdout="",
+                stderr=mismatch,
+                exit_code=127,
+            )
+            provenance = ExecProvenance(
+                backend="unavailable", tool_environment=env_name, image_ref=image
+            )
+            return result, provenance
 
     request = ExecutionRequest(
         command=in_container_command,
