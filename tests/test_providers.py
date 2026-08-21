@@ -177,3 +177,76 @@ def test_an_unrecognised_sdk_failure_still_becomes_a_provider_error(
     config = set_dotted(default_config(), "model.provider", "openai")
     with pytest.raises(ProviderError, match="ValueError"):
         get_provider(config).generate([])
+
+
+# --- an endpoint that rejects an OpenAI field -----------------------------------------------
+
+_MISTRAL_422 = (
+    "Error code: 422 - {'object': 'error', 'message': {'detail': [{'type': "
+    "'extra_forbidden', 'loc': ['body', 'seed'], 'msg': 'Extra inputs are not "
+    "permitted', 'input': 5}]}, 'type': 'invalid_request_error'}"
+)
+
+
+def test_unsupported_request_field_is_read_out_of_the_rejection() -> None:
+    from opentorus.providers.openai_provider import unsupported_request_field
+
+    assert unsupported_request_field(Exception(_MISTRAL_422)) == "seed"
+    # Never drop what carries the question: retrying without it would ask something else.
+    assert unsupported_request_field(Exception(_MISTRAL_422.replace("seed", "messages"))) is None
+    assert unsupported_request_field(Exception("Error code: 500 - upstream failure")) is None
+
+
+def test_a_rejected_field_is_dropped_and_the_call_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mistral rejects `seed` with 422; a run configured with a seed died on its first
+    call. The field is dropped and the request retried once, rather than the endpoint
+    being declared unusable."""
+    import sys
+    import types
+
+    seen: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):  # noqa: ANN003, ANN201
+            seen.append(dict(kwargs))
+            if "seed" in kwargs:
+                raise ValueError(_MISTRAL_422)
+            return types.SimpleNamespace(
+                model="m",
+                usage=None,
+                choices=[
+                    types.SimpleNamespace(
+                        finish_reason="stop",
+                        message=types.SimpleNamespace(content="ok", tool_calls=None),
+                    )
+                ],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    stub = types.ModuleType("openai")
+    stub.OpenAI = FakeOpenAI  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", stub)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-a-real-secret")
+
+    config = set_dotted(default_config(), "model.provider", "openai")
+    config = set_dotted(config, "model.seed", "5")
+    response = get_provider(config).generate([])
+
+    assert response.content == "ok"
+    assert len(seen) == 2, "one rejected attempt, one retry"
+    assert seen[0]["seed"] == 5
+    assert "seed" not in seen[1]
+
+
+def test_a_rejection_of_something_undroppable_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_sdk(monkeypatch, raises=ValueError(_MISTRAL_422.replace("seed", "messages")))
+    config = set_dotted(default_config(), "model.provider", "openai")
+    with pytest.raises(ProviderError, match="422"):
+        get_provider(config).generate([])

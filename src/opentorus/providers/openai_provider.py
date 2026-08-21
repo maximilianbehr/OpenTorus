@@ -8,6 +8,7 @@ API key is missing. Sends tools as OpenAI ``function`` tools and parses
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 
@@ -21,6 +22,8 @@ from opentorus.providers.base import (
     TokenUsage,
     ToolCallRequest,
 )
+
+_logger = logging.getLogger("opentorus.providers")
 
 
 def _require_openai_sdk() -> type:
@@ -60,7 +63,15 @@ class OpenAIProvider(BaseProvider):
         try:
             completion = client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - translate, never leak the SDK's own type
-            raise _provider_error(exc, self.name) from exc
+            field = unsupported_request_field(exc)
+            if field is None or field not in kwargs:
+                raise _provider_error(exc, self.name) from exc
+            _logger.info("%s rejected the request field %r; retrying without it.", self.name, field)
+            kwargs.pop(field)
+            try:
+                completion = client.chat.completions.create(**kwargs)
+            except Exception as retry_exc:  # noqa: BLE001 - same translation, second try
+                raise _provider_error(retry_exc, self.name) from retry_exc
         choice = completion.choices[0]
         response = parse_openai_message(choice.message)
         response.usage = _openai_usage(completion)
@@ -69,6 +80,30 @@ class OpenAIProvider(BaseProvider):
         # finish_reason "length" means the output hit the token ceiling (truncated).
         response.truncated = getattr(choice, "finish_reason", None) == "length"
         return response
+
+
+# An OpenAI-compatible endpoint is not OpenAI. Mistral rejects `seed` outright:
+#   422 {'type': 'extra_forbidden', 'loc': ['body', 'seed'], 'input': 5}
+# and a run configured with a seed died on its first call. Rather than maintaining a
+# per-provider table of what each endpoint accepts — which would be wrong the week any
+# of them changes — read the field out of the rejection and retry once without it. The
+# same shape is already used for tool_choice="required" in providers/tool_support.py.
+_EXTRA_FORBIDDEN = re.compile(
+    r"extra_forbidden.{0,120}?['\"]loc['\"]\s*:\s*\[[^\]]*?['\"](?P<field>[A-Za-z_][A-Za-z0-9_]*)['\"]\s*\]",
+    re.S,
+)
+# Optional sampling knobs only: never retry by dropping `messages`, `model` or `tools`,
+# where a silent retry would change the question rather than the request shape.
+_DROPPABLE_FIELDS = frozenset({"seed", "top_p", "max_tokens", "temperature", "stream_options"})
+
+
+def unsupported_request_field(exc: Exception) -> str | None:
+    """The optional request field this endpoint rejected as unknown, if it said so."""
+    match = _EXTRA_FORBIDDEN.search(str(exc))
+    if match is None:
+        return None
+    field = match.group("field")
+    return field if field in _DROPPABLE_FIELDS else None
 
 
 def _provider_error(exc: Exception, provider: str) -> ProviderError:
