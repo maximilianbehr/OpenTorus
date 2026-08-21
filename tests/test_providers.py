@@ -95,3 +95,85 @@ def test_get_provider_openai_reports_a_missing_sdk_at_construction(
     config = set_dotted(default_config(), "model.provider", "openai")
     with pytest.raises(ProviderError, match="pip install openai"):
         get_provider(config)
+
+
+# --- transient provider failures ------------------------------------------------------------
+
+
+def _stub_sdk(monkeypatch, *, raises=None, captured=None):  # noqa: ANN001, ANN202
+    """A fake ``openai`` module: records client kwargs, or fails the way the SDK does."""
+    import sys
+    import types
+
+    class FakeCompletions:
+        def create(self, **kwargs):  # noqa: ANN003, ANN201
+            if raises is not None:
+                raise raises
+            return types.SimpleNamespace(
+                model="m",
+                usage=None,
+                choices=[
+                    types.SimpleNamespace(
+                        finish_reason="stop",
+                        message=types.SimpleNamespace(content="ok", tool_calls=None),
+                    )
+                ],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            if captured is not None:
+                captured["client"] = kwargs
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    stub = types.ModuleType("openai")
+    stub.OpenAI = FakeOpenAI  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", stub)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-a-real-secret")
+
+
+def test_max_retries_reaches_the_sdk_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SDK's own default is 2, which a long metered run outlives easily."""
+    captured: dict = {}
+    _stub_sdk(monkeypatch, captured=captured)
+    config = set_dotted(default_config(), "model.provider", "openai")
+    config = set_dotted(config, "model.max_retries", "7")
+    get_provider(config).generate([])
+    assert captured["client"]["max_retries"] == 7
+
+
+def test_a_rate_limit_becomes_an_actionable_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 reached the user as a raw SDK traceback after the run had spent money."""
+
+    class RateLimitError(Exception):
+        status_code = 429
+
+    _stub_sdk(monkeypatch, raises=RateLimitError("Error code: 429 - rate limit exceeded"))
+    config = set_dotted(default_config(), "model.provider", "openai")
+    with pytest.raises(ProviderError) as excinfo:
+        get_provider(config).generate([])
+    message = str(excinfo.value)
+    assert "429" in message
+    assert "max_retries" in message, "it must name the knob that fixes it"
+
+
+def test_an_auth_failure_names_the_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    class AuthenticationError(Exception):
+        status_code = 401
+
+    _stub_sdk(monkeypatch, raises=AuthenticationError("Error code: 401 - Invalid API Key"))
+    config = set_dotted(default_config(), "model.provider", "openai")
+    with pytest.raises(ProviderError, match="401"):
+        get_provider(config).generate([])
+
+
+def test_an_unrecognised_sdk_failure_still_becomes_a_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing from the SDK may escape as its own type — the loop only handles ours."""
+    _stub_sdk(monkeypatch, raises=ValueError("something the SDK did not document"))
+    config = set_dotted(default_config(), "model.provider", "openai")
+    with pytest.raises(ProviderError, match="ValueError"):
+        get_provider(config).generate([])

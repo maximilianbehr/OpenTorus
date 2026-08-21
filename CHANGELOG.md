@@ -605,6 +605,16 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
 
 ### Fixed
 
+- **A rate limit no longer kills a run with a raw traceback.** Nothing in the codebase
+  handled HTTP 429 or a transient 5xx, and the OpenAI SDK's own default of two retries is
+  short for an agent run that talks to a metered endpoint for hours: a Mistral run died
+  after 16 minutes and ~4 EUR of work with a 40-line `RateLimitError` traceback. A local
+  endpoint never returns 429, which is why no local run ever showed this. New
+  `model.max_retries` (default 5) is passed to the SDK client, which backs off
+  exponentially and honours `Retry-After`; and every SDK exception is now translated at
+  the provider boundary into a `ProviderError` that names the knob to turn — 429 points
+  at `max_retries`, 401 at the credential, a timeout at `base_url`/`timeout_seconds`.
+
 A stress run of twenty-three campaigns against a local vLLM, audited workspace by
 workspace, produced these. Each was reproduced in the code before it was changed.
 
