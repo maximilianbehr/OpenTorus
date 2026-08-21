@@ -6,6 +6,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **arXiv papers are stored with their real bibliographic metadata.** `paper_fetch`
+  had a crossref lookup for a DOI but no counterpart for an arXiv id, so it
+  synthesised `title=f"arXiv:{id}"` and went straight to the PDF: every arXiv paper
+  landed carrying its own id as its title, with `year`, `authors` and `abstract` left
+  null, while a DOI fetched by the same tool one branch over got all of them. Found
+  by reading the paper artifacts of a targeted run — 18 of 18 arXiv papers were
+  affected, and literature is the gate in front of `proof_write`. A title field
+  holding a string that reads as a title but is really the id is the failure the
+  honesty rules exist to prevent: unlike an honest blank, nothing downstream can tell
+  it is missing. `ArxivSource` gained `lookup_id()` (the arXiv API's `id_list`
+  query, mirroring `CrossrefSource.lookup_doi`), and the fallback when it finds
+  nothing is now `"(untitled)"` — what every other connector already stores for a
+  title it does not have.
+- **A placeholder title no longer sticks.** `acquire_paper` upgrades a cached record
+  via `paper.title or record.title`, and a placeholder is truthy, so an affected
+  paper could never be repaired. Worse, a paper whose full text was already cached
+  returned early and never reached that path at all — the download it skips is
+  exactly the evidence that the paper is already there. Placeholder titles are now
+  recognised as absent and refilled from a fresher record on both paths, so existing
+  workspaces repair themselves on the next fetch. A title that is already known is
+  never overwritten.
+
+### Changed
+
+- `paper fetch` on an arXiv identifier now contacts `export.arxiv.org` for metadata
+  in addition to `arxiv.org` for the PDF. In `ask` mode that is a second host to
+  consent to; `lit_search` already requests the same host. Declining, or an
+  unreachable metadata API, degrades to a fetch without metadata rather than failing
+  — the PDF is the point, the metadata is a bonus.
+
 ## [0.0.16] — 2026-08-21
 
 A load test against a self-hosted vLLM endpoint became a bug hunt. Across 167 example
@@ -627,6 +659,17 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   trap). docs/privacy.md, docs/safety.md and README no longer promise fail-closed on
   PII, and no longer claim the redaction keeps PII out of `session.jsonl` — a message
   is logged before the turn carrying it is screened, so it cannot.
+- **A cost budget now says when it cannot bind.** `_PRICE_PER_MTOK` prices a handful
+  of OpenAI/Anthropic models; every other model estimates to `$0.00`, and
+  `budget_alerts` sums exactly that field. So `cost_budget_usd = 50` against a model
+  outside the table reported a calm `$0 / $50` forever while real money was spent —
+  found while putting a real budget on `zai-glm-5-2` through the new Mistral provider.
+  The per-step display was already honest (`$? (price unknown)`); the budget path read
+  the same zero as "nothing spent". Usage records now carry `cost_known`, stamped where
+  the `base_url` is still in scope (afterwards a local `openai`-compatible endpoint is
+  indistinguishable from an unlisted cloud model), and a configured USD cap that cannot
+  be measured reports itself and points at `token_budget`. Mistral la Plateforme prices
+  were added, including `zai-glm-5-2` at $1.40/$4.40 per M.
 
 A stress run of twenty-three campaigns against a local vLLM, audited workspace by
 workspace, produced these. Each was reproduced in the code before it was changed.

@@ -384,7 +384,7 @@ class TurnRunner:
         profile's, so a routed local model is ``$0`` and a routed cloud model is not.
         """
         from opentorus.agent.compaction import estimate_tokens, total_tokens
-        from opentorus.usage import UsageRecord, estimate_cost, format_usage_line
+        from opentorus.usage import UsageRecord, cost_known, estimate_cost, format_usage_line
         from opentorus.usage import record_usage as append_usage_record
 
         provider_name = getattr(self.provider, "name", "unknown")
@@ -422,6 +422,10 @@ class TurnRunner:
             "latency_ms": round(elapsed * 1000),
             "cost_usd": cost,
             "tokens_estimated": tokens_estimated,
+            # base_url is known here but not stored on the record, so the priced/unpriced
+            # distinction has to be stamped now: later, "openai + gemma-4-31b" cannot be
+            # told apart from "openai + an unlisted cloud model" by the budget check.
+            "cost_known": cost_known(provider_name, model, base_url),
         }
         # Provenance columns exist only once the routing milestone extends the ledger
         # schema; stamp what the schema knows so this works before and after.
