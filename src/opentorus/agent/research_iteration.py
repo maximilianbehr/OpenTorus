@@ -52,7 +52,7 @@ def record_turn(
     """
     from opentorus.agent.compaction import estimate_tokens, total_tokens
     from opentorus.errors import OpenTorusError
-    from opentorus.usage import UsageRecord, estimate_cost, record_usage
+    from opentorus.usage import UsageRecord, cost_known, estimate_cost, record_usage
 
     messages = [SessionMessage(role="user", content=prompt)]
     active = provider
@@ -89,6 +89,7 @@ def record_turn(
                 cost_usd=estimate_cost(
                     provider_name, model, prompt_tokens, completion_tokens, base_url
                 ),
+                cost_known=cost_known(provider_name, model, base_url),
                 task_class=task_class,
                 routing_decision_id=lease.decision.decision_id if lease else None,
                 requested_profile=lease.decision.requested_profile if lease else None,

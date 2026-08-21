@@ -32,6 +32,13 @@ _PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-3-5-sonnet": (3.00, 15.00),
     "claude-3-5-haiku": (0.80, 4.00),
     "claude-3-opus": (15.00, 75.00),
+    # Mistral la Plateforme, from each model's documentation page.
+    "mistral-large": (0.50, 1.50),
+    "mistral-medium": (0.40, 2.00),
+    "mistral-small": (0.10, 0.30),
+    # Third-party models hosted on la Plateforme keep their own rates.
+    "zai-glm-5-2": (1.40, 4.40),
+    "glm-5-2": (1.40, 4.40),
 }
 
 
@@ -47,6 +54,11 @@ class UsageRecord(BaseModel):
     latency_ms: int = 0
     cost_usd: float = 0.0
     cost_estimated: bool = True
+    # False when this call could not be priced at all: a cloud model with no rate in the
+    # table. Such a record contributes 0.0 to cost_usd, so a configured cost_budget_usd
+    # would otherwise sit at "$0.00 / $50.00" forever while real money is spent. Default
+    # True so ledgers written before this field keep their old meaning.
+    cost_known: bool = True
     # False when prompt/completion tokens are the provider's exact counts rather
     # than a local character-count estimate.
     tokens_estimated: bool = True
