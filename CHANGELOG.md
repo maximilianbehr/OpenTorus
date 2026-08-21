@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Formal verification is no longer capped at 120 seconds with no way to raise it.**
+  Every backend took `timeout: int = 120` in its constructor and `registry.py` passed
+  only the command, so the default was also the ceiling: `proof_submit` had no schema
+  field to ask for more and there was no config key to set it. That capped the one path
+  the epistemic model says can promote a claim. A targeted run showed the cost exactly —
+  z3 accepted a row-sum lemma, and the next, larger submission for the same problem
+  timed out at 120s, while `exp_run` in the same run was allowed 10800 by the example's
+  own instructions. New `verifiers.timeout_seconds` (default 120) and
+  `verifiers.max_timeout_seconds` (default 3600); `proof_submit` takes an optional
+  `timeout` that is clamped to the ceiling and **reported**, the same contract
+  `campaign.max_experiment_seconds` uses for `exp_run`. An inconclusive result now names
+  the limit it hit and says to resubmit with a larger one, so a timeout reads as a
+  timeout rather than as a proof that failed.
 - **arXiv papers are stored with their real bibliographic metadata.** `paper_fetch`
   had a crossref lookup for a DOI but no counterpart for an arXiv id, so it
   synthesised `title=f"arXiv:{id}"` and went straight to the PDF: every arXiv paper
