@@ -296,6 +296,17 @@ class VerifiersConfig(BaseModel):
     lean: bool = False
     coq: bool = False
     smt: bool = False
+    # How long a checker may run. This used to be a hardcoded 120s in each backend's
+    # constructor that nothing passed through, so a formal check needing more time was
+    # unreachable by any means — not by the agent, which has no schema field for it,
+    # and not by the user, who had no config key. That capped the one path the
+    # epistemic model says can promote a claim: a run submitting a finite but large
+    # SMT check timed out at 120s while the same run's `exp_run` was allowed 10800.
+    timeout_seconds: int = 120
+    # Ceiling on a timeout the model asks for via proof_submit; 0 = refuse all requests
+    # and always use timeout_seconds. A longer request is clamped to this and reported,
+    # the same contract as campaign.max_experiment_seconds.
+    max_timeout_seconds: int = 3600
     # Validated numerics (interval arithmetic) needs no external binary — only the
     # optional ``mpmath`` dependency — so it is enabled by default; it reports itself
     # unavailable when mpmath is absent rather than faking rigor.

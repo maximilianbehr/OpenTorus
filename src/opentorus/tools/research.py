@@ -1213,6 +1213,14 @@ class ProofSubmitTool(Tool):
                 "type": "string",
                 "description": "Optional CLAIM-* id this proof targets (must already exist).",
             },
+            "timeout": {
+                "type": "integer",
+                "description": (
+                    "Optional seconds the checker may run. Raise it for a search that is "
+                    "finite but large — the default is deliberately short. A request above "
+                    "the configured ceiling is clamped and the clamp is reported."
+                ),
+            },
         },
         "required": ["backend", "source"],
     }
@@ -1263,6 +1271,20 @@ class ProofSubmitTool(Tool):
                     "or omit claim_id.",
                 )
         verifier = self._resolver(backend) if self._resolver is not None else None
+        from opentorus.research.verifiers.registry import resolve_timeout
+
+        raw_timeout = call.args.get("timeout")
+        requested = None
+        if raw_timeout is not None:
+            try:
+                requested = int(raw_timeout)
+            except (TypeError, ValueError):
+                return self.fail(
+                    call,
+                    f"proof_submit 'timeout' must be an integer number of seconds, "
+                    f"got {raw_timeout!r}.",
+                )
+        seconds, clamp_note = resolve_timeout(self._config, requested)
         try:
             attempt = submit_proof(
                 self._ot_dir,
@@ -1272,6 +1294,7 @@ class ProofSubmitTool(Tool):
                 claim_id=claim_id,
                 submitted_under=self._problem_id,
                 verifier=verifier,
+                timeout=seconds,
             )
         except OpenTorusError as exc:
             return self.fail(call, str(exc))
@@ -1311,7 +1334,9 @@ class ProofSubmitTool(Tool):
             "accepted": attempt.accepted,
             "available": attempt.available,
             "inconclusive": attempt.inconclusive,
+            "timeout_seconds": seconds,
         }
+        clamp = f"\n\n{clamp_note}" if clamp_note else ""
         if not attempt.available:
             return self.fail(
                 call,
@@ -1330,15 +1355,19 @@ class ProofSubmitTool(Tool):
                 call,
                 f"{attempt.id} ACCEPTED by {attempt.backend}{version}.{linked} "
                 "This is a formal verification artifact; claim status changes still go "
-                "through the gated status update.",
+                "through the gated status update." + clamp,
                 **meta,
             )
         if attempt.inconclusive:
             return self.fail(
                 call,
-                f"{attempt.id} INCONCLUSIVE on {attempt.backend} (timeout, crash, or "
-                "unparseable source — NOT a mathematical rejection). Simplify or split "
-                "the goal, then resubmit.\n\n" + output + schema_hint,
+                f"{attempt.id} INCONCLUSIVE on {attempt.backend} after {seconds}s "
+                "(timeout, crash, or unparseable source — NOT a mathematical rejection). "
+                "If the checker ran out of time, resubmit the same source with a larger "
+                "'timeout'; otherwise simplify or split the goal.\n\n"
+                + output
+                + schema_hint
+                + clamp,
                 **meta,
             )
         if attempt.outcome == "sat":
