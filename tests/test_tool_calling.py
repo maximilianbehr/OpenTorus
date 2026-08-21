@@ -844,12 +844,15 @@ def test_openai_provider_honours_base_url_timeout_and_sampling() -> None:
     config = default_config()
     config.model.provider = "openai"
     config.model.name = "gemma-4-31b-it"
-    assert openai_client_kwargs(config) == {"timeout": 300.0}
+    # max_retries rides along so the SDK backs off on 429/5xx instead of dying.
+    assert openai_client_kwargs(config) == {"timeout": 300.0, "max_retries": 5}
     config.model.base_url = "http://localhost:8000/v1"
     config.model.timeout_seconds = 900
+    config.model.max_retries = 3
     assert openai_client_kwargs(config) == {
         "base_url": "http://localhost:8000/v1",
         "timeout": 900.0,
+        "max_retries": 3,
     }
     messages = [SessionMessage(role="user", content="hi")]
     plain = build_openai_request(config, messages, None)

@@ -78,6 +78,12 @@ class ModelConfig(BaseModel):
     # Provider HTTP timeout (seconds). Local models (Ollama) often need several
     # minutes on large contexts; cloud APIs are usually faster.
     timeout_seconds: int = 300
+    # How often to retry a transient provider failure (429 rate limit, 5xx) before
+    # giving up. The SDK backs off exponentially and honours Retry-After. The SDK's own
+    # default is 2, which a long agent run against a metered endpoint outlives easily:
+    # a Mistral run died on a 429 after 16 minutes and ~4 EUR of work, with a raw
+    # traceback, because two retries were all it had.
+    max_retries: int = 5
     # Ollama-only generation options (ignored by other providers).
     num_ctx: int | None = None
     # Sampling shape. Unset means "whatever the model's own Modelfile says", which is

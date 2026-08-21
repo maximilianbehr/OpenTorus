@@ -68,7 +68,10 @@ class OpenAIProvider(BaseProvider):
                 self.config, api_key=api_key, default_base_url=self.default_base_url
             )
         )
-        completion = client.chat.completions.create(**kwargs)
+        try:
+            completion = client.chat.completions.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - translate, never leak the SDK's own type
+            raise _provider_error(exc, self.name) from exc
         choice = completion.choices[0]
         response = parse_openai_message(choice.message)
         response.usage = _openai_usage(completion)
@@ -77,6 +80,34 @@ class OpenAIProvider(BaseProvider):
         # finish_reason "length" means the output hit the token ceiling (truncated).
         response.truncated = getattr(choice, "finish_reason", None) == "length"
         return response
+
+
+def _provider_error(exc: Exception, provider: str) -> ProviderError:
+    """Turn an SDK exception into a ProviderError that says what to do about it.
+
+    A rate limit reached the user as a 40-line rich traceback ending in
+    ``RateLimitError: Error code: 429``, after the run had already spent real money —
+    the SDK's retries were exhausted and nothing above translated the failure. The type
+    is matched by name so this needs no import of the SDK's exception hierarchy.
+    """
+    name = type(exc).__name__
+    if name == "RateLimitError" or getattr(exc, "status_code", None) == 429:
+        return ProviderError(
+            f"{provider} rate-limited the request (HTTP 429) and the configured retries "
+            "were exhausted. Raise model.max_retries, lower the number of parallel "
+            f"runs, or wait for the quota window to reset. ({exc})"
+        )
+    if name in {"APITimeoutError", "APIConnectionError"}:
+        return ProviderError(
+            f"Could not reach the {provider} endpoint ({name}). Check the network and "
+            f"model.base_url, or raise model.timeout_seconds. ({exc})"
+        )
+    if name == "AuthenticationError" or getattr(exc, "status_code", None) == 401:
+        return ProviderError(
+            f"{provider} rejected the credentials (HTTP 401). Check the API key in your "
+            f".env or environment. ({exc})"
+        )
+    return ProviderError(f"{provider} request failed ({name}): {exc}")
 
 
 def openai_client_kwargs(
@@ -100,6 +131,11 @@ def openai_client_kwargs(
         kwargs["api_key"] = api_key
     if config.model.timeout_seconds:
         kwargs["timeout"] = float(config.model.timeout_seconds)
+    # The SDK retries 429/5xx with exponential backoff and honours Retry-After; its own
+    # default of 2 is short for an agent run that talks to a metered endpoint for hours.
+    retries = getattr(config.model, "max_retries", None)
+    if retries is not None:
+        kwargs["max_retries"] = max(0, int(retries))
     return kwargs
 
 

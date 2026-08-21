@@ -22,6 +22,9 @@ model:
   base_url: null
   # HTTP timeout in seconds (raise for slow local models / large contexts)
   timeout_seconds: 300
+  # Retries for a transient provider failure (429 rate limit, 5xx). The SDK backs off
+  # exponentially and honours Retry-After; 0 disables retrying.
+  max_retries: 5
   # Ollama-only: context window size (e.g. 32768). null = model default.
   num_ctx: null
   # Ollama-only sampling shape. null = keep the model's own Modelfile values, which
