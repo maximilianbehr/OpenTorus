@@ -278,3 +278,32 @@ def test_a_priced_run_gets_no_such_warning(tmp_path) -> None:  # noqa: ANN001
         ),
     )
     assert [a.note for a in budget_alerts(ot, config) if a.note] == []
+
+
+def test_anthropic_models_are_priced_and_prefixes_do_not_collide() -> None:
+    """The table falls back to a prefix match, so a shorter key placed before a longer
+    one answers for it. `claude-opus-4.1` costs 3x what `claude-opus-4.8` costs — if the
+    ordering slips, a run is silently billed at a third of its real price.
+    """
+    from opentorus.usage import cost_known, estimate_cost
+
+    # A million input tokens, priced per model.
+    def per_mtok_in(model: str) -> float:
+        return estimate_cost("anthropic", model, 1_000_000, 0)
+
+    assert per_mtok_in("claude-fable-5") == pytest.approx(10.0)
+    assert per_mtok_in("claude-opus-5") == pytest.approx(5.0)
+    assert per_mtok_in("claude-opus-4.8") == pytest.approx(5.0)
+    assert per_mtok_in("claude-opus-4.1") == pytest.approx(15.0), "legacy rate, not the 4.x one"
+    assert per_mtok_in("claude-sonnet-5") == pytest.approx(2.0)
+    assert per_mtok_in("claude-haiku-4.5") == pytest.approx(1.0)
+    assert cost_known("anthropic", "claude-fable-5") is True
+
+
+def test_the_run_that_prompted_this_is_priced_correctly() -> None:
+    """A live Fable 5 run reported $0.00 against a EUR 50 budget while actually spending
+    ~$25 — the cap could not bind because the model was not in the table."""
+    from opentorus.usage import estimate_cost
+
+    cost = estimate_cost("anthropic", "claude-fable-5", 1_927_135, 108_565)
+    assert cost == pytest.approx(24.70, abs=0.01)
