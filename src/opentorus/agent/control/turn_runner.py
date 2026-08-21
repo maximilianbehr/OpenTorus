@@ -224,10 +224,18 @@ class TurnRunner:
     # --- provider turn -------------------------------------------------------------------
 
     def screen_outbound(self, messages: list[SessionMessage]) -> PolicyDecision | None:
-        """Pre-egress DLP: block a cloud send that would leak secrets/PII (else None).
+        """Pre-egress DLP over a cloud send: block on secrets, redact PII (else None).
 
-        A local/mock provider never leaves the machine, so it is exempt; cloud sends
-        are screened when ``governance.dlp`` is enabled and fail closed.
+        A local/mock provider never leaves the machine, so it is exempt. For a cloud
+        send, a *secret* still fails closed — that is the whole point of the control.
+        PII is handled by ``governance.dlp_pii``: the default redacts it in the payload
+        about to go out and lets the turn proceed. Blocking on it instead made the
+        literature workflow impossible with any cloud provider (every academic PDF
+        carries author emails) and pushed users toward disabling DLP altogether, which
+        gives up secret protection too.
+
+        ``messages`` is the per-turn payload and is redacted in place, so the redacted
+        text is what the provider actually receives.
         """
         from opentorus.usage import is_local_provider
 
@@ -236,24 +244,68 @@ class TurnRunner:
         provider_name = getattr(self.provider, "name", "unknown")
         if is_local_provider(provider_name, self._provider_base_url()):
             return None
-        from opentorus.governance import DlpBlocked, assert_egress_safe
+        from opentorus.governance import redact_pii, scan_secrets, split_findings
 
+        mode = getattr(self.config.governance, "dlp_pii", "redact")
         try:
             payload = json.dumps(messages, default=str)
         except (TypeError, ValueError):
             payload = str(messages)
-        try:
-            assert_egress_safe(payload, self.config)
-        except DlpBlocked as exc:
+        secrets, pii = split_findings(scan_secrets(payload, scan_pii=mode != "off"))
+        if secrets or (pii and mode == "block"):
+            kinds = ", ".join(sorted({f.kind for f in secrets + pii}))
+            fix = (
+                "Remove the secret from the conversation; it must not be sent."
+                if secrets
+                else "Set governance.dlp_pii=redact to send with the PII removed."
+            )
             return PolicyDecision(
                 action=PolicyAction.STOP,
                 reason_code=ReasonCode.EGRESS_BLOCKED,
-                message=(
-                    f"[stopped] Pre-egress DLP blocked the request: {exc} Remove the "
-                    "secret/PII from the conversation, or disable governance.dlp to override."
-                ),
+                message=(f"[stopped] Pre-egress DLP blocked the request: detected {kinds}. {fix}"),
             )
+        if pii and mode == "redact":
+            self._redact_messages(messages, redact_pii)
         return None
+
+    @classmethod
+    def _redact_messages(cls, messages: list[SessionMessage], redact) -> None:  # noqa: ANN001
+        """Rewrite message text in place so the PII never reaches the wire.
+
+        ``content`` is not the whole payload: ``to_openai_messages`` serialises
+        ``metadata["tool_calls"][i]["args"]`` into the ``arguments`` field it sends, and
+        the DLP scan reads ``json.dumps(messages)`` — so redacting only ``content``
+        would report PII as removed while still putting it on the wire, which is worse
+        than the block it replaced. Every string in the message is rewritten, which also
+        keeps the PII out of the session log this message is appended to.
+        """
+        for message in messages:
+            content = getattr(message, "content", None)
+            if isinstance(content, str) and content:
+                new = redact(content)
+                if new != content:
+                    try:
+                        message.content = new
+                    except (AttributeError, ValueError):  # frozen/validated model
+                        pass
+            metadata = getattr(message, "metadata", None)
+            if isinstance(metadata, dict) and metadata:
+                cls._redact_in_place(metadata, redact)
+
+    @classmethod
+    def _redact_in_place(cls, node: object, redact) -> object:  # noqa: ANN001
+        """Rewrite every string inside a nested dict/list, returning the new value."""
+        if isinstance(node, str):
+            return redact(node)
+        if isinstance(node, dict):
+            for key, value in list(node.items()):
+                node[key] = cls._redact_in_place(value, redact)
+            return node
+        if isinstance(node, list):
+            for index, value in enumerate(node):
+                node[index] = cls._redact_in_place(value, redact)
+            return node
+        return node
 
     def request(
         self,

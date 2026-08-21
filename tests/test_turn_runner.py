@@ -7,6 +7,7 @@ external ``should_stop`` signal that ends a run before any tool runs.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from opentorus.actions import list_actions
@@ -14,7 +15,7 @@ from opentorus.agent.control import ListSink, ReasonCode, RunStopped, ToolExecut
 from opentorus.agent.control.legacy import LegacyCallbackPolicySet
 from opentorus.agent.control.turn_runner import TurnRunner
 from opentorus.agent.loop import AgentLoop
-from opentorus.agent.session import read_messages
+from opentorus.agent.session import SessionMessage, read_messages
 from opentorus.config import default_config
 from opentorus.tools.builtin import build_default_registry
 from opentorus.usage import UsageRecord, read_usage
@@ -435,3 +436,107 @@ def test_run_stopped_is_emitted_for_a_clean_finish_and_the_step_cap(tmp_path: Pa
     stopped2 = [e for e in sink2.events if isinstance(e, RunStopped)]
     assert stopped2[-1].decision.reason_code is ReasonCode.STEP_CAP_REACHED
     assert len([e for e in sink2.events if isinstance(e, TurnCompleted)]) == 2
+
+
+# --- pre-egress DLP: secrets block, PII is redacted ------------------------------------------
+
+
+def _cloud_runner(tmp_path: Path, **gov):
+    """A runner whose provider looks like a cloud endpoint, so DLP actually runs."""
+    ot, config, registry = _workspace(tmp_path)
+    for key, value in gov.items():
+        setattr(config.governance, key, value)
+    config.model.base_url = "https://api.example.com/v1"
+    provider = ScriptedProvider([message("ok")], model_name="gpt-x")
+    provider.name = "openai"
+    provider.config = config
+    return TurnRunner(tmp_path, ot, provider, registry, config, session_id="dlp")
+
+
+def test_a_secret_still_blocks_the_send(tmp_path: Path) -> None:
+    """The control exists for this case and must keep failing closed."""
+    runner = _cloud_runner(tmp_path)
+    msgs = [SessionMessage(role="user", content="key is sk-abcdefghijklmnopqrstuvwxyz012345")]
+    decision = runner.screen_outbound(msgs)
+    assert decision is not None
+    assert "openai_key" in decision.message
+    assert "must not be sent" in decision.message
+
+
+def test_an_author_email_is_redacted_not_blocked(tmp_path: Path) -> None:
+    """Every academic PDF carries author emails; blocking on them closed the whole
+    literature workflow for cloud providers."""
+    runner = _cloud_runner(tmp_path)
+    msgs = [SessionMessage(role="user", content="Correspondence: ada@uni-example.ac.uk here.")]
+    assert runner.screen_outbound(msgs) is None
+    assert "ada@uni-example.ac.uk" not in msgs[0].content
+    assert "[redacted: email]" in msgs[0].content
+
+
+def test_pii_in_tool_call_arguments_is_redacted_too(tmp_path: Path) -> None:
+    """to_openai_messages serialises metadata['tool_calls'][i]['args'] into what it
+    sends, and the DLP scan reads the whole message — so redacting only `content`
+    would report the PII as removed while still putting it on the wire."""
+    runner = _cloud_runner(tmp_path)
+    msgs = [
+        SessionMessage(
+            role="assistant",
+            content="recording it",
+            metadata={
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "name": "memory_add",
+                        "args": {"text": "contact grace@example.edu for the dataset"},
+                    }
+                ]
+            },
+        )
+    ]
+    assert runner.screen_outbound(msgs) is None
+    sent = json.dumps(msgs[0].metadata)
+    assert "grace@example.edu" not in sent
+    assert "[redacted: email]" in sent
+
+
+def test_block_mode_restores_the_old_behaviour(tmp_path: Path) -> None:
+    runner = _cloud_runner(tmp_path, dlp_pii="block")
+    msgs = [SessionMessage(role="user", content="write to ada@uni-example.ac.uk")]
+    decision = runner.screen_outbound(msgs)
+    assert decision is not None
+    assert "email" in decision.message
+    assert msgs[0].content.endswith("ada@uni-example.ac.uk"), "block must not also rewrite"
+
+
+def test_off_mode_neither_blocks_nor_redacts(tmp_path: Path) -> None:
+    runner = _cloud_runner(tmp_path, dlp_pii="off")
+    msgs = [SessionMessage(role="user", content="write to ada@uni-example.ac.uk")]
+    assert runner.screen_outbound(msgs) is None
+    assert "ada@uni-example.ac.uk" in msgs[0].content
+
+
+def test_a_secret_blocks_even_when_pii_would_be_redacted(tmp_path: Path) -> None:
+    """A payload with both must not be waved through by the redaction path."""
+    runner = _cloud_runner(tmp_path)
+    msgs = [
+        SessionMessage(
+            role="user",
+            content="mail ada@uni-example.ac.uk, key sk-abcdefghijklmnopqrstuvwxyz012345",
+        )
+    ]
+    decision = runner.screen_outbound(msgs)
+    assert decision is not None
+    assert "openai_key" in decision.message
+
+
+def test_a_local_provider_is_still_exempt(tmp_path: Path) -> None:
+    """Nothing leaves the machine, so neither the block nor the rewrite should happen."""
+    ot, config, registry = _workspace(tmp_path)
+    config.model.base_url = "http://localhost:8000/v1"
+    provider = ScriptedProvider([message("ok")], model_name="local-x")
+    provider.name = "openai"
+    provider.config = config
+    runner = TurnRunner(tmp_path, ot, provider, registry, config, session_id="local")
+    msgs = [SessionMessage(role="user", content="mail ada@uni-example.ac.uk")]
+    assert runner.screen_outbound(msgs) is None
+    assert "ada@uni-example.ac.uk" in msgs[0].content

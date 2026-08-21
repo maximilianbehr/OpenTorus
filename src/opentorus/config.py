@@ -458,6 +458,12 @@ class GovernanceConfig(BaseModel):
     """
 
     dlp: bool = True
+    # What to do with PII (currently email addresses) found in an outbound payload.
+    # "redact" replaces it and sends the rest — strictly more private than the blocking
+    # mode's practical outcome, which was users turning `dlp` off entirely to get past
+    # an author email in a fetched paper. "block" is the old fail-closed behaviour;
+    # "off" skips the PII scan. Secrets always block, in every mode.
+    dlp_pii: Literal["redact", "block", "off"] = "redact"
     budgets: BudgetConfig = Field(default_factory=BudgetConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
 

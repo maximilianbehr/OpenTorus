@@ -393,10 +393,13 @@ def test_pre_egress_dlp_blocks_a_cloud_send(tmp_path: Path) -> None:
     provider = ScriptedProvider([message("never sent")], name="openai")
     loop = AgentLoop(tmp_path, ot, provider, registry, config)
     answer = loop.run("Use the key AKIAABCDEFGHIJKLMNOP to fetch the data.")
+    # A secret still fails closed — that is unchanged and must stay so. The wording is
+    # new: it no longer says "Blocked pre-egress" twice, and it no longer offers
+    # "disable governance.dlp" as a way past a *secret*, which was advice to turn the
+    # control off rather than remove the credential.
     assert answer == (
-        "[stopped] Pre-egress DLP blocked the request: Blocked pre-egress: detected "
-        "aws_access_key. Remove the secret/PII from the conversation, or disable "
-        "governance.dlp to override."
+        "[stopped] Pre-egress DLP blocked the request: detected aws_access_key. "
+        "Remove the secret from the conversation; it must not be sent."
     )
     assert provider.calls == []
 
