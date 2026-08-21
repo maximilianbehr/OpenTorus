@@ -59,9 +59,25 @@ def file_lock(
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout
     while True:
+        held = False
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
+            held = True
+        except PermissionError as exc:
+            # Windows reports a lock file that is *pending deletion* as
+            # ERROR_ACCESS_DENIED, not EEXIST — the ordinary "someone else holds it"
+            # case, arriving as errno 13. Treating it as fatal made the lock fail
+            # under exactly the concurrency it exists for; CI caught it on
+            # windows-latest, where a POSIX box never would.
+            if os.name != "nt":
+                raise OpenTorusError(f"Cannot create a lock file next to {path}: {exc}") from exc
+            held = True
+        except OSError as exc:  # pragma: no cover - filesystem without O_EXCL support
+            if exc.errno in (errno.EACCES, errno.EPERM):
+                raise OpenTorusError(f"Cannot create a lock file next to {path}: {exc}") from exc
+            raise
+        if held:
             try:
                 age = time.time() - lock.stat().st_mtime
             except OSError:
@@ -80,10 +96,6 @@ def file_lock(
                 ) from None
             time.sleep(_LOCK_POLL_SECONDS)
             continue
-        except OSError as exc:  # pragma: no cover - filesystem without O_EXCL support
-            if exc.errno in (errno.EACCES, errno.EPERM):
-                raise OpenTorusError(f"Cannot create a lock file next to {path}: {exc}") from exc
-            raise
         try:
             os.write(fd, f"{os.getpid()}\n".encode())
         finally:

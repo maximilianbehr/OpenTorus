@@ -88,3 +88,46 @@ def test_file_lock_released_even_when_the_body_raises(tmp_path: Path) -> None:
         with file_lock(target):
             raise ValueError("boom")
     assert not lock_file.exists()
+
+
+def test_windows_reports_a_held_lock_as_permission_denied(tmp_path: Path) -> None:
+    """On Windows a lock file pending deletion opens as ERROR_ACCESS_DENIED, not EEXIST.
+
+    Treating errno 13 as fatal made the lock fail under exactly the concurrency it
+    exists for — `PermissionError: … claims.jsonl.lock` on windows-latest, where a
+    POSIX box never reproduces it. It has to read as "someone else holds it, retry".
+    """
+    import os
+    from unittest import mock
+
+    target = tmp_path / "ledger.jsonl"
+    target.write_text("", encoding="utf-8")
+    real_open, attempts = os.open, {"n": 0}
+
+    def flaky_open(*args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise PermissionError(13, "pending delete")
+        return real_open(*args, **kwargs)
+
+    with mock.patch.object(os, "name", "nt"), mock.patch.object(os, "open", flaky_open):
+        with file_lock(target, timeout=2):
+            pass
+    assert attempts["n"] == 3  # retried twice, then acquired
+
+
+def test_permission_denied_is_still_fatal_on_posix(tmp_path: Path) -> None:
+    """Only Windows overloads errno 13 this way; elsewhere it means an unwritable dir."""
+    import os
+    from unittest import mock
+
+    target = tmp_path / "ledger.jsonl"
+    target.write_text("", encoding="utf-8")
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError(13, "read-only directory")
+
+    with mock.patch.object(os, "name", "posix"), mock.patch.object(os, "open", denied):
+        with pytest.raises(OpenTorusError, match="Cannot create a lock file"):
+            with file_lock(target, timeout=0.2):
+                pass  # pragma: no cover
