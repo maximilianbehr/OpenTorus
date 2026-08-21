@@ -52,7 +52,7 @@ from opentorus.providers.capabilities import (
 logger = logging.getLogger("opentorus")
 
 ROUTING_LEDGER_FILENAME = "routing.jsonl"
-KNOWN_PROVIDERS: frozenset[str] = frozenset({"mock", "openai", "anthropic", "ollama"})
+KNOWN_PROVIDERS: frozenset[str] = frozenset({"mock", "openai", "anthropic", "ollama", "mistral"})
 DEFAULT_PROFILE_NAME = "default"
 
 

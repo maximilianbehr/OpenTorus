@@ -95,3 +95,89 @@ def test_get_provider_openai_reports_a_missing_sdk_at_construction(
     config = set_dotted(default_config(), "model.provider", "openai")
     with pytest.raises(ProviderError, match="pip install openai"):
         get_provider(config)
+
+
+def _stub_openai_sdk(monkeypatch: pytest.MonkeyPatch, captured: dict) -> None:
+    """Install a fake ``openai`` module that records how the client was built."""
+    import sys
+    import types
+
+    class FakeCompletions:
+        def create(self, **kwargs):  # noqa: ANN003, ANN201
+            captured["request"] = kwargs
+            return types.SimpleNamespace(
+                model="zai-glm-5-2",
+                usage=None,
+                choices=[
+                    types.SimpleNamespace(
+                        finish_reason="stop",
+                        message=types.SimpleNamespace(content="ok", tool_calls=None),
+                    )
+                ],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            captured["client"] = kwargs
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    stub = types.ModuleType("openai")
+    stub.OpenAI = FakeOpenAI  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", stub)
+
+
+def test_mistral_provider_targets_la_plateforme(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`provider: mistral` reaches Mistral with MISTRAL_API_KEY and no hand-set base_url."""
+    from opentorus.providers.mistral_provider import API_BASE
+
+    captured: dict = {}
+    _stub_openai_sdk(monkeypatch, captured)
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-key-not-a-real-secret")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    config = set_dotted(default_config(), "model.provider", "mistral")
+    config = set_dotted(config, "model.name", "zai-glm-5-2")
+    response = get_provider(config).generate([])
+
+    assert captured["client"]["base_url"] == API_BASE
+    assert captured["client"]["api_key"] == "test-key-not-a-real-secret"
+    assert captured["request"]["model"] == "zai-glm-5-2"
+    assert response.content == "ok"
+
+
+def test_mistral_base_url_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit base_url still wins — that is how a proxy or region is reached."""
+    captured: dict = {}
+    _stub_openai_sdk(monkeypatch, captured)
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-key-not-a-real-secret")
+
+    config = set_dotted(default_config(), "model.provider", "mistral")
+    config = set_dotted(config, "model.base_url", "https://proxy.internal/v1")
+    get_provider(config).generate([])
+
+    assert captured["client"]["base_url"] == "https://proxy.internal/v1"
+
+
+def test_mistral_without_key_names_its_own_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The error must name MISTRAL_API_KEY — not the inherited OPENAI_API_KEY."""
+    import sys
+    import types
+
+    stub = types.ModuleType("openai")
+    stub.OpenAI = object  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", stub)
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    # A stray OpenAI key must not make the Mistral provider look configured.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-be-used")
+
+    config = set_dotted(default_config(), "model.provider", "mistral")
+    provider = get_provider(config)
+    with pytest.raises(ProviderError, match="MISTRAL_API_KEY"):
+        provider.generate([])
+
+
+def test_mistral_api_key_is_scrubbed_from_provider_context() -> None:
+    """The key must never ride along in context — it is in the credential list."""
+    from opentorus.privacy import CREDENTIAL_ENV_NAMES
+
+    assert "MISTRAL_API_KEY" in CREDENTIAL_ENV_NAMES

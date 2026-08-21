@@ -796,7 +796,7 @@ def _arg_options(command: str, preceding: list[str]) -> list[str]:
         if preceding == ["set"]:
             return ["provider", "name", "temperature", "base_url"]
         if preceding == ["set", "provider"]:
-            return ["mock", "openai", "anthropic", "ollama"]
+            return ["mock", "openai", "anthropic", "ollama", "mistral"]
         return []
     return []
 

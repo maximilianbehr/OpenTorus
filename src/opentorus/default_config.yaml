@@ -8,7 +8,7 @@
 
 # --- Model (LLM provider) -----------------------------------------------------
 model:
-  # Provider: mock | openai | anthropic | ollama
+  # Provider: mock | openai | anthropic | ollama | mistral
   #   mock      — offline default for tests and dry runs (no API key)
   #   openai    — needs OPENAI_API_KEY
   #   anthropic — needs ANTHROPIC_API_KEY

@@ -6,6 +6,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Mistral provider** (`model.provider: mistral`), reading `MISTRAL_API_KEY` and
+  defaulting to `https://api.mistral.ai/v1`. la Plateforme serves
+  `/v1/chat/completions` in OpenAI's request and response shape — `tools`,
+  `tool_calls` and `usage` included — so this is a subclass of the OpenAI provider
+  overriding exactly two things, the credential and the default endpoint, rather than
+  a second SDK with a second tool-call normalisation to keep in step. An explicit
+  `model.base_url` still wins, which is how a proxy or a regional endpoint is reached.
+  Verified live against `zai-glm-5-2`: text, tool selection, argument filling,
+  multi-tool disambiguation, token accounting and a full `opentorus run`.
+  `MISTRAL_API_KEY` was added to the credential scrub list, so the key is redacted
+  from provider context like every other one; `doctor` picks the provider up through
+  the same credential table. Embedding resolution treats `mistral` like `anthropic` —
+  local sentence-transformers first, Ollama sidecar second — because its embeddings
+  live behind a separate model that the openai/ollama/local resolver does not model.
+  Only `tool_calling` and `structured_output` are declared statically, since what la
+  Plateforme routes to varies per model; anything more comes from a profile's own
+  `capabilities` or the cached probe.
+
 ### Fixed
 
 - **arXiv papers are stored with their real bibliographic metadata.** `paper_fetch`

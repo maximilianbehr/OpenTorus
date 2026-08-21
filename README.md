@@ -191,6 +191,10 @@ opentorus config set model.base_url http://localhost:11434
 # …or a hosted provider (reads OPENAI_API_KEY / ANTHROPIC_API_KEY from the env):
 opentorus config set model.provider openai
 opentorus config set model.name gpt-4o-mini
+
+# …or Mistral's la Plateforme, including the models it hosts (MISTRAL_API_KEY):
+opentorus config set model.provider mistral
+opentorus config set model.name zai-glm-5-2
 ```
 
 Then put the agent on a problem:
