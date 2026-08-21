@@ -1354,6 +1354,12 @@ class ProofSubmitTool(Tool):
             "inconclusive": attempt.inconclusive,
             "timeout_seconds": seconds,
         }
+        # Only name the limit when the checker actually hit it. Stating "after 600s" for
+        # every inconclusive result read as a timeout even when the certificate had
+        # failed to parse in milliseconds — it sent the model (and the reader of the
+        # log) hunting for more compute instead of fixing the source.
+        timed_out = "timed out" in (attempt.output or "").lower()
+        timing = f" after the {seconds}s limit" if timed_out else ""
         clamp = f"\n\n{clamp_note}" if clamp_note else ""
         if not attempt.available:
             return self.fail(
@@ -1379,13 +1385,10 @@ class ProofSubmitTool(Tool):
         if attempt.inconclusive:
             return self.fail(
                 call,
-                f"{attempt.id} INCONCLUSIVE on {attempt.backend} after {seconds}s "
-                "(timeout, crash, or unparseable source — NOT a mathematical rejection). "
-                "If the checker ran out of time, resubmit the same source with a larger "
-                "'timeout'; otherwise simplify or split the goal.\n\n"
-                + output
-                + schema_hint
-                + clamp,
+                f"{attempt.id} INCONCLUSIVE on {attempt.backend}{timing} — NOT a "
+                "mathematical rejection. Read the checker output below: it says whether "
+                "the source was unparseable, the encoding undecidable, or the run cut "
+                "short.\n\n" + output + schema_hint + clamp,
                 **meta,
             )
         if attempt.outcome == "sat":

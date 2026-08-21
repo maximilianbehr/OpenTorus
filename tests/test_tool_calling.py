@@ -995,3 +995,73 @@ def test_a_single_system_message_is_left_alone() -> None:
     ]
     out = to_openai_messages(messages)
     assert out[0] == {"role": "system", "content": "prompt"}
+
+
+# --- Anthropic tool pairing after compaction -------------------------------------------------
+
+
+def test_anthropic_drops_an_orphan_tool_result(tmp_path: Path) -> None:
+    """Compaction can start the window mid-exchange: the result survives, the call that
+    produced it does not. Anthropic then rejects the WHOLE request with HTTP 400
+    ("unexpected `tool_use_id` found in `tool_result` blocks") — a live Fable 5 run died
+    on exactly this."""
+    from opentorus.providers.anthropic_provider import to_anthropic_messages
+
+    messages = [
+        SessionMessage(role="tool", content="42", metadata={"tool_call_id": "toolu_orphan"}),
+        SessionMessage(role="user", content="carry on"),
+    ]
+    _system, convo = to_anthropic_messages(messages)
+    blocks = [
+        b for entry in convo if isinstance(entry.get("content"), list) for b in entry["content"]
+    ]
+    assert not [b for b in blocks if b.get("type") == "tool_result"]
+    assert convo[-1]["content"] == "carry on", "the rest of the turn must survive"
+
+
+def test_anthropic_keeps_a_properly_paired_result(tmp_path: Path) -> None:
+    from opentorus.providers.anthropic_provider import to_anthropic_messages
+
+    messages = [
+        SessionMessage(
+            role="assistant",
+            content="looking",
+            metadata={"tool_calls": [{"id": "toolu_1", "name": "status", "args": {}}]},
+        ),
+        SessionMessage(role="tool", content="ok", metadata={"tool_call_id": "toolu_1"}),
+    ]
+    _system, convo = to_anthropic_messages(messages)
+    results = [
+        b
+        for entry in convo
+        if isinstance(entry.get("content"), list)
+        for b in entry["content"]
+        if b.get("type") == "tool_result"
+    ]
+    assert [b["tool_use_id"] for b in results] == ["toolu_1"]
+    assert results[0]["content"] == "ok", "a real result must not be replaced"
+
+
+def test_anthropic_closes_a_call_that_was_never_answered(tmp_path: Path) -> None:
+    """The mirror case: the call survives compaction and its result does not. Anthropic
+    rejects that too, so the pair is closed with a placeholder rather than losing it."""
+    from opentorus.providers.anthropic_provider import to_anthropic_messages
+
+    messages = [
+        SessionMessage(
+            role="assistant",
+            content="calling",
+            metadata={"tool_calls": [{"id": "toolu_2", "name": "status", "args": {}}]},
+        ),
+        SessionMessage(role="user", content="never mind"),
+    ]
+    _system, convo = to_anthropic_messages(messages)
+    results = [
+        b
+        for entry in convo
+        if isinstance(entry.get("content"), list)
+        for b in entry["content"]
+        if b.get("type") == "tool_result"
+    ]
+    assert [b["tool_use_id"] for b in results] == ["toolu_2"]
+    assert "no result recorded" in results[0]["content"]

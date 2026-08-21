@@ -307,3 +307,50 @@ def test_proof_submit_rejects_a_non_integer_timeout(tmp_path: Path) -> None:
     )
     assert not result.ok
     assert "must be an integer" in result.content
+
+
+def test_an_unparseable_source_is_not_reported_as_a_timeout(tmp_path: Path) -> None:
+    """ "INCONCLUSIVE after 600s" for a certificate that failed to parse in milliseconds
+    reads as a timeout and sends the reader hunting for compute instead of fixing the
+    source. A real run produced eight such messages, none of them a timeout."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    config = default_config()
+    config.tools.verifiers.timeout_seconds = 600
+
+    class Unparseable(StubVerifier):
+        def verify(self, source: str) -> VerificationResult:
+            return VerificationResult(
+                backend="stub",
+                accepted=False,
+                available=True,
+                inconclusive=True,
+                output="invalid certificate: could not read the variable boxes",
+            )
+
+    tool = ProofSubmitTool(ot, config, resolver=lambda name: Unparseable())
+    result = tool.run(ToolCall(name="proof_submit", args={"backend": "stub", "source": "x"}))
+    assert not result.ok
+    assert "600s" not in result.content, "no time claim when the checker did not run out"
+    assert "INCONCLUSIVE" in result.content
+
+
+def test_a_real_timeout_still_names_the_limit(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    config = default_config()
+    config.tools.verifiers.timeout_seconds = 600
+
+    class TimedOut(StubVerifier):
+        def verify(self, source: str) -> VerificationResult:
+            return VerificationResult(
+                backend="stub",
+                accepted=False,
+                available=True,
+                inconclusive=True,
+                output="Timed out after 600s (inconclusive, not a rejection).",
+            )
+
+    tool = ProofSubmitTool(ot, config, resolver=lambda name: TimedOut())
+    result = tool.run(ToolCall(name="proof_submit", args={"backend": "stub", "source": "x"}))
+    assert "600s limit" in result.content

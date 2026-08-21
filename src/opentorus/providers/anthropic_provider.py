@@ -197,7 +197,85 @@ def to_anthropic_messages(messages: list[SessionMessage]) -> tuple[str, list[dic
                 convo.append({"role": "assistant", "content": blocks})
             else:
                 convo.append({"role": "assistant", "content": message.content})
-    return system, convo
+    return system, _repair_anthropic_tool_pairing(convo)
+
+
+def _tool_use_ids(entry: dict | None) -> set[str]:
+    """The ids of tool_use blocks this assistant message offers."""
+    if entry is None or entry.get("role") != "assistant":
+        return set()
+    content = entry.get("content")
+    if not isinstance(content, list):
+        return set()
+    return {b.get("id", "") for b in content if b.get("type") == "tool_use"}
+
+
+def _tool_result_ids(entry: dict | None) -> set[str]:
+    """The ids this user message answers."""
+    if entry is None or entry.get("role") != "user":
+        return set()
+    content = entry.get("content")
+    if not isinstance(content, list):
+        return set()
+    return {b.get("tool_use_id", "") for b in content if b.get("type") == "tool_result"}
+
+
+def _repair_anthropic_tool_pairing(convo: list[dict]) -> list[dict]:
+    """Make the conversation satisfy Anthropic's strict tool_use/tool_result pairing.
+
+    Anthropic rejects the whole request with HTTP 400 when a ``tool_result`` block has
+    no ``tool_use`` of the same id in the immediately preceding message:
+
+        messages.0.content.0: unexpected `tool_use_id` found in `tool_result` blocks
+
+    which is exactly what compaction produces — the window starts mid-exchange, the
+    result survives and the call that produced it does not. A live Fable 5 run died on
+    it. The OpenAI converter has carried this repair for a while
+    (``_repair_openai_tool_pairing``); this is its counterpart: an orphan result is
+    dropped, and a call left unanswered gets a placeholder so the pair closes rather
+    than the turn being lost.
+    """
+    # Pass 1 — drop results whose call is not in the message right before them.
+    kept_entries: list[dict] = []
+    for entry in convo:
+        content = entry.get("content")
+        if entry.get("role") == "user" and isinstance(content, list):
+            offered = _tool_use_ids(kept_entries[-1] if kept_entries else None)
+            kept = [
+                b
+                for b in content
+                if b.get("type") != "tool_result" or b.get("tool_use_id", "") in offered
+            ]
+            if not kept:
+                # Every block was an orphan result; an empty message is rejected too.
+                continue
+            entry = {**entry, "content": kept}
+        kept_entries.append(entry)
+
+    # Pass 2 — close any call the following message does not answer.
+    out: list[dict] = []
+    for index, entry in enumerate(kept_entries):
+        out.append(entry)
+        offered = _tool_use_ids(entry)
+        if not offered:
+            continue
+        nxt = kept_entries[index + 1] if index + 1 < len(kept_entries) else None
+        missing = sorted(offered - _tool_result_ids(nxt))
+        if missing:
+            out.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": "(no result recorded for this call)",
+                        }
+                        for tool_id in missing
+                    ],
+                }
+            )
+    return out
 
 
 def _anthropic_usage(message: object) -> TokenUsage | None:
