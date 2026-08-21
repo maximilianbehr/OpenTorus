@@ -380,3 +380,62 @@ def test_a_rejection_of_something_undroppable_still_raises(
     config = set_dotted(default_config(), "model.provider", "openai")
     with pytest.raises(ProviderError, match="422"):
         get_provider(config).generate([])
+
+
+def test_anthropic_sends_only_what_the_installed_sdk_accepts() -> None:
+    """anthropic 1.0 removed `temperature` from Messages.create, and this provider passed
+    it unconditionally — a TypeError before a single request left the machine."""
+    from opentorus.providers.anthropic_provider import supported_kwargs
+
+    def create_1x(*, model, messages, max_tokens, system=None, tools=None):  # noqa: ANN001
+        pass
+
+    out = supported_kwargs(
+        create_1x,
+        {"model": "m", "messages": [], "max_tokens": 8, "temperature": 0.0, "system": "s"},
+    )
+    assert "temperature" not in out
+    assert sorted(out) == ["max_tokens", "messages", "model", "system"]
+
+    def create_0x(*, model, messages, max_tokens, temperature=None, system=None):  # noqa: ANN001
+        pass
+
+    kept = supported_kwargs(
+        create_0x, {"model": "m", "messages": [], "max_tokens": 8, "temperature": 0.3}
+    )
+    assert kept["temperature"] == 0.3, "an older SDK must keep every argument"
+
+
+def test_a_var_keyword_signature_is_left_alone() -> None:
+    """A wrapped or **kwargs client accepts anything; filtering it would be guesswork."""
+    from opentorus.providers.anthropic_provider import supported_kwargs
+
+    def anything(**kwargs):  # noqa: ANN003
+        pass
+
+    assert supported_kwargs(anything, {"temperature": 0.0}) == {"temperature": 0.0}
+
+
+def test_an_anthropic_sdk_failure_becomes_a_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loop only knows ProviderError; a TypeError reached the user as a traceback."""
+    import sys
+    import types
+
+    class FakeMessages:
+        def create(self, *, model, messages, max_tokens, system=None, tools=None):  # noqa: ANN001
+            raise RuntimeError("upstream exploded")
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            self.messages = FakeMessages()
+
+    stub = types.ModuleType("anthropic")
+    stub.Anthropic = FakeAnthropic  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "anthropic", stub)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-a-real-secret")
+
+    config = set_dotted(default_config(), "model.provider", "anthropic")
+    with pytest.raises(ProviderError, match="RuntimeError"):
+        get_provider(config).generate([])
