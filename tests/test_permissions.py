@@ -175,3 +175,55 @@ def test_env_launcher_is_not_harmless() -> None:
     # so it must not run unconfirmed in safe mode.
     decision = evaluate_command("env python evil.py", "safe")
     assert decision.allowed is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls && rm foo",
+        "ls || rm foo",
+        "echo hi > notes.md",
+        "cat a > b",
+        "ls | tee out.txt",
+        "echo $(rm foo)",
+        "echo `rm foo`",
+        "ls\nrm foo",
+    ],
+)
+def test_review_mode_refuses_chained_or_redirecting_commands(command: str) -> None:
+    """Review mode promises to be strictly read-only, so a rider must not slip in.
+
+    The harmless-command check looked at the first token only, so anything after
+    ``&&``, ``|`` or ``>`` was invisible: in review mode — the mode chosen precisely
+    to guarantee nothing changes — an agent could write and delete files.
+    """
+    decision = evaluate_command(command, "trusted", style="autonomous", review=True)
+    assert not decision.allowed, f"review mode allowed {command!r}"
+
+
+@pytest.mark.parametrize("command", ["ls", "pwd", "git log --oneline", "cat notes.md"])
+def test_review_mode_still_permits_plain_inspection(command: str) -> None:
+    assert evaluate_command(command, "trusted", style="autonomous", review=True).allowed
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "find . -delete",
+        "find / -delete",
+        "find . -name '*.py' -delete",
+        "find . -exec rm {} ;",
+        "shred -u secrets.txt",
+        "rmdir -p a/b/c",
+        "git stash clear",
+        "git branch -D main",
+    ],
+)
+def test_deleting_without_saying_rm_still_requires_confirmation(command: str) -> None:
+    """Destructive classification was keyed to the word ``rm``.
+
+    A stress probe ran every one of these in the most permissive configuration
+    (trusted + autonomous) with no confirmation at all — including ``find / -delete``.
+    """
+    decision = evaluate_command(command, "trusted", style="autonomous")
+    assert decision.requires_confirmation or not decision.allowed, f"{command!r} ran unguarded"
