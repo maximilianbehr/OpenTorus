@@ -81,15 +81,30 @@ def pinned_reference(image: str, digest: str) -> str:
     return f"{_strip_digest(image)}@{digest}"
 
 
+def is_locally_built(env: ToolEnvironment) -> bool:
+    """True for an environment ``env prepare`` built here from a recorded Containerfile.
+
+    Such an image exists only in the local store: it has no registry digest to pin
+    to (``RepoDigests`` is empty), and its reference is a content-addressed tag
+    carrying the Containerfile's hash. That is a reproducibility statement of its
+    own — stronger than a mutable tag, and checkable against the image's build-time
+    label — so it is not the "unpinned shipped image" this policy is about.
+    """
+    return bool(env.containerfile_sha256)
+
+
 def unpinned_environments(ot_dir: Path) -> list[ToolEnvironment]:
     """Open-licensed environments whose image is not digest-pinned.
 
     Bring-your-own (proprietary, image-less) environments are exempt: they ship
-    no image, so there is nothing to pin.
+    no image, so there is nothing to pin. Locally built ones are exempt too — see
+    :func:`is_locally_built`. Without that exemption ``env verify`` failed on every
+    workspace the shipped examples produce, and its advice ("pin it") could not be
+    followed for a local image at all.
     """
     unpinned: list[ToolEnvironment] = []
     for env in list_environments(ot_dir).values():
-        if env.is_bring_your_own:
+        if env.is_bring_your_own or is_locally_built(env):
             continue
         if not is_digest_pinned(env.image):
             unpinned.append(env)
@@ -129,6 +144,21 @@ def pin_environment(ot_dir: Path, name: str, digest: str) -> ToolEnvironment:
         raise OpenTorusError(f"Unknown tool environment '{name}'. Known: {valid}")
     if env.image is None:
         raise OpenTorusError(f"Environment '{name}' is bring-your-own (no image); nothing to pin.")
+    if is_locally_built(env):
+        # `env verify` used to flag these and tell the user to pin them. Following
+        # that advice wrote `repo:tag@sha256:<local image id>` into the workspace —
+        # a reference docker then tries to *pull*, failing with "pull access denied",
+        # so the workspace's experiments stopped running. A local image has no
+        # registry digest to pin to; refuse rather than break the workspace.
+        raise OpenTorusError(
+            f"Environment '{name}' was built locally by 'env prepare' and has no registry "
+            f"digest to pin to — its image exists only in this machine's image store, and a "
+            f"'@sha256:' reference to a local image id is not runnable (docker would try to "
+            f"pull it). It is already addressed by the Containerfile hash "
+            f"{env.containerfile_sha256[:12] if env.containerfile_sha256 else ''}; "
+            f"'env verify' accepts it as reproducible. Push the image to a registry first "
+            f"if you need a registry digest."
+        )
     pinned = pinned_reference(env.image, digest)
 
     path = _workspace_env_file(ot_dir)

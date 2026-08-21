@@ -137,12 +137,22 @@ def env_prepare(
 @env_app.command("verify")
 def env_verify() -> None:
     """Fail if any shipped environment is not digest-pinned (reproducibility)."""
-    from opentorus.execution.pinning import unpinned_environments
+    from opentorus.execution.environments import list_environments
+    from opentorus.execution.pinning import is_locally_built, unpinned_environments
 
     base = _require_workspace_dir()
     unpinned = unpinned_environments(base)
     if not unpinned:
-        console.print("[green]All shipped environments are digest-pinned.[/green]")
+        # Say which kind each one is rather than calling a content-addressed local
+        # build "digest-pinned": it is reproducible, but not by a registry digest,
+        # and this project's whole point is not overstating what an artifact is.
+        local = sorted(e.name for e in list_environments(base).values() if is_locally_built(e))
+        console.print("[green]Every environment is reproducibly referenced.[/green]")
+        if local:
+            console.print(
+                f"[dim]  built here from a recorded Containerfile: {', '.join(local)} "
+                f"(addressed by build-input hash, not by a registry digest)[/dim]"
+            )
         return
     for env in sorted(unpinned, key=lambda e: e.name):
         console.print(f"[red]unpinned[/red] {env.name}: {env.image}")
