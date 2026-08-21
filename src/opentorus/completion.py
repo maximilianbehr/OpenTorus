@@ -17,7 +17,7 @@ _CONFIG_VALUE_CHOICES: dict[str, list[str]] = {
     "agent.mode": ["normal", "review"],
     "permissions.mode": ["safe", "ask", "trusted"],
     "project.mode": ["code", "research", "writing", "data", "mixed"],
-    "model.provider": ["mock", "openai", "anthropic", "ollama"],
+    "model.provider": ["mock", "openai", "anthropic", "ollama", "mistral"],
     "governance.routing.enabled": ["true", "false"],
     "campaign.default_mode": ["prove-or-refute", "exploration", "survey"],
     "campaign.require_literature_mapping": ["true", "false"],

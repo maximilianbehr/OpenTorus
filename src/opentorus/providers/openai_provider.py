@@ -36,6 +36,12 @@ def _require_openai_sdk() -> type:
 
 class OpenAIProvider(BaseProvider):
     name = "openai"
+    # An OpenAI-compatible third-party endpoint differs in exactly two things: the
+    # credential it reads and the endpoint it defaults to. Subclasses override these
+    # two and inherit one request builder and one tool-call parser, so a wire-format
+    # fix lands for every compatible provider at once.
+    api_key_env = "OPENAI_API_KEY"
+    default_base_url: str | None = None
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -48,15 +54,20 @@ class OpenAIProvider(BaseProvider):
     def generate(
         self, messages: list[SessionMessage], tools: list[dict] | None = None
     ) -> ProviderResponse:
-        if not os.environ.get("OPENAI_API_KEY"):
+        api_key = os.environ.get(self.api_key_env)
+        if not api_key:
             raise ProviderError(
-                "OPENAI_API_KEY is not set. Put it in a .env file in your project "
-                "(OPENAI_API_KEY=sk-…) or export it to use the OpenAI provider."
+                f"{self.api_key_env} is not set. Put it in a .env file in your project "
+                f"({self.api_key_env}=…) or export it to use the {self.name} provider."
             )
         OpenAI = _require_openai_sdk()
 
         kwargs = build_openai_request(self.config, messages, tools)
-        client = OpenAI(**openai_client_kwargs(self.config))
+        client = OpenAI(
+            **openai_client_kwargs(
+                self.config, api_key=api_key, default_base_url=self.default_base_url
+            )
+        )
         completion = client.chat.completions.create(**kwargs)
         choice = completion.choices[0]
         response = parse_openai_message(choice.message)
@@ -68,7 +79,9 @@ class OpenAIProvider(BaseProvider):
         return response
 
 
-def openai_client_kwargs(config: Config) -> dict:
+def openai_client_kwargs(
+    config: Config, *, api_key: str | None = None, default_base_url: str | None = None
+) -> dict:
     """Constructor arguments for the ``openai`` client.
 
     ``model.base_url`` selects the endpoint — an OpenAI-compatible server (vLLM,
@@ -80,6 +93,11 @@ def openai_client_kwargs(config: Config) -> dict:
     kwargs: dict = {}
     if config.model.base_url:
         kwargs["base_url"] = config.model.base_url
+    elif default_base_url:
+        # A compatible third-party endpoint (Mistral) that the user has not overridden.
+        kwargs["base_url"] = default_base_url
+    if api_key:
+        kwargs["api_key"] = api_key
     if config.model.timeout_seconds:
         kwargs["timeout"] = float(config.model.timeout_seconds)
     return kwargs

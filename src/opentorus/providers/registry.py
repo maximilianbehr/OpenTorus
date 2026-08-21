@@ -28,9 +28,13 @@ def get_provider(config: Config) -> BaseProvider:
         from opentorus.providers.ollama_provider import OllamaProvider
 
         return OllamaProvider(config)
+    if name == "mistral":
+        from opentorus.providers.mistral_provider import MistralProvider
+
+        return MistralProvider(config)
     raise ProviderError(
         f"Unknown provider '{config.model.provider}'. "
-        "Valid providers: mock, openai, anthropic, ollama."
+        "Valid providers: mock, openai, anthropic, ollama, mistral."
     )
 
 

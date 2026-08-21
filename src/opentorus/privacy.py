@@ -30,6 +30,7 @@ REDACTION = "[redacted: sensitive content excluded from provider context]"
 CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    "MISTRAL_API_KEY",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
     "HF_TOKEN",

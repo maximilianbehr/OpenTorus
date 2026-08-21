@@ -29,6 +29,7 @@ the pieces fit together and the boundaries that keep it inspectable.
        | ledger; profiles |  | + Execution       |  | papers, theorems,     |
        | mock/openai/     |  | backends          |  | verifiers, KB, ...    |
        | anthropic/ollama |  |                   |  |                       |
+       | /mistral         |  |                   |  |                       |
        +------------------+  +---------+---------+  +----------+------------+
                                        |                       |
                              +---------v-----------------------v---------+
