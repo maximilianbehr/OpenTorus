@@ -29,6 +29,19 @@ PermissionMode = Literal["safe", "ask", "trusted"]
 AgentMode = Literal["normal", "review"]
 EmbeddingsBackend = Literal["auto", "local", "openai", "ollama", "off"]
 
+
+def _literal_off(value: object) -> object:
+    """Map YAML's boolean ``False`` back to the string ``"off"``.
+
+    YAML 1.1 reads a bare ``off`` as a boolean, so a config written exactly the way the
+    shipped comment documents it — ``dlp_pii: off`` — reaches pydantic as ``False``,
+    fails the ``Literal`` check and takes the *whole* workspace config down with it.
+    ``on`` is not mapped: it has no meaning for these fields, and pydantic's own error
+    names the values that do.
+    """
+    return "off" if value is False else value
+
+
 _UNLIMITED_STEP_TOKENS = frozenset({"inf", "infinity", "unlimited", "unbounded", "none", "null"})
 
 
@@ -234,6 +247,7 @@ class ContextConfig(BaseModel):
     # (OpenAI/Ollama) or optional local sentence-transformers.
     embeddings_enabled: bool = True
     embeddings_backend: EmbeddingsBackend = "auto"
+    _embeddings_off = field_validator("embeddings_backend", mode="before")(_literal_off)
     # Force embedding source when chat provider lacks an API (e.g. anthropic → ollama).
     embeddings_provider: Literal["openai", "ollama", "local"] | None = None
     # null = provider default (text-embedding-3-small / nomic-embed-text / all-MiniLM-L6-v2)
@@ -296,6 +310,17 @@ class VerifiersConfig(BaseModel):
     lean: bool = False
     coq: bool = False
     smt: bool = False
+    # How long a checker may run. This used to be a hardcoded 120s in each backend's
+    # constructor that nothing passed through, so a formal check needing more time was
+    # unreachable by any means — not by the agent, which has no schema field for it,
+    # and not by the user, who had no config key. That capped the one path the
+    # epistemic model says can promote a claim: a run submitting a finite but large
+    # SMT check timed out at 120s while the same run's `exp_run` was allowed 10800.
+    timeout_seconds: int = 120
+    # Ceiling on a timeout the model asks for via proof_submit; 0 = refuse all requests
+    # and always use timeout_seconds. A longer request is clamped to this and reported,
+    # the same contract as campaign.max_experiment_seconds.
+    max_timeout_seconds: int = 3600
     # Validated numerics (interval arithmetic) needs no external binary — only the
     # optional ``mpmath`` dependency — so it is enabled by default; it reports itself
     # unavailable when mpmath is absent rather than faking rigor.
@@ -458,6 +483,13 @@ class GovernanceConfig(BaseModel):
     """
 
     dlp: bool = True
+    # What to do with PII (currently email addresses) found in an outbound payload.
+    # "redact" replaces it and sends the rest — strictly more private than the blocking
+    # mode's practical outcome, which was users turning `dlp` off entirely to get past
+    # an author email in a fetched paper. "block" is the old fail-closed behaviour;
+    # "off" skips the PII scan. Secrets always block, in every mode.
+    dlp_pii: Literal["redact", "block", "off"] = "redact"
+    _dlp_pii_off = field_validator("dlp_pii", mode="before")(_literal_off)
     budgets: BudgetConfig = Field(default_factory=BudgetConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
 

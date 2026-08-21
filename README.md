@@ -72,7 +72,7 @@ same models — the difference is everything wrapped around them:
 | **Reproducibility** | Code you copy-paste | `EXP-*` manifests (command, seed, git commit, deps); `exp replay` |
 | **Failed attempts** | Lost in the thread | First-class obstruction ledger — dead ends recorded, not repeated |
 | **Literature** | Citations may be invented | arXiv, OpenAlex, Crossref, … → local `PAPER-*` with provenance; reports cite real artifacts only |
-| **Privacy** | Data on the provider's servers | State on disk; egress consent-gated per host; DLP scan before anything leaves |
+| **Privacy** | Data on the provider's servers | State on disk; egress consent-gated per host; DLP scan before anything leaves (secrets block, PII redacted) |
 | **Safety** | Opaque plugin execution | Gated patches/shell/checkpoints; dangerous commands and secret-file reads always blocked |
 | **Long attacks** | One thread, one model, start over | Resumable campaigns: a portfolio of branches, a scored scheduler, per-task model routing, an event log you can replay |
 
@@ -267,7 +267,7 @@ Hard guarantees hold in **every** mode and are never bypassable:
 - **`--mode review` is strictly read-only**; even `autonomous` style still
   confirms destructive operations.
 - **Local-first & private** — sensitive file contents are excluded from provider
-  context by default; a pre-egress DLP scan blocks secrets/PII before anything
+  context by default; a pre-egress DLP scan blocks secrets and redacts PII before anything
   leaves the machine; all network access is consent-gated per host, throttled, and
   budget-capped.
 

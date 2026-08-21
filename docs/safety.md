@@ -19,8 +19,9 @@ mode and style and cannot be configured away.
   without explicit human confirmation; `verified` requires a real proof.
 - **No auto-commit** — agent edits are recorded as `PATCH-*` artifacts; commits
   are always a human action.
-- **Egress fails closed** — the pre-egress DLP scan blocks payloads containing
-  secrets/PII before they leave the machine.
+- **Egress fails closed on secrets** — the pre-egress DLP scan blocks any payload
+  containing a secret before it leaves the machine. PII is redacted rather than
+  blocked by default (`governance.dlp_pii`); see [privacy.md](privacy.md).
 
 ## Configurable controls
 
