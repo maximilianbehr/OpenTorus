@@ -407,3 +407,40 @@ def test_parse_strategist_json_is_lenient() -> None:
         start_index=1,
     )
     assert proposals == [] and len(notes) == 2
+
+
+def test_strategist_degrades_on_a_provider_sdk_error(monkeypatch) -> None:
+    """ "Never raises for a provider problem" has to mean any provider problem.
+
+    Only `OpenTorusError` was caught, so every provider SDK exception escaped: a
+    vLLM endpoint answering 400 on the strategist's first call took six campaigns
+    down with it, before a single work item had run. A campaign that cannot reach
+    its strategist falls back to the template portfolio with a note — that is the
+    documented contract.
+    """
+    from unittest import mock
+
+    from opentorus.campaign.workers import strategist as strategist_mod
+
+    class SdkError(Exception):
+        """Stands in for openai.BadRequestError, which is not an OpenTorusError."""
+
+    monkeypatch.setattr(strategist_mod, "strategist_context", lambda ctx: mock.Mock())
+    monkeypatch.setattr(
+        strategist_mod, "acquire_lease", lambda *a, **k: mock.Mock(provider=object())
+    )
+    monkeypatch.setattr(strategist_mod, "is_mock_provider", lambda provider: False)
+    monkeypatch.setattr(
+        strategist_mod,
+        "bounded_loop",
+        mock.Mock(
+            side_effect=SdkError("Error code: 400 - System message must be at the beginning")
+        ),
+    )
+
+    items, notes = strategist_mod.propose_with_model(mock.Mock(), mock.Mock())
+
+    assert items == []
+    assert len(notes) == 1
+    assert "SdkError" in notes[0]
+    assert "template portfolio used" in notes[0]

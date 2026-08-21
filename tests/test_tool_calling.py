@@ -956,3 +956,39 @@ def test_a_trailing_system_block_becomes_its_own_user_turn() -> None:
     out = to_openai_messages(messages)
     assert _roles(out) == ["system", "assistant", "tool", "user"]
     assert out[-1]["content"] == "volatile"
+
+
+def test_leading_system_messages_are_merged_into_one() -> None:
+    """qwen's template allows exactly one system message, at index 0.
+
+    Its rejection reads "System message must be at the beginning", which is really
+    "a system message turned up where none may be" — and index 1 is already such a
+    place. A campaign strategist call carried four (system prompt, tool routing,
+    current task, workspace context) and died on its first request, taking the
+    campaign with it. Merging preserves the text and the order.
+    """
+    from opentorus.providers._convert import to_openai_messages
+
+    messages = [
+        SessionMessage(role="system", content="prompt"),
+        SessionMessage(role="system", content="routing"),
+        SessionMessage(role="system", content="current task"),
+        SessionMessage(role="system", content="workspace context"),
+        SessionMessage(role="user", content="the strategist prompt"),
+    ]
+    out = to_openai_messages(messages)
+    assert _roles(out) == ["system", "user"]
+    for part in ("prompt", "routing", "current task", "workspace context"):
+        assert part in out[0]["content"]
+    assert out[-1]["content"] == "the strategist prompt"
+
+
+def test_a_single_system_message_is_left_alone() -> None:
+    from opentorus.providers._convert import to_openai_messages
+
+    messages = [
+        SessionMessage(role="system", content="prompt"),
+        SessionMessage(role="user", content="q"),
+    ]
+    out = to_openai_messages(messages)
+    assert out[0] == {"role": "system", "content": "prompt"}

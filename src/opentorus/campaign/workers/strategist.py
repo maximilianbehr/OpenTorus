@@ -208,8 +208,14 @@ def propose_with_model(
     try:
         loop = bounded_loop(wctx, runtime, lease=lease, registry=ToolRegistry())
         answer = loop.run(strategist_prompt(ctx))
-    except OpenTorusError as exc:
-        return [], [f"strategist: provider error ({exc}); template portfolio used"]
+    # The docstring's promise is "never raises for a provider problem", and only
+    # OpenTorusError was caught — so every provider SDK exception escaped. A vLLM
+    # endpoint answering 400 on the strategist's first call took six campaigns down
+    # with it, before a single work item had run. KeyboardInterrupt and SystemExit
+    # are not Exception subclasses, so a Ctrl-C still stops the campaign.
+    except Exception as exc:  # noqa: BLE001 - deliberate: degrade, never abort
+        detail = exc if isinstance(exc, OpenTorusError) else f"{type(exc).__name__}: {exc}"
+        return [], [f"strategist: provider error ({detail}); template portfolio used"]
     items = parse_strategist_json(answer)
     if not items:
         excerpt = " ".join((answer or "").split())[:160]

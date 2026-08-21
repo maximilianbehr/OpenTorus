@@ -123,6 +123,16 @@ def _fold_late_system_messages(out: list[dict]) -> list[dict]:
     head = 0
     while head < len(out) and out[head].get("role") == "system":
         head += 1
+    # One system message, not a run of them. qwen's template rejects the second one
+    # with the same "System message must be at the beginning" — the message means
+    # "a system message turned up where none may be", and index 1 is already such a
+    # place. A campaign strategist call carried four (system prompt, tool routing,
+    # current task, workspace context) and died on its first request. Concatenating
+    # preserves the text and the order, and the head stays a stable cache prefix.
+    if head > 1:
+        merged = "\n\n".join(str(m.get("content") or "") for m in out[:head]).strip()
+        out = [{"role": "system", "content": merged}, *out[head:]]
+        head = 1
     folded: list[dict] = out[:head]
     pending = ""  # a folded block waiting for the user turn it belongs to
     for message in out[head:]:
