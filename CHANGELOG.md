@@ -637,6 +637,18 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
 
 ### Fixed
 
+- **A cost budget now says when it cannot bind.** `_PRICE_PER_MTOK` prices a handful
+  of OpenAI/Anthropic models; every other model estimates to `$0.00`, and
+  `budget_alerts` sums exactly that field. So `cost_budget_usd = 50` against a model
+  outside the table reported a calm `$0 / $50` forever while real money was spent —
+  found while putting a real budget on `zai-glm-5-2` through the new Mistral provider.
+  The per-step display was already honest (`$? (price unknown)`); the budget path read
+  the same zero as "nothing spent". Usage records now carry `cost_known`, stamped where
+  the `base_url` is still in scope (afterwards a local `openai`-compatible endpoint is
+  indistinguishable from an unlisted cloud model), and a configured USD cap that cannot
+  be measured reports itself and points at `token_budget`. Mistral la Plateforme prices
+  were added, including `zai-glm-5-2` at $1.40/$4.40 per M.
+
 A stress run of twenty-three campaigns against a local vLLM, audited workspace by
 workspace, produced these. Each was reproduced in the code before it was changed.
 
