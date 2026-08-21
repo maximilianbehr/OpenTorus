@@ -44,6 +44,31 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
 
+# PII is not a secret. A credential in a payload is a compromise; an author's email
+# address inside a paper the user deliberately fetched is public bibliographic data,
+# and every academic PDF has several. Blocking on it made the flagship workflow —
+# fetch papers, read them, reason — impossible with any cloud provider, and the advice
+# it printed ("disable governance.dlp") traded away all secret protection to get past
+# an email. They are separated here so PII can be redacted while secrets still block.
+PII_KINDS: frozenset[str] = frozenset({"email"})
+PII_REDACTION = "[redacted: email]"
+
+
+def redact_pii(text: str) -> str:
+    """Replace PII with a marker. Secrets are never redacted — those block the send."""
+    return _EMAIL_RE.sub(PII_REDACTION, text)
+
+
+def split_findings(
+    findings: list[SecretFinding],
+) -> tuple[list[SecretFinding], list[SecretFinding]]:
+    """``(secrets, pii)`` — the two halves get different treatment."""
+    return (
+        [f for f in findings if f.kind not in PII_KINDS],
+        [f for f in findings if f.kind in PII_KINDS],
+    )
+
+
 class SecretFinding(BaseModel):
     kind: str
     excerpt: str

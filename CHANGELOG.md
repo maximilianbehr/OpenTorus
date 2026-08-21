@@ -650,6 +650,28 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
 
 ### Fixed
 
+- **The pre-egress DLP scan no longer makes the paper workflow impossible on any cloud
+  provider.** `screen_outbound` exits early for a local provider, so the scan only ever
+  runs against a cloud endpoint — and 185 stress runs were all local, which is why this
+  went unseen. The first paid run (Mistral, `zai-glm-5-2`) died at once: the scanner
+  blocks on *any* email address, and every academic PDF carries author emails. The run
+  reported `exit 0` having done nothing, and the message advised disabling
+  `governance.dlp` — trading away all secret protection to get past an email. Secrets
+  now still fail closed; PII is redacted by default via the new
+  `governance.dlp_pii` (`redact` | `block` | `off`). The redaction rewrites the whole
+  outbound payload, message text *and* `metadata["tool_calls"][…]["args"]` — the latter
+  is serialised into what `to_openai_messages` sends, so redacting only `content` would
+  have reported the PII as removed while still putting it on the wire. The allow
+  decision is re-earned *after* the rewrite: the scan reads `json.dumps(...)`, which
+  escapes non-ASCII, so `hoﬀmann@…` (a U+FB00 ligature — ordinary pdftotext output for
+  a TeX paper) is detected through its `\uXXXX` escape while `\b[A-Za-z0-9._%+-]+@`
+  cannot match the raw text, and the rewrite is a no-op; whatever survives now blocks.
+  A bare `dlp_pii: off` — the way the shipped comment documented it — reaches pydantic
+  as YAML's boolean `False` and used to fail validation, taking the whole workspace
+  config with it; `False` is now mapped back (`embeddings_backend` had the same latent
+  trap). docs/privacy.md, docs/safety.md and README no longer promise fail-closed on
+  PII, and no longer claim the redaction keeps PII out of `session.jsonl` — a message
+  is logged before the turn carrying it is screened, so it cannot.
 - **A cost budget now says when it cannot bind.** `_PRICE_PER_MTOK` prices a handful
   of OpenAI/Anthropic models; every other model estimates to `$0.00`, and
   `budget_alerts` sums exactly that field. So `cost_budget_usd = 50` against a model
