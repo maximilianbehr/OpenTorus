@@ -101,10 +101,23 @@ def _model_in_local_cache(model_name: str) -> bool:
     return snapshots.is_dir() and any(snapshots.iterdir())
 
 
+def _silence_hf_progress_bars() -> None:
+    """Ask the HF stack not to draw a load progress bar into OpenTorus's output.
+
+    Loading the local embedding model draws a "Loading weights" tqdm bar on
+    stderr, interleaved with OpenTorus's own diagnostics on every command that
+    touches retrieval. Setting the documented switch is what turns it off;
+    redirecting the stream instead would also swallow real diagnostics. Only a
+    default is set, so an operator who wants the bar can still export it.
+    """
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
 class SentenceTransformerEmbedder:
     """Adapter over ``sentence-transformers`` (loaded lazily, offline once cached)."""
 
     def __init__(self, model_name: str) -> None:
+        _silence_hf_progress_bars()
         from sentence_transformers import SentenceTransformer
 
         self.model_name = model_name
