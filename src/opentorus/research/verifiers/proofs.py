@@ -152,6 +152,7 @@ def submit_proof(
     problem_id: str | None = None,
     submitted_under: str | None = None,
     verifier: Verifier | None = None,
+    timeout: int | None = None,
 ) -> ProofAttempt:
     """Submit ``source`` to a formal backend and persist the attempt.
 
@@ -163,7 +164,7 @@ def submit_proof(
     if verifier is None:
         from opentorus.research.verifiers.registry import get_verifier
 
-        verifier = get_verifier(config, backend)
+        verifier = get_verifier(config, backend, timeout=timeout)
     if verifier is None:
         raise OpenTorusError(
             f"Verifier '{backend}' is not enabled. Enable it via "

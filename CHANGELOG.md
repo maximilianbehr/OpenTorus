@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Formal verification is no longer capped at 120 seconds with no way to raise it.**
+  Every backend took `timeout: int = 120` in its constructor and `registry.py` passed
+  only the command, so the default was also the ceiling: `proof_submit` had no schema
+  field to ask for more and there was no config key to set it. That capped the one path
+  the epistemic model says can promote a claim. A targeted run showed the cost exactly —
+  z3 accepted a row-sum lemma, and the next, larger submission for the same problem
+  timed out at 120s, while `exp_run` in the same run was allowed 10800 by the example's
+  own instructions. New `verifiers.timeout_seconds` (default 120) and
+  `verifiers.max_timeout_seconds` (default 3600); `proof_submit` takes an optional
+  `timeout` that is clamped to the ceiling and **reported**, the same contract
+  `campaign.max_experiment_seconds` uses for `exp_run`. An inconclusive result now names
+  the limit it hit and says to resubmit with a larger one, so a timeout reads as a
+  timeout rather than as a proof that failed.
 - **arXiv papers are stored with their real bibliographic metadata.** `paper_fetch`
   had a crossref lookup for a DOI but no counterpart for an arXiv id, so it
   synthesised `title=f"arXiv:{id}"` and went straight to the PDF: every arXiv paper
@@ -646,6 +659,28 @@ legacy `task_models` are still honoured). See `docs/campaign-engine.md`,
   exponentially and honours `Retry-After`; and every SDK exception is now translated at
   the provider boundary into a `ProviderError` that names the knob to turn — 429 points
   at `max_retries`, 401 at the credential, a timeout at `base_url`/`timeout_seconds`.
+- **The pre-egress DLP scan no longer makes the paper workflow impossible on any cloud
+  provider.** `screen_outbound` exits early for a local provider, so the scan only ever
+  runs against a cloud endpoint — and 185 stress runs were all local, which is why this
+  went unseen. The first paid run (Mistral, `zai-glm-5-2`) died at once: the scanner
+  blocks on *any* email address, and every academic PDF carries author emails. The run
+  reported `exit 0` having done nothing, and the message advised disabling
+  `governance.dlp` — trading away all secret protection to get past an email. Secrets
+  now still fail closed; PII is redacted by default via the new
+  `governance.dlp_pii` (`redact` | `block` | `off`). The redaction rewrites the whole
+  outbound payload, message text *and* `metadata["tool_calls"][…]["args"]` — the latter
+  is serialised into what `to_openai_messages` sends, so redacting only `content` would
+  have reported the PII as removed while still putting it on the wire. The allow
+  decision is re-earned *after* the rewrite: the scan reads `json.dumps(...)`, which
+  escapes non-ASCII, so `hoﬀmann@…` (a U+FB00 ligature — ordinary pdftotext output for
+  a TeX paper) is detected through its `\uXXXX` escape while `\b[A-Za-z0-9._%+-]+@`
+  cannot match the raw text, and the rewrite is a no-op; whatever survives now blocks.
+  A bare `dlp_pii: off` — the way the shipped comment documented it — reaches pydantic
+  as YAML's boolean `False` and used to fail validation, taking the whole workspace
+  config with it; `False` is now mapped back (`embeddings_backend` had the same latent
+  trap). docs/privacy.md, docs/safety.md and README no longer promise fail-closed on
+  PII, and no longer claim the redaction keeps PII out of `session.jsonl` — a message
+  is logged before the turn carrying it is screened, so it cannot.
 - **A cost budget now says when it cannot bind.** `_PRICE_PER_MTOK` prices a handful
   of OpenAI/Anthropic models; every other model estimates to `$0.00`, and
   `budget_alerts` sums exactly that field. So `cost_budget_usd = 50` against a model

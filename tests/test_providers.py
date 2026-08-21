@@ -177,3 +177,33 @@ def test_an_unrecognised_sdk_failure_still_becomes_a_provider_error(
     config = set_dotted(default_config(), "model.provider", "openai")
     with pytest.raises(ProviderError, match="ValueError"):
         get_provider(config).generate([])
+
+
+def test_yaml_bare_off_is_accepted_for_literal_fields() -> None:
+    """YAML 1.1 reads a bare ``off`` as False; a config written the way the shipped
+    comment documents it must not take the whole workspace config down."""
+    import yaml
+
+    from opentorus.config import Config
+
+    parsed = yaml.safe_load("dlp_pii: off\nembeddings_backend: off\n")
+    assert parsed["dlp_pii"] is False, "this is the YAML behaviour being defended against"
+
+    config = default_config()
+    config = set_dotted(config, "governance.dlp_pii", "off")
+    assert config.governance.dlp_pii == "off"
+
+    # …and straight through model validation, which is the path a config file takes.
+    revalidated = Config.model_validate(
+        {
+            **config.model_dump(mode="python"),
+            "governance": {**config.governance.model_dump(mode="python"), "dlp_pii": False},
+        }
+    )
+    assert revalidated.governance.dlp_pii == "off"
+
+
+def test_an_unknown_literal_value_is_still_rejected() -> None:
+    """Coercing False must not turn the field into a free-text one."""
+    with pytest.raises(ConfigError):
+        set_dotted(default_config(), "governance.dlp_pii", "sometimes")

@@ -214,3 +214,96 @@ def test_rejection_teaches_certificate_format_by_example(tmp_path: Path) -> None
     # Non-certificate backends (stub name) keep their original, un-suffixed text.
     plain = _tool(ot).run(_call(backend="lean4", source="theorem t : nonsense"))
     assert "minimal VALID example" not in plain.content
+
+
+# --- verifier timeout: the ceiling that used to be unreachable ------------------
+
+
+def test_resolve_timeout_uses_config_default() -> None:
+    from opentorus.research.verifiers.registry import resolve_timeout
+
+    config = default_config()
+    config.tools.verifiers.timeout_seconds = 300
+    assert resolve_timeout(config) == (300, None)
+
+
+def test_resolve_timeout_honours_a_larger_request() -> None:
+    """The whole point: a finite-but-large check may ask for more than the default."""
+    from opentorus.research.verifiers.registry import resolve_timeout
+
+    config = default_config()
+    config.tools.verifiers.timeout_seconds = 120
+    config.tools.verifiers.max_timeout_seconds = 10800
+    seconds, note = resolve_timeout(config, 7200)
+    assert seconds == 7200
+    assert note is None
+
+
+def test_resolve_timeout_clamps_and_says_so() -> None:
+    """A clamp is reported, never silent — a checker quietly given less time than
+    asked for is indistinguishable from a proof that failed."""
+    from opentorus.research.verifiers.registry import resolve_timeout
+
+    config = default_config()
+    config.tools.verifiers.max_timeout_seconds = 600
+    seconds, note = resolve_timeout(config, 10800)
+    assert seconds == 600
+    assert note and "clamped to 600s" in note
+
+
+def test_resolve_timeout_zero_ceiling_refuses_requests() -> None:
+    from opentorus.research.verifiers.registry import resolve_timeout
+
+    config = default_config()
+    config.tools.verifiers.timeout_seconds = 90
+    config.tools.verifiers.max_timeout_seconds = 0
+    seconds, note = resolve_timeout(config, 3600)
+    assert seconds == 90
+    assert note and "max_timeout_seconds is 0" in note
+
+
+def test_registry_passes_the_timeout_to_the_backend() -> None:
+    """The bug was that nothing plumbed it: every backend got the 120s constructor
+    default no matter what config said."""
+    from opentorus.research.verifiers.registry import get_verifier
+
+    config = default_config()
+    config.tools.verifiers.smt = True
+    config.tools.verifiers.timeout_seconds = 900
+    smt = get_verifier(config, "smt")
+    assert smt is not None
+    assert smt.timeout == 900
+    assert get_verifier(config, "smt", timeout=45).timeout == 45
+
+
+def test_proof_submit_reports_the_clamp_to_the_model(tmp_path: Path) -> None:
+    """An over-large request still runs, and the tool result says it was cut down."""
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    config = default_config()
+    config.tools.verifiers.max_timeout_seconds = 600
+
+    tool = ProofSubmitTool(ot, config, resolver=lambda name: StubVerifier())
+    result = tool.run(
+        ToolCall(
+            name="proof_submit",
+            args={"backend": "stub", "source": "VALID", "timeout": 10800},
+        )
+    )
+    assert result.ok
+    assert "clamped to 600s" in result.content
+    assert result.metadata["timeout_seconds"] == 600
+
+
+def test_proof_submit_rejects_a_non_integer_timeout(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    ot = workspace_dir(tmp_path)
+    tool = ProofSubmitTool(ot, default_config(), resolver=lambda name: StubVerifier())
+    result = tool.run(
+        ToolCall(
+            name="proof_submit",
+            args={"backend": "stub", "source": "VALID", "timeout": "a while"},
+        )
+    )
+    assert not result.ok
+    assert "must be an integer" in result.content

@@ -37,8 +37,18 @@ is sent — and the privacy filter applies:
   from provider context by default** (`privacy.allow_sensitive_context: false`).
 - `/context` in the interactive session shows the provider-context privacy
   notice so you can see what the policy covers.
-- A pre-egress **DLP scan** inspects outbound payloads and **fails closed** when
-  it detects secrets or PII (`DlpBlocked`), before anything leaves the machine.
+- A pre-egress **DLP scan** inspects outbound payloads before anything leaves the
+  machine. A **secret** (API key, private key, bearer token) **fails closed**: the
+  send is blocked and reported. **PII** (email addresses) is **redacted** by default
+  and the turn proceeds — `governance.dlp_pii` selects `redact` (default), `block`
+  (the old fail-closed behaviour) or `off`. Redaction is the default because every
+  academic PDF carries author emails: blocking on them closed the paper-reading
+  workflow for every cloud provider, and the only way out was disabling DLP entirely,
+  which gave up secret protection as well. The redaction rewrites the outbound payload
+  in full — message text *and* tool-call arguments — so the address never reaches the
+  wire, and the send is blocked outright if any PII survives the rewrite. It is not a
+  disk control: a message is appended to `session.jsonl` before the turn carrying it is
+  screened, so the workspace log still holds the original text.
 - With model routing, the DLP scan (and the cost estimate) follow the provider
   that is **leased** for the task, not the workspace default: a cloud profile
   routed for one task class under a local default is screened and priced as a

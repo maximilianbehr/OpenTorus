@@ -236,6 +236,11 @@ tools:
     lean_command: lake env lean
     coq_command: coqc
     smt_command: z3
+    # Seconds a checker may run before it is reported as inconclusive (not rejected).
+    timeout_seconds: 120
+    # Longest timeout proof_submit may ask for; a larger request is clamped to this
+    # and reported. 0 refuses requests and pins every check to timeout_seconds.
+    max_timeout_seconds: 3600
     # Pure-Python backends (no external binary): validated interval arithmetic
     # and sympy symbolic checks. Enabled by default — they also register the
     # proof_submit agent tool.
@@ -296,6 +301,10 @@ execution:
 governance:
   # Pre-egress scan for secrets/PII before network sends (fails closed)
   dlp: true
+  # PII (email addresses) in an outbound payload: redact | block | "off".
+  # Quote "off" — YAML reads a bare off as false (it is accepted either way).
+  # Secrets (API keys, private keys) always block, whatever this says.
+  dlp_pii: redact
   budgets:
     cost_budget_usd: null
     token_budget: null
