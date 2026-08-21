@@ -13,6 +13,12 @@ from opentorus.providers.registry import get_provider
 from opentorus.repl import _handle_model, dispatch
 from opentorus.workspace import init_workspace, workspace_dir
 
+_MISTRAL_422 = (
+    "Error code: 422 - {'object': 'error', 'message': {'detail': [{'type': "
+    "'extra_forbidden', 'loc': ['body', 'seed'], 'msg': 'Extra inputs are not "
+    "permitted', 'input': 5}]}, 'type': 'invalid_request_error'}"
+)
+
 
 def test_get_provider_mock_by_default() -> None:
     assert isinstance(get_provider(default_config()), MockProvider)

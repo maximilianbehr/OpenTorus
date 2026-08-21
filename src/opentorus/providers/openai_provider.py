@@ -71,6 +71,10 @@ class OpenAIProvider(BaseProvider):
                 self.config, api_key=api_key, default_base_url=self.default_base_url
             )
         )
+        endpoint = _endpoint_key(self.name, self.config.model.base_url)
+        known_bad = _REJECTED_FIELDS.setdefault(endpoint, set())
+        for stale in known_bad & kwargs.keys():
+            kwargs.pop(stale)
         try:
             completion = client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 - translate, never leak the SDK's own type
