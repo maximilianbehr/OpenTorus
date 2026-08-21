@@ -120,12 +120,15 @@ class BudgetAlert(BaseModel):
     spent: float
     cap: float
     breached: bool
+    # Set when the figure above cannot be trusted — e.g. calls that could not be priced.
+    note: str | None = None
 
     @property
     def message(self) -> str:
         state = "BREACHED" if self.breached else "ok"
         unit = "$" if self.metric == "cost_usd" else ""
-        return f"[{state}] {self.scope} {self.metric}: {unit}{self.spent:g} / {unit}{self.cap:g}"
+        line = f"[{state}] {self.scope} {self.metric}: {unit}{self.spent:g} / {unit}{self.cap:g}"
+        return f"{line} — {self.note}" if self.note else line
 
 
 def budget_alerts(
@@ -150,8 +153,28 @@ def budget_alerts(
     alerts: list[BudgetAlert] = []
 
     total_cost = sum(r.cost_usd for r in records)
+    # Calls that could not be priced contribute 0.0 to total_cost. Reporting
+    # "$0.00 / $50.00" while those calls are billing real money is the worst kind of
+    # wrong: the user asked for a cap and got a number that cannot move.
+    unpriced = sum(1 for r in records if not getattr(r, "cost_known", True))
     total_tokens = sum(r.total_tokens for r in records)
 
+    if budgets.cost_budget_usd is not None and unpriced:
+        models = sorted({r.model for r in records if not getattr(r, "cost_known", True)})
+        alerts.append(
+            BudgetAlert(
+                scope="total",
+                metric="cost_usd",
+                spent=total_cost,
+                cap=budgets.cost_budget_usd,
+                breached=False,
+                note=(
+                    f"cost_budget_usd cannot bind: {unpriced} call(s) to "
+                    f"{', '.join(models)} have no known price, so they count as $0. "
+                    "Use governance.budgets.token_budget for a cap that holds."
+                ),
+            )
+        )
     if budgets.cost_budget_usd is not None:
         alerts.append(
             BudgetAlert(

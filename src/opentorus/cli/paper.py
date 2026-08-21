@@ -113,7 +113,9 @@ def paper_fetch(
     from opentorus.research.egress import EgressBlocked
     from opentorus.research.identifiers import IdentifierError, normalize_paper_identifier
     from opentorus.research.papers import acquire_paper, describe_fetched_paper
-    from opentorus.research.sources.base import SourceRecord
+    from opentorus.research.sources.arxiv import API as ARXIV_API
+    from opentorus.research.sources.arxiv import ArxivSource
+    from opentorus.research.sources.base import SourceError, SourceRecord
     from opentorus.research.sources.crossref import API as CROSSREF_API
     from opentorus.research.sources.crossref import CrossrefSource
 
@@ -137,7 +139,23 @@ def paper_fetch(
             if record is None:
                 record = SourceRecord(source="manual", title=ident, doi=ident)
         else:
-            record = SourceRecord(source="arxiv", title=f"arXiv:{ident}", arxiv_id=ident)
+            record = None
+            try:
+                guard.authorize(ARXIV_API)
+                record = ArxivSource().lookup_id(ident)
+            except (EgressBlocked, SourceError):
+                # Metadata is a bonus; the PDF is the point. Neither a metadata API
+                # that is down nor an unconfirmed host for it may turn a fetch that
+                # would otherwise succeed into a failure — note that the title lookup
+                # lives on export.arxiv.org while the PDF comes from arxiv.org, so
+                # this is a second host that a policy may well not have consented to.
+                record = None
+            if record is None:
+                # "(untitled)" is what every other connector stores for a title it does
+                # not have. Synthesising "arXiv:{id}" instead put a string that reads as
+                # a title into the title field, which is the one thing the honesty rules
+                # forbid: missing metadata is marked missing.
+                record = SourceRecord(source="arxiv", title="(untitled)", arxiv_id=ident)
         paper = acquire_paper(base, record, contact_email=email, egress=guard)
     except EgressBlocked as exc:
         console.print(f"[red]Network egress denied: {exc}[/red]")

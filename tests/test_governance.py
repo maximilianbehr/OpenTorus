@@ -209,3 +209,72 @@ def test_valid_task_classes_cover_new_and_legacy_names() -> None:
         assert name in VALID_TASK_CLASSES
     for name in ("proof_development", "campaign_strategy", "final_synthesis"):
         assert name in VALID_TASK_CLASSES
+
+
+# --- an unpriced model must not read as $0 spent ---------------------------------------------
+
+
+def test_glm_on_mistral_is_priced() -> None:
+    """The model this surfaced on: it must cost something, not silently nothing."""
+    from opentorus.usage import cost_known, estimate_cost
+
+    assert cost_known("mistral", "zai-glm-5-2") is True
+    cost = estimate_cost("mistral", "zai-glm-5-2", 1_000_000, 100_000)
+    assert cost == pytest.approx(1.40 + 0.44)
+
+
+def _ledger(tmp_path, *records):  # noqa: ANN001
+    """A workspace directory whose usage ledger holds exactly these records."""
+    ot = _ot(tmp_path)
+    for record in records:
+        record_usage(ot, record)
+    return ot
+
+
+def test_cost_budget_says_so_when_it_cannot_bind(tmp_path) -> None:  # noqa: ANN001
+    """A cap the ledger cannot measure must announce itself, not report a calm $0.
+
+    An unpriced call contributes 0.0 to cost_usd, so `cost_budget_usd` would sit at
+    "$0 / $50" forever while real money is spent.
+    """
+    from opentorus.governance import budget_alerts
+    from opentorus.usage import UsageRecord
+
+    config = default_config()
+    config.governance.budgets.cost_budget_usd = 50.0
+    ot = _ledger(
+        tmp_path,
+        UsageRecord(
+            provider="openai",
+            model="some-unlisted-cloud-model",
+            prompt_tokens=2_000_000,
+            completion_tokens=50_000,
+            cost_usd=0.0,
+            cost_known=False,
+        ),
+    )
+    notes = [a.note for a in budget_alerts(ot, config) if a.note]
+    assert notes, "an unmeasurable cap must be reported"
+    assert "cannot bind" in notes[0]
+    assert "some-unlisted-cloud-model" in notes[0]
+    assert "token_budget" in notes[0], "it must point at the cap that does hold"
+
+
+def test_a_priced_run_gets_no_such_warning(tmp_path) -> None:  # noqa: ANN001
+    from opentorus.governance import budget_alerts
+    from opentorus.usage import UsageRecord
+
+    config = default_config()
+    config.governance.budgets.cost_budget_usd = 50.0
+    ot = _ledger(
+        tmp_path,
+        UsageRecord(
+            provider="openai",
+            model="gpt-4o",
+            prompt_tokens=1000,
+            completion_tokens=100,
+            cost_usd=0.0035,
+            cost_known=True,
+        ),
+    )
+    assert [a.note for a in budget_alerts(ot, config) if a.note] == []
