@@ -882,3 +882,77 @@ def test_openai_parser_strips_gemma4_channel_markers() -> None:
     assert parse_openai_message(empty_thought).content == "Done."
     assert strip_channel_markers('plain {"a": 1}') == 'plain {"a": 1}'
     assert strip_channel_markers("<channel|>tail only") == "tail only"
+
+
+def _roles(messages: list[dict]) -> list[str]:
+    return [m["role"] for m in messages]
+
+
+def test_no_system_message_survives_past_the_leading_run() -> None:
+    """qwen-family templates reject a `system` message that is not at the beginning.
+
+    OpenTorus deliberately places volatile state late, as a `system` message, so the
+    head stays a reusable prefix for a local server's KV cache. vLLM serving qwen
+    answers `400 System message must be at the beginning`, and six campaign drivers
+    died on their first call 38 seconds in — against a model that had answered a
+    tool-calling probe moments before. The wire format is normalised here, so the
+    internal message model and its transcripts are untouched.
+    """
+    from opentorus.providers._convert import to_openai_messages
+
+    messages = [
+        SessionMessage(role="system", content="head"),
+        SessionMessage(role="user", content="the question"),
+        SessionMessage(role="system", content="Workspace context: volatile"),
+        SessionMessage(
+            role="assistant",
+            content="",
+            metadata={"tool_calls": [{"id": "c1", "name": "status", "arguments": {}}]},
+        ),
+        SessionMessage(role="tool", content="ok", metadata={"tool_call_id": "c1"}),
+    ]
+    out = to_openai_messages(messages)
+    roles = _roles(out)
+    head = 0
+    while head < len(roles) and roles[head] == "system":
+        head += 1
+    assert "system" not in roles[head:], roles
+    # Folded into the user turn, not dropped.
+    assert "volatile" in out[head]["content"]
+
+
+def test_folding_never_produces_two_user_turns_in_a_row() -> None:
+    """The other strict-template failure: consecutive same-role messages."""
+    from opentorus.providers._convert import to_openai_messages
+
+    messages = [
+        SessionMessage(role="system", content="head"),
+        SessionMessage(role="assistant", content="prior answer"),
+        SessionMessage(role="system", content="volatile"),
+        SessionMessage(role="user", content="the question"),
+    ]
+    out = to_openai_messages(messages)
+    roles = _roles(out)
+    assert not any(a == b == "user" for a, b in zip(roles, roles[1:], strict=False)), roles
+    # The question still ends the turn it rides in — it is the answer target.
+    assert out[-1]["role"] == "user"
+    assert out[-1]["content"].endswith("the question")
+
+
+def test_a_trailing_system_block_becomes_its_own_user_turn() -> None:
+    """After tool results there is no user turn to fold into; a `user` message is legal."""
+    from opentorus.providers._convert import to_openai_messages
+
+    messages = [
+        SessionMessage(role="system", content="head"),
+        SessionMessage(
+            role="assistant",
+            content="",
+            metadata={"tool_calls": [{"id": "c1", "name": "status", "arguments": {}}]},
+        ),
+        SessionMessage(role="tool", content="ok", metadata={"tool_call_id": "c1"}),
+        SessionMessage(role="system", content="volatile"),
+    ]
+    out = to_openai_messages(messages)
+    assert _roles(out) == ["system", "assistant", "tool", "user"]
+    assert out[-1]["content"] == "volatile"
