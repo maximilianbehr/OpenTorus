@@ -29,6 +29,23 @@ _PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "gpt-4.1": (2.00, 8.00),
     "gpt-4.1-mini": (0.40, 1.60),
     "o3-mini": (1.10, 4.40),
+    # Anthropic, from platform.claude.com/docs/about-claude/pricing. Ordered
+    # most-specific-first: `_price_for` falls back to a prefix match, so a shorter key
+    # placed earlier would swallow the longer ones ("claude-opus-4" would answer for
+    # "claude-opus-4.8"). Cache reads cost 0.1x input and are not modelled here — the
+    # ledger records no cache column, so an estimate here is the uncached worst case.
+    "claude-fable-5": (10.00, 50.00),
+    "claude-mythos-5": (10.00, 50.00),
+    "claude-opus-4.8": (5.00, 25.00),
+    "claude-opus-4.7": (5.00, 25.00),
+    "claude-opus-4.6": (5.00, 25.00),
+    "claude-opus-4.5": (5.00, 25.00),
+    "claude-opus-4.1": (15.00, 75.00),
+    "claude-opus-5": (5.00, 25.00),
+    "claude-sonnet-4.6": (3.00, 15.00),
+    "claude-sonnet-4.5": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-haiku-4.5": (1.00, 5.00),
     "claude-3-5-sonnet": (3.00, 15.00),
     "claude-3-5-haiku": (0.80, 4.00),
     "claude-3-opus": (15.00, 75.00),

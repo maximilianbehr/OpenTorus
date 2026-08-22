@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Anthropic models are priced, so a USD budget can bind against them.** A live Fable 5
+  run reported `$0.00` against a 50 EUR budget while actually spending ~$25 — the model
+  was not in `_PRICE_PER_MTOK`, so `estimate_cost` returned 0.0 and `cost_budget_usd`
+  had nothing to measure. Current Anthropic rates are in the table, ordered
+  most-specific-first because `_price_for` falls back to a prefix match: a bare
+  `claude-opus-4` placed early would answer for `claude-opus-4.8`, and
+  `claude-opus-4.1` costs three times what the 4.x line does. Cache reads (0.1x input)
+  are deliberately not modelled — the ledger has no cache column, so the estimate is
+  the uncached worst case and errs high rather than low.
+
 ## [0.0.17] — 2026-08-21
 
 The day OpenTorus was pointed at a paid endpoint for the first time.
