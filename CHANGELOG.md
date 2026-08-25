@@ -6,6 +6,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.18] — 2026-08-25
+
+A night of running the whole example suite against a local vLLM endpoint: 66 drivers,
+14.4 hours, zero crashes. What it did find was an enforced gate that a true-but-empty
+certificate switches off — and, on the way, that the examples had been describing a
+preprint that moved on without them.
+
 ### Fixed
 
 - **A vacuous certificate no longer satisfies the formalization gate.** The referee's
