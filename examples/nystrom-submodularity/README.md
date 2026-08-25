@@ -24,6 +24,28 @@ diagonally dominant M-matrix (SDDM) and positive-definite, or (2) symmetric diag
 > (`≤`, i.e. the error *reduction* has diminishing returns — what the greedy bound needs)
 > holds. The sample dossier therefore tests the diminishing-error-reduction reading.
 
+## Status (August 2026)
+
+This is Problem 4.6 of "Linear Systems and Eigenvalue Problems: Open Questions from a Simons
+Workshop" ([arXiv:2602.05394](https://arxiv.org/abs/2602.05394)); settings (1) and (2) above are
+the paper's (a) and (b). Version 3 of that preprint (21 August 2026) adds an update block
+recording that
+
+> Matthew J. Colbrook, *Nyström Error Beyond $M$-Matrices: A Minimal Diagonally Dominant
+> Obstruction*, [arXiv:2607.19282](https://arxiv.org/abs/2607.19282), 2026
+
+**claims to solve** Problem 4.6 — a positive answer for (a), SDDM, and a **negative** answer for
+(b), positive-definite SDD, via a $3\times3$ parametrized counterexample.
+
+The sample dossier in [`sample-output/`](sample-output/) predates that update block and reached
+setting (2) independently: its `CLAIM-0003` is a $6\times6$ SDD positive-definite counterexample
+candidate found by random search in exact rational arithmetic. Same direction, larger witness —
+and still a *candidate*: it is unverified, the hostile referee blocks on it, and nothing in the
+dossier is `verified`. A claimed resolution in the literature does not change that either; it is
+a reference to reproduce and check, not a verification artifact. The example continues to
+demonstrate the workflow, and the smaller claimed counterexample is now the obvious thing to
+check the dossier's machinery against.
+
 ## What this runs
 
 The driver `nystroem_submodularity.sh` runs an end-to-end OpenTorus workflow:

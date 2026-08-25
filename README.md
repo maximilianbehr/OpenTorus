@@ -241,7 +241,7 @@ README):
 
 | Example | Problem |
 |---------|---------|
-| [simons-eigenvalue-problems](examples/simons-eigenvalue-problems/) | Five eigenvalue / linear-systems open problems from a Simons workshop (arXiv:2602.05394), with containerized numerics. |
+| [simons-eigenvalue-problems](examples/simons-eigenvalue-problems/) | Thirteen eigenvalue / linear-systems open problems from a Simons workshop (arXiv:2602.05394v3), with containerized numerics; the five that v3 records as claimed-resolved are retargeted, not dropped. |
 | [matrix-functions](examples/matrix-functions/) | Five open problems on limited-memory polynomial methods for `f(A)b` (arXiv:2002.01682), with agent-written numerics. |
 | [polynomial-hirsch](examples/polynomial-hirsch/) | Polynomial Hirsch Conjecture — a literature + citation-honest dossier. |
 | [backward-error-convergence](examples/backward-error-convergence/) | Is randomness necessary for condition-number-independent backward-error convergence? (arXiv:2604.16075) |
