@@ -6,6 +6,61 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.18] — 2026-08-25
+
+A night of running the whole example suite against a local vLLM endpoint: 66 drivers,
+14.4 hours, zero crashes. What it did find was an enforced gate that a true-but-empty
+certificate switches off — and, on the way, that the examples had been describing a
+preprint that moved on without them.
+
+### Fixed
+
+- **A vacuous certificate no longer satisfies the formalization gate.** The referee's
+  `formalization_required` finding exists because, in its own words, "only enforced gates
+  change model behavior" — statement prose never produced a verifier submission. But its
+  satisfaction condition was "some ACCEPTED submission exists", and an overnight run walked
+  straight through it: the referee blocked twice, and sixteen minutes later the run
+  submitted `{"lhs": "16", "rhs": "16", "relation": "eq"}`. sympy accepted it — correctly,
+  it is true — and the demand went silent. A gate that `16 = 16` switches off does not
+  serve its purpose.
+
+  `_machine_checked_for` now ignores accepted attempts whose certificate
+  `certificate_is_constant` already recognises as vacuous. This is *vacuity*, not
+  *correspondence*: whether a proof is **about** its claim stays undecidable and out of
+  scope, and the deliberately narrow guard is untouched — a certificate with free variables
+  still counts, exactly as `test_constant_certificate_detection` pins it. An unreadable
+  `source_path` counts as non-vacuous so older records are not invalidated retroactively.
+
+  Found by running the example suite against a local vLLM endpoint overnight. The same run
+  also produced `0 = 0` twice, `X = X` with free variables, and two rigorously certified but
+  entirely unrelated bounds (`sin²φ₁·sin²φ₂ ≤ 1`) attached to claims about the Marcus–de
+  Oliveira conjecture. Only the degenerate cases are closed here; the rest is the documented
+  correspondence frontier.
+
+### Changed
+
+- **The Simons workshop examples track v3 of the source preprint.** arXiv:2602.05394 was
+  updated on 21 August 2026 "to reflect the status of the open problems as of August 20,
+  2026", adding twelve dated update blocks. Five of the thirteen dossier seeds in
+  `examples/simons-eigenvalue-problems/notes.md` are affected — 2.4 and 4.3 (Chen–Liu–He–Dong,
+  arXiv:2606.02484), 2.20 (three independent claimed proofs for *s* = 2), 3.5 (Peng's
+  exponential obstruction) and 4.2 (Pendyala's log Λ log(1/ε) rate) — and 4.6, the standalone
+  `nystrom-submodularity` example, is likewise claimed resolved (Colbrook, arXiv:2607.19282).
+  Each affected seed now carries a `## Status (paper v3, 20 August 2026)` section, and the
+  driver registers the follow-up references locally so a `REFERENCE_FACT` about a claimed
+  resolution has a local source artifact to cite.
+
+  The seeds are retargeted, not deleted: the paper's own wording is "claims to solve", and a
+  claimed resolution is literature to reproduce and check — it never by itself promotes a claim
+  to `verified`. What each dossier now asks is the *remainder*: the broader sketch-and-project
+  question behind the stylized 2.4, the Forsythe conjecture at *s* ≥ 3, and reproductions of the
+  claimed constructions for 3.5, 4.2 and 4.3. The `nystrom-submodularity` sample dossier keeps
+  its own unverified 6×6 SDD counterexample candidate, which points the same way as the 3×3 one
+  Colbrook claims; it is still a candidate, and the hostile referee still blocks on it.
+
+  Counts corrected while there: the paper has 47 numbered problems, not 41, and the root README
+  described the example as covering five problems rather than thirteen.
+
 ### Fixed
 
 - **Anthropic models are priced, so a USD budget can bind against them.** A live Fable 5

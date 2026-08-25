@@ -1,11 +1,28 @@
-**Simons workshop open problems (arXiv:2602.05394).** Thirteen small-dimensional, numerically
-explorable open problems from "Linear Systems and Eigenvalue Problems: Open Questions from a
-Simons Workshop" (41 numbered problems in the paper; these are the ones probeable with
-matrix experiments at small dimension). Each `# ` heading below becomes one dossier via
-`opentorus problem new --from-markdown notes.md --structured`; the first five (dossiers
-PROBLEM-0001..0005) are the original set and keep their ids, the remaining eight
+**Simons workshop open problems (arXiv:2602.05394v3, 21 August 2026).** Thirteen
+small-dimensional, numerically explorable open problems from "Linear Systems and Eigenvalue
+Problems: Open Questions from a Simons Workshop" (47 numbered problems in the paper; these are
+the ones probeable with matrix experiments at small dimension). Each `# ` heading below becomes
+one dossier via `opentorus problem new --from-markdown notes.md --structured`; the first five
+(dossiers PROBLEM-0001..0005) are the original set and keep their ids, the remaining eight
 (PROBLEM-0006..0013) were extracted in a second pass. Two more workshop problems have
 standalone examples: 4.6 (nystrom-submodularity) and 6.3 (matrix-sign-approximation).
+
+**Read the v3 status updates first.** Version 3 of the preprint is "updated to reflect the
+status of the open problems as of August 20, 2026" and adds twelve dated update blocks. Five of
+the thirteen problems below are affected — 2.4, 2.20, 3.5, 4.2 and 4.3 — and each carries a
+`## Status (paper v3, 20 August 2026)` section recording what is now claimed and what is left.
+The other eight (2.13, 2.15, 2.17, 3.2, 3.4, 3.6, 3.8, 4.7) carry no update and stand as posed.
+Problem 4.6, attacked by the standalone nystrom-submodularity example, is likewise claimed
+resolved in v3; 6.3-6.5 (matrix-sign-approximation) are untouched.
+
+The paper's own wording is "claims to solve" / "claims to give a negative answer" — these are
+*claims recorded by the editors*, not verifications. Treat them the same way: a claimed
+resolution is literature to reproduce and check, and it does not by itself set any claim in a
+dossier to `verified`. Only a verification artifact does that. Before citing one of these
+follow-up references in a report, add it locally (`opentorus paper add <url>`) — a
+`REFERENCE_FACT` must cite a local source artifact, and missing metadata is marked missing
+rather than invented. Note that `paper add` strips the version from an arXiv id, so it always
+resolves the *current* version; the downloaded PDF is then SHA-256 pinned in the workspace.
 
 **Machine-checkable pieces (all thirteen problems).** These are small-dimensional questions,
 so most lemmas reduce to exact algebra at a fixed size — a characteristic polynomial factored
@@ -21,6 +38,25 @@ Let \(A\in\mathbb{C}^{n\times n}\) be arbitrary (not necessarily normal), let \(
 starting vector, and let \(Q\in\mathbb{C}^{n\times m}\) have orthonormal columns spanning the
 Krylov subspace \(K_m(A,b)=\operatorname{span}\{b,Ab,\dots,A^{m-1}b\}\). Form \(H=Q^*AQ\), whose
 eigenvalues are the Ritz values of \(A\).
+
+## Status (paper v3, 20 August 2026)
+
+The v3 update block for Problem 3.5 records that
+
+> Richard Peng, *A Diagonalizable Obstruction for Random Two-Step Ritz Compressions*, 2026.
+> <https://yangpliu.github.io/repo/two-step-ritz-obstruction/paper.pdf>
+
+**claims negative answers to both questions as stated**: for every even \(n\) it constructs a
+real diagonalizable \(A_n\), uniformly bounded in norm, such that for a standard real Gaussian
+start \(b\) and \(k=2\),
+\(\Pr[\kappa_V(Q^\top A_nQ)\ge e^n/5]\ge 1-2e^{-n/40}\) — exponential, not polynomial.
+
+So the working hypothesis below is the one now claimed to be false. The dossier's job is to
+*check the claim*, not to inherit it: reproduce the construction numerically at \(k=2\), see
+whether the stated probability bound is visible at reachable \(n\), and probe what survives
+outside the claimed regime (\(k>2\), other start distributions, complex \(A\)). Record the
+claimed obstruction as literature; do not set the problem to resolved without a verification
+artifact.
 
 ## Question
 
@@ -48,6 +84,22 @@ Consider SPD systems \(A_n x = b_n\) where \(A_n\) has eigenvalues \(\lambda_i =
 exponent \(p>0\). Define stopping times
 \(T_{\mathrm{CG}}(A_n,b_n,\varepsilon)=\min\{t:\|x_t-x_\star\|_A^2\le\varepsilon\|x_0-x_\star\|_A^2\}\)
 for conjugate gradients, and \(T_{\mathrm{RCD}}\) analogously for randomized coordinate descent.
+
+## Status (paper v3, 20 August 2026)
+
+The v3 update block for Problem 2.4 records that
+
+> Leheng Chen, Zihao Liu, Wanyi He and Bin Dong, *Iteris: Agentic Research Loops for
+> Computational Mathematics*, [arXiv:2606.02484](https://arxiv.org/abs/2606.02484), 2026
+
+**claims to solve** Problem 2.4. The editors add that 2.4 is a stylized question, and that the
+much broader motivating question — characterizing when sketch-and-project beats CG for general
+spectra, right-hand sides, preconditioning and finite precision — **remains open**.
+
+Retarget accordingly: the stylized \(\lambda_i=i^{-p}\) sweep below is now a *check* on a
+claimed answer (does the measured ratio match what the reference predicts, and where does it
+break?), while the open deliverable is the broader comparison. Reproducing a claimed result and
+finding it holds is evidence, not verification.
 
 ## Question
 
@@ -150,6 +202,26 @@ Apply CG to \(f(x)=\tfrac12 x^TAx - x^Tb\) with SPD \(A\), restarted every \(s\)
 where \(y_k=r_k/\lVert r_k\rVert\) is the normalized residual. Forsythe's conjecture: for
 \(2\le s< d(A)\) (degree of the minimal polynomial, with \(d(A,r_0)\ge s+1\)), each of the two
 subsequences \(\{y_{2k}\}\) and \(\{y_{2k+1}\}\) has a single limit vector.
+
+## Status (paper v3, 20 August 2026)
+
+The v3 update block for Problem 2.20 records three references that **claim to have solved it for
+\(s=2\)**:
+
+> Matthew J. Colbrook, George Stepaniants and Alex Townsend, *A Proof of the Forsythe Conjecture
+> for the Two-Step Restarted Conjugate Gradient Method*,
+> [arXiv:2608.02852](https://arxiv.org/abs/2608.02852), 2026
+>
+> Jarek Liesen, *Proof of the Forsythe Conjecture for s = 2*, 2026.
+> <https://jarek.ai/papers/proof-of-the-forsythe-conjecture-for-s-2.pdf>
+>
+> Richard Peng, *Convergence of Normalized Residuals for Restarted Conjugate Gradients of Length
+> Two*, 2026. <https://yangpliu.github.io/repo/restarted-cg-two/paper.pdf>
+
+\(s=1\) was already known (steepest descent), so the open range is now \(s\ge 3\). Point the
+counterexample search there and keep \(s=2\) only as a sanity check: a run at \(s=2\) that
+looked like two accumulation points would contradict three independent claimed proofs and is far
+more likely a precision artifact — re-verify at higher precision before recording anything.
 
 ## Question
 
@@ -296,6 +368,26 @@ but a rank-\(k\) approximation with \(k=O(\log\Lambda\,\log(1/\varepsilon))\) ex
 empirically GECP tracks the better rate. Applications run \(\Lambda=10^5\)–\(10^6\), so the
 gap matters.
 
+## Status (paper v3, 20 August 2026)
+
+The v3 update block for Problem 4.2 records that
+
+> Venkata Siddharth Pendyala, *Local-to-Global Convergence of Greedy Cross Approximation for
+> Totally Positive Kernels*, 2026. <https://doi.org/10.5281/zenodo.21863274>
+
+**claims to have solved** it: GECP on the continuous fermionic kernel satisfies
+\(k=O(\log(\Lambda)\log(1/\varepsilon))\Rightarrow\lVert K-\hat K\rVert_\infty\le\varepsilon\),
+attaining (up to universal constants) the rank scaling previously known only for *existence* of a
+low-rank approximation — and the same bound holds for any finite matrix obtained by sampling
+\(K\) at distinct time and frequency nodes. Related progress is credited to
+
+> Marc Aurèle Gilles, *Convergence rates for pivoted QR and LU*,
+> [arXiv:2607.26863](https://arxiv.org/abs/2607.26863), 2026.
+
+The empirical law \(k(\varepsilon,\Lambda)\) below is therefore no longer a search between two
+candidate rates: the better rate is the claimed theorem, and the experiment is a check on it plus
+a measurement of the constants and pivot structure it does not pin down.
+
 ## Question
 
 Prove stronger theoretical bounds for GECP applied to \(K\), exploiting the structure of the
@@ -323,6 +415,28 @@ For \(Q\in\mathbb{R}^{n\times k}\) with orthonormal columns there is always a ro
 \(\mathcal{I}\) with \(\lVert Q(\mathcal{I},:)^{-1}\rVert_2\le\sqrt{k(n-k+1)}\), computable in
 \(O(nk^2)\). Practical column-pivoted QR (QRCP) has exponential-in-\(k\) worst-case bounds —
 but the known worst cases do not have orthonormal columns.
+
+## Status (paper v3, 20 August 2026)
+
+The v3 update block for Problem 4.3 records that Theorem 2 of
+
+> Leheng Chen, Zihao Liu, Wanyi He and Bin Dong, *Iteris: Agentic Research Loops for
+> Computational Mathematics*, [arXiv:2606.02484](https://arxiv.org/abs/2606.02484), 2026
+
+**claims a negative answer**: it constructs a family of \(Q\) showing that no bound of the form
+\(\lVert Q(\mathcal{I},:)^{-1}\rVert_2\le Ck^\alpha\sqrt{k(n-k+1)}\) can hold for any constant
+\(C\) and exponent \(\alpha>0\). On the positive side,
+
+> Anil Damle, *Computing Strong Rank-Revealing Factorizations for Matrices with Orthonormal
+> Rows*, [arXiv:2607.13532](https://arxiv.org/abs/2607.13532), 2026
+
+shows that replacing Golub-Businger pivoting by Bischof-Stewart pivoting yields
+\(\lVert Q(\mathcal{I},:)^{-1}\rVert_2\le\sqrt{k(n-k)+1}\).
+
+So the adversarial Stiefel search below is now aimed at a claimed-known target: reproduce the
+claimed family for the QRCP actually used in practice (`scipy.linalg.qr(..., pivoting=True)` is
+Golub-Businger), and measure Bischof-Stewart on the same inputs to see the claimed separation.
+The two pivoting rules disagreeing on the same \(Q\) is the checkable signal.
 
 ## Question
 
