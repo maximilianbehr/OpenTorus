@@ -25,7 +25,11 @@ import pytest
 
 from opentorus.config import default_config
 from opentorus.research.dossier import claims, store
-from opentorus.research.dossier.referee import referee_review
+from opentorus.research.dossier.referee import (
+    _formalization_required,
+    _machine_checked_for,
+    referee_review,
+)
 from opentorus.research.verifiers.base import certificate_is_constant
 from opentorus.research.verifiers.proofs import accepted_proof_for_claim, submit_proof
 from opentorus.research.verifiers.sympy_backend import SymPyVerifier
@@ -39,6 +43,8 @@ _VACUOUS = json.dumps({"lhs": "1/8", "rhs": "1/16", "relation": "ge", "vars": []
 _WITH_VARS = json.dumps(
     {"lhs": "sin(x)**2 + cos(x)**2", "rhs": "1", "relation": "eq", "vars": {"x": "real"}}
 )
+# Verbatim from an overnight run: submitted to silence the formalization gate.
+_VACUOUS_EQ = json.dumps({"lhs": "16", "rhs": "16", "relation": "eq", "vars": {}})
 
 
 def _problem(tmp_path: Path, statement: str = GENERAL) -> tuple[Path, str]:
@@ -176,3 +182,34 @@ def test_an_unscoped_agent_submission_still_works(tmp_path: Path) -> None:
         base, pid, claim.id, evidence_type="FORMAL_PROOF", source_artifacts=[attempt.id]
     )
     assert evidence.type == "FORMAL_PROOF"
+
+
+def test_a_vacuous_certificate_does_not_satisfy_the_formalization_gate(tmp_path: Path) -> None:
+    """A constant certificate must not silence the demand for machine-checking.
+
+    Observed overnight: the referee blocked twice with ``formalization_required``; sixteen
+    minutes later the run submitted ``{"lhs": "16", "rhs": "16", "relation": "eq"}``, sympy
+    accepted it (it is true), and the demand went silent. The gate exists precisely because
+    only enforced gates change model behaviour — one satisfied by ``16 = 16`` does not.
+
+    This is vacuity, not correspondence: ``certificate_is_constant`` already decides it, and
+    the narrow correspondence guard (free variables ⇒ not flagged) is left untouched.
+    """
+    base, pid = _problem(tmp_path)
+    assert _formalization_required(base, pid) == []  # statement does not demand it yet
+
+    statement_path = store.dossier_dir(base, pid) / "statement.md"
+    statement_path.write_text(
+        statement_path.read_text(encoding="utf-8")
+        + "\n\nSubmit the finite checks through proof_submit(backend=...).\n",
+        encoding="utf-8",
+    )
+    assert len(_formalization_required(base, pid)) == 1  # demand is active
+
+    _submit(base, _VACUOUS_EQ, submitted_under=pid)
+    assert _machine_checked_for(base, pid) is False
+    assert len(_formalization_required(base, pid)) == 1, "16 = 16 must not satisfy the gate"
+
+    _submit(base, _WITH_VARS, submitted_under=pid)
+    assert _machine_checked_for(base, pid) is True
+    assert _formalization_required(base, pid) == []

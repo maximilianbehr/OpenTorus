@@ -330,11 +330,40 @@ def _machine_checked_for(ot_dir: Path, problem_id: str) -> bool:
     """
     from opentorus.research.verifiers.proofs import list_proofs
 
-    accepted = [p for p in list_proofs(ot_dir) if p.accepted]
+    accepted = [p for p in list_proofs(ot_dir) if p.accepted and not _is_vacuous(ot_dir, p)]
     if any(p.submitted_under == problem_id for p in accepted):
         return True
     unscoped = [p for p in accepted if p.submitted_under is None]
     return bool(unscoped) and len(store.list_dossiers(ot_dir)) == 1
+
+
+def _is_vacuous(ot_dir: Path, attempt: object) -> bool:
+    """Whether an accepted attempt certifies nothing, so it cannot satisfy the demand.
+
+    A gate that only enforces "something was ACCEPTED" is satisfied by anything true.
+    Observed: the referee blocked twice, and sixteen minutes later the run submitted
+    ``{"lhs": "16", "rhs": "16", "relation": "eq"}`` — sympy accepted it, correctly, and
+    the demand went silent. Since the whole point of the gate is that only enforced gates
+    change model behaviour, one that ``16 = 16`` switches off does not serve it.
+
+    This is *vacuity*, not correspondence: ``certificate_is_constant`` decides it outright,
+    where "is the proof about the claim" is undecidable and stays out of scope — a
+    certificate with free variables is still counted here, exactly as that guard has it.
+    An unreadable source counts as non-vacuous: records written before ``source_path`` was
+    reliable must not be invalidated retroactively.
+    """
+    from opentorus.research.verifiers.base import certificate_is_constant
+
+    raw = getattr(attempt, "source_path", None)
+    if not raw:
+        return False
+    path = Path(raw)
+    if not path.is_absolute():
+        path = ot_dir / path
+    try:
+        return certificate_is_constant(path.read_text(encoding="utf-8"))
+    except OSError:
+        return False
 
 
 def referee_review(
