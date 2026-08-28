@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.19] — 2026-08-28
+
+A day of stress-testing the suite against a vLLM `qwen3.8-flash` endpoint — eight
+runs over six examples, up to six agent loops in parallel. The examples produced
+certified partial progress on two open problems (a new (7,5)-DTS scope floor of
+107 with an exact cap on the counting template, and the Cauchy–Binet determinant
+analogue of Balan–Wang stability); the harness produced one wire-format bug,
+fixed below. The model evaluation itself is recorded in `examples/README.md`.
+
 ### Fixed
 
 - **An OpenAI-protocol request can no longer go out without a `user` message.** A
