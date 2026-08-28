@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An OpenAI-protocol request can no longer go out without a `user` message.** A
+  context compaction can leave the session as the `system` summary plus an orphan
+  `tool` result; the pairing repair rightly drops the orphan, and the resulting
+  all-`system` payload is rejected by strict local chat templates — qwen on vLLM
+  answers `400 No user query found in messages`, which killed a long `prove` run
+  mid-loop (the difference-triangle-set driver died at step 6 with an empty
+  dossier). `to_openai_messages` now appends a neutral user turn when none
+  survived, next to the existing late-system folding and tool-pairing repairs.
+
 ## [0.0.18] — 2026-08-25
 
 A night of running the whole example suite against a local vLLM endpoint: 66 drivers,
