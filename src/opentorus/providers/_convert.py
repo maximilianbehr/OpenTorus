@@ -90,7 +90,28 @@ def to_openai_messages(messages: list[SessionMessage]) -> list[dict]:
                     "content": message.content,
                 }
             )
-    return _repair_openai_tool_pairing(_fold_late_system_messages(out))
+    return _ensure_user_turn(_repair_openai_tool_pairing(_fold_late_system_messages(out)))
+
+
+_RESUMED_USER_TURN = (
+    "[session resumed after context compaction — no live user turn survived; "
+    "continue the task described above]"
+)
+
+
+def _ensure_user_turn(out: list[dict]) -> list[dict]:
+    """Guarantee the request carries at least one ``user`` message.
+
+    Strict local chat templates (qwen on vLLM) reject a request without one:
+    ``400 No user query found in messages``. A compaction can leave exactly that
+    shape — the summary is a ``system`` message and the only surviving turn was an
+    orphan ``tool`` result, which the pairing repair above rightly drops — so a
+    long run died mid-loop on an all-system payload. Appending a neutral user turn
+    keeps the request well-formed without disturbing the cacheable prefix.
+    """
+    if any(m.get("role") == "user" for m in out):
+        return out
+    return [*out, {"role": "user", "content": _RESUMED_USER_TURN}]
 
 
 def _append_text(content: str | list[dict], text: str) -> str | list[dict]:

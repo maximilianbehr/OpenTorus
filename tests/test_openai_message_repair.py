@@ -164,3 +164,33 @@ def test_partial_multicall_completed() -> None:
     _assert_valid_pairing(msgs)
     ids = [m["tool_call_id"] for m in msgs if m["role"] == "tool"]
     assert ids == ["a", "b"]
+
+
+def test_all_system_payload_gets_user_turn() -> None:
+    # A compaction can leave only the system summary plus an orphan tool result;
+    # the orphan is dropped, and qwen-on-vLLM rejects an all-system request with
+    # "400 No user query found in messages". A neutral user turn must be appended.
+    msgs = to_openai_messages(
+        [
+            SessionMessage(
+                role="system",
+                content="Summary of earlier conversation",
+                metadata={"compaction": True},
+            ),
+            _tool_result("stale", "left over from before the compaction cut"),
+        ]
+    )
+    _assert_valid_pairing(msgs)
+    assert msgs[-1]["role"] == "user"
+    assert any(m["role"] == "user" for m in msgs)
+
+
+def test_existing_user_turn_left_alone() -> None:
+    msgs = to_openai_messages(
+        [
+            SessionMessage(role="system", content="s"),
+            SessionMessage(role="user", content="the actual question"),
+        ]
+    )
+    assert [m["role"] for m in msgs] == ["system", "user"]
+    assert msgs[-1]["content"] == "the actual question"
