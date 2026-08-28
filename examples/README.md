@@ -185,6 +185,7 @@ table as a starting point and re-check it yourself.
 |-----|-------|-------------|
 | **Default** | **`gemma4:31b`** | Finished every task we gave it, labelled the 2026 Casas-Alvero and Crouzeix proof claims as *claimed, not peer-reviewed*, and had its verifier submissions accepted throughout. |
 | Fast formal verification only | `qwen3.8:latest` | Much faster on the pure formalization example, but did not finish the open-ended ones inside our time budget, so it left no report to review. |
+| **Strong all-rounder on a vLLM server** | **`qwen3.8-flash`** (served as `qwen3.8-flash-next-nvfp4`, NVFP4, 262k ctx, `openai` provider) | One full day of runs (2026-08-28, eight runs over six examples, up to six loops in parallel — aggregate throughput scaled 183→752 tok/s from 1 to 8 streams). Finished the Strassen formal example beyond spec: all four identities kernel-checked in Coq with no stdlib available, over a *noncommutative* ring, through 21 compile→error→fix iterations. On open problems it produced genuinely certified partial progress: a machine-checked Cauchy–Binet chain for the determinant analogue of Balan–Wang stability, and for the (7,5)-difference-triangle-set a new scope floor of 107 plus an exactly-capped-at-723 obstruction for the whole interval-counting template (Z3/sympy-checked steps; the referee still blocks the narrative wording, correctly). Two repeatable weaknesses: report prose reaches for "provably" / "is proved" / "We proved" (caught by the honesty linter in 3 of 8 runs, twice refusing the PDF), and persistence is task-dependent — 15 rejected Coq attempts patiently fixed on Strassen, but the Perfect–Mirsky verification step abandoned after a single rejected submission. |
 | Also workable | `nemotron-3-super`, `qwen3.6:27b`, `mistral-medium-3.5` | Reached full coverage on the formalization example; each was weaker than `gemma4:31b` on at least one open-ended example. |
 | Did not get far for us | `gpt-oss:120b`, `deepseek-r1:70b`, `glm-4.7-flash`, `qwen3-vl:32b`, `qwen3-coder`, `muse-glimmer:30b` | Never reached the formal path, or produced no deliverable, in the runs we did. |
 
@@ -202,6 +203,19 @@ Three observations worth carrying over to your own model choices:
 3. **A single run tells you very little.** The same model produced 3 verifier
    submissions in one run and 0 in the next on an identical task. Repeat a few
    times before drawing conclusions.
+4. **Report prose is where a model overclaims, and the gates carry real weight.**
+   In the qwen3.8-flash day every *formal artifact* stayed honest, but the
+   generated narrative reached for "provably" / "is proved" / "We proved" three
+   times across eight runs — each caught by the honesty linter or referee, twice
+   by refusing the PDF and writing the honest HTML instead. Read the lint
+   findings, not just the exit code: a run that exits non-zero may hold the best
+   mathematics of the batch.
+5. **Campaign branch budgets bind before wall clocks.** A campaign branch dies at
+   `OPENTORUS_BRANCH_STEPS` (default 40) even with hours of wall budget left —
+   our Cauchy–Binet branch validated its target numerically and then expired
+   before submitting a single certificate; a focused follow-up
+   `opentorus prove` in the same workspace certified the whole chain in one run.
+   Raise the branch budget when a branch is supposed to *finish* something.
 
 ---
 
