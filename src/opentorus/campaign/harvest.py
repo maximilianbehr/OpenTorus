@@ -8,10 +8,17 @@ own indices, so the campaign closed with the candidate untriaged. Synthesis now
 mirrors, as candidate-grade records:
 
 - workspace evidence about the campaign's problem → a dossier ``EvidenceRecord``
-  via ``dossier.claims.add_evidence`` (direction preserved, provenance and the
-  worker's strength recorded as limitations). The dossier API's own honesty
-  rules apply unchanged: evidence never verifies a claim, contradicting
-  evidence soft-moves it to ``contradicted`` with a review advisory.
+  via ``dossier.claims.add_evidence`` (provenance and the worker's strength
+  recorded as limitations). Evidence recorded on a dossier claim id keeps its
+  direction and the dossier API's own honesty rules apply unchanged: evidence
+  never verifies a claim, contradicting evidence soft-moves it to
+  ``contradicted`` with a review advisory. Evidence recorded on a *worker-only*
+  claim (a branch lemma, a candidate, a proof route) is re-aimed at the primary
+  claim so the report, referee and verdict see it — but as ``neutral``: its
+  direction was judged against the worker claim, so a refuted lemma must not
+  flip the conjecture to ``contradicted`` (two live campaigns, MF-13 and IV-01
+  on 2026-09-22, had their primary claim marked contradicted by the refutation
+  of an auxiliary shift lemma and by an unvalidated z3 model of a branch claim).
 - campaign failure signatures → dossier ``FailedAttempt`` entries, keeping
   failed attempts first-class at the dossier level (epistemic invariant 5).
 
@@ -72,13 +79,29 @@ def _mirror_evidence(ot_dir: Path, problem_id: str, campaign_id: str) -> list[st
             continue
         if ev.id in mirrored:
             continue
+        direction = cast("EvidenceDirection", ev.direction)
+        extra_limitations: list[str] = []
         if ev.claim_id in dossier_claims:
             claim_id, remap = ev.claim_id, ""
         elif dossier.primary_claim_id:
             # A worker's branch-level claim has no dossier twin: attach the evidence to
             # the primary claim, naming the worker claim so nothing is silently re-aimed.
+            # The direction was judged against the *worker* claim (a lemma, a candidate,
+            # a proof route), not against the primary target, so it cannot travel with
+            # the record: a refuted branch lemma is not a refutation of the conjecture,
+            # and a confirmed one is not support for it. Re-aimed evidence is mirrored
+            # as neutral — preserved in full, but it never moves the primary claim's
+            # status. A worker that really has evidence about the target records it on
+            # the primary claim id itself, and that direction is kept.
             claim_id = dossier.primary_claim_id
-            remap = f"[worker claim {ev.claim_id}] "
+            remap = f"[worker claim {ev.claim_id}; {ev.direction} that claim] "
+            if ev.direction != "neutral":
+                extra_limitations.append(
+                    f"direction '{ev.direction}' was relative to worker claim {ev.claim_id}, "
+                    f"which is not a dossier claim; mirrored as neutral on {claim_id} — "
+                    "evidence about a branch-level claim never changes the primary claim's status"
+                )
+            direction = "neutral"
         else:
             notes.append(f"{ev.id} not mirrored: no dossier claim to attach it to")
             continue
@@ -91,9 +114,14 @@ def _mirror_evidence(ot_dir: Path, problem_id: str, campaign_id: str) -> list[st
                 claim_id,
                 evidence_type=cast("EvidenceType", _TYPE_MAP.get(ev.source_type, "MANUAL_NOTE")),
                 summary=summary,
-                direction=cast("EvidenceDirection", ev.direction),
+                direction=direction,
                 source_artifacts=sources,
-                limitations=[*ev.limitations, f"workspace strength: {ev.strength}", _PROVENANCE],
+                limitations=[
+                    *ev.limitations,
+                    *extra_limitations,
+                    f"workspace strength: {ev.strength}",
+                    _PROVENANCE,
+                ],
             )
         except Exception as exc:  # noqa: BLE001 - one bad record must not block the rest
             notes.append(f"{ev.id} not mirrored: {exc}")

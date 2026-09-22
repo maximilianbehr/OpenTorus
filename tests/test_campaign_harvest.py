@@ -57,15 +57,18 @@ def test_worker_evidence_is_mirrored_onto_the_primary_claim(tmp_path: Path) -> N
     assert len(mirrored) == 1
     rec = mirrored[0]
     assert rec.claim_id == primary_id
-    assert rec.direction == "contradicts"
     assert ws_ev.id in rec.source_artifacts and "CAMPAIGN-0001" in rec.source_artifacts
-    assert f"[worker claim {worker_claim.id}]" in rec.summary  # the re-aim is named
+    # the re-aim is named, together with the direction the worker judged *its* claim by
+    assert f"[worker claim {worker_claim.id}; contradicts that claim]" in rec.summary
     assert any("workspace strength: strong" in lim for lim in rec.limitations)
     assert any("unreviewed" in lim for lim in rec.limitations)
-    # the dossier API's own honesty rules applied: contradicted is a soft, sub-verified
-    # status and the claim is linked, never verified
+    # The direction was relative to the worker's own claim, not to the primary target,
+    # so it does not travel: the record is neutral on the primary claim, the candidate
+    # is visible to report/referee/verdict, and the primary claim's status is untouched.
+    assert rec.direction == "neutral"
+    assert any("mirrored as neutral" in lim for lim in rec.limitations)
     claim = dstore.get_claim(ot, pid, primary_id)
-    assert claim is not None and claim.status == "contradicted"
+    assert claim is not None and claim.status == "unverified"
     assert rec.id in claim.evidence_links
     # failure signatures land as first-class failed attempts
     failed = dstore.list_failed_attempts(ot, pid)
@@ -73,6 +76,64 @@ def test_worker_evidence_is_mirrored_onto_the_primary_claim(tmp_path: Path) -> N
     assert "FSIG-0001" in failed[0].artifacts and "EXP-0004" in failed[0].artifacts
     assert failed[0].reason_failed == "witness_unconfirmed"
     assert any("mirrored" in n for n in notes)
+
+
+def test_refuted_branch_lemma_does_not_contradict_the_primary_claim(tmp_path: Path) -> None:
+    """Pins the 2026-09-22 MF-13 / IV-01 harvest: a prover refuted its own auxiliary shift
+    lemma (strong, EXPERIMENT-backed) and a formalizer recorded an unvalidated z3 model
+    against a branch claim; both were mirrored as *contradicting the conjecture*, which
+    marked the primary claim 'contradicted' in the dossier, report and verdict."""
+    _root, ot, pid = make_workspace(tmp_path)
+    primary_id = _primary(ot, pid)
+    lemma = new_claim(ot, "SHIFT LEMMA: g(A) is invariant under A -> A + cI.")
+    ws_ev, _ = add_evidence(
+        ot,
+        lemma.id,
+        source_type="experiment",
+        summary="REFUTED. The naive shift claim is false: the skew part does not vanish.",
+        direction="contradicts",
+        strength="strong",
+    )
+    candidate = new_claim(ot, "Branch claim: the corner inequality holds for this orbit.")
+    add_evidence(
+        ot,
+        candidate.id,
+        source_type="log",
+        summary="smt returned a candidate model (UNVALIDATED)",
+        direction="contradicts",
+        strength="weak",
+    )
+    harvest_worker_ledgers(ot, pid, "CAMPAIGN-0001", [])
+    mirrored = dstore.list_evidence(ot, pid)
+    assert [e.claim_id for e in mirrored] == [primary_id, primary_id]
+    assert {e.direction for e in mirrored} == {"neutral"}
+    first = next(e for e in mirrored if ws_ev.id in e.source_artifacts)
+    assert first.summary.startswith(f"[worker claim {lemma.id}; contradicts that claim] REFUTED.")
+    assert any(f"relative to worker claim {lemma.id}" in lim for lim in first.limitations)
+    claim = dstore.get_claim(ot, pid, primary_id)
+    assert claim is not None and claim.status == "unverified"
+    assert dstore.list_status_changes(ot, pid) == []
+
+
+def test_evidence_recorded_on_the_primary_claim_id_keeps_its_direction(tmp_path: Path) -> None:
+    """A worker with evidence about the *target* records it on the dossier claim id; that
+    direction is kept and the dossier's soft 'contradicted' move still applies."""
+    _root, ot, pid = make_workspace(tmp_path)
+    primary_id = _primary(ot, pid)
+    ws_ev, _ = add_evidence(
+        ot,
+        primary_id,
+        source_type="manual_note",
+        summary="T_3[p](z) is not real-rooted for the candidate p",
+        direction="contradicts",
+        strength="strong",
+    )
+    harvest_worker_ledgers(ot, pid, "CAMPAIGN-0001", [])
+    (rec,) = dstore.list_evidence(ot, pid)
+    assert rec.claim_id == primary_id and rec.direction == "contradicts"
+    assert ws_ev.id in rec.source_artifacts and "[worker claim" not in rec.summary
+    claim = dstore.get_claim(ot, pid, primary_id)
+    assert claim is not None and claim.status == "contradicted"
 
 
 def test_harvest_is_idempotent_and_skips_without_a_target_claim(tmp_path: Path) -> None:

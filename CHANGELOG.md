@@ -6,6 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A refuted branch lemma no longer marks the primary conjecture `contradicted`.**
+  Campaign synthesis mirrors worker-session evidence into the dossier; evidence
+  recorded on a worker-only claim (a lemma, a candidate, a proof route) has no
+  dossier twin and was re-aimed at the primary claim *with its direction*, so the
+  dossier API's soft rule "contradicting evidence → `contradicted`" fired against
+  the conjecture. Two live campaigns on 2026-09-22 (MF-13, IV-01) ended with their
+  primary claim shown as `contradicted` in report and verdict because a prover
+  refuted its own auxiliary shift lemma and a formalizer logged an unvalidated z3
+  model of a branch claim. Re-aimed evidence is now mirrored as `neutral` — the
+  record, its worker-relative direction and the worker claim id are preserved in
+  the summary and limitations, so report, referee and verdict still see it, but
+  only evidence recorded on the primary claim id itself can move that claim's
+  status. Pinned in `tests/test_campaign_harvest.py`.
+
 ## [0.0.19] — 2026-08-28
 
 A day of stress-testing the suite against a vLLM `qwen3.8-flash` endpoint — eight
