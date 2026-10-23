@@ -8,8 +8,16 @@ caller explicitly opts in (the sensitive-file guard).
 from __future__ import annotations
 
 import difflib
+import errno
+import os
 import re
+import stat
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 
 from opentorus.errors import OpenTorusError, PermissionDeniedError
 from opentorus.paths import WORKSPACE_DIRNAME, resolve_workspace_path
@@ -407,14 +415,96 @@ def read_file(
     return "\n".join(lines[lo:hi])
 
 
+def _fd_path(fd: int) -> Path | None:
+    """The path an open descriptor really refers to (Linux procfs; macOS F_GETPATH)."""
+    proc = Path(f"/proc/self/fd/{fd}")
+    try:
+        return Path(os.readlink(proc))
+    except OSError:
+        pass
+    getpath = getattr(fcntl, "F_GETPATH", None) if fcntl is not None else None
+    if getpath is not None:  # pragma: no cover - macOS
+        try:
+            raw = fcntl.fcntl(fd, getpath, b"\0" * 1024)
+            return Path(raw.rstrip(b"\0").decode())
+        except OSError:
+            return None
+    return None
+
+
+def safe_write_text(root: Path, target: Path, user_path: str, content: str) -> None:
+    """Write ``content`` to ``target`` without following a symlink swapped in at use time.
+
+    ``resolve_workspace_path`` checked the path *before* the write; a symlink planted
+    between that check and the open would redirect the write anywhere. So the final
+    component is opened with ``O_NOFOLLOW`` (a symlink there fails the open), the file
+    is *not* truncated on open, and the descriptor's real path is verified -- inside
+    the workspace, not sensitive, not internal state -- before a single byte changes.
+    """
+    if is_sensitive_path(target):
+        raise OpenTorusError(f"Refusing to write '{user_path}': it is a sensitive file.")
+    flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    created = False
+    try:
+        try:
+            fd = os.open(target, flags | os.O_CREAT | os.O_EXCL, 0o644)
+            created = True
+        except FileExistsError:
+            fd = os.open(target, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise OpenTorusError(
+                f"Refusing to write '{user_path}': it is a symbolic link."
+            ) from exc
+        raise
+    ok = False
+    try:
+        real = _fd_path(fd)
+        if real is None:
+            real = Path(os.path.realpath(target))
+        root_real = Path(os.path.realpath(root))
+        try:
+            parts = real.relative_to(root_real).parts
+        except ValueError:
+            raise OpenTorusError(
+                f"Refusing to write '{user_path}': it resolves outside the workspace."
+            ) from None
+        if is_sensitive_path(real):
+            raise OpenTorusError(f"Refusing to write '{user_path}': it is a sensitive file.")
+        blocked = _write_blocked_message(user_path, parts)
+        if blocked:
+            raise OpenTorusError(blocked)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OpenTorusError(f"Refusing to write '{user_path}': not a regular file.")
+        data = content.encode("utf-8")
+        os.ftruncate(fd, 0)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        ok = True
+    finally:
+        ours = os.fstat(fd)
+        os.close(fd)
+        if created and not ok:
+            # Do not leave the empty file we created behind a refusal -- but only
+            # unlink it if the path still names that very inode.
+            try:
+                now = os.lstat(target)
+                if (now.st_ino, now.st_dev) == (ours.st_ino, ours.st_dev):
+                    os.unlink(target)
+            except OSError:
+                pass
+
+
 def write_file(root: Path, user_path: str, content: str) -> Path:
-    """Write ``content`` to ``user_path`` (path-safety enforced)."""
+    """Write ``content`` to ``user_path`` (path-safety enforced, TOCTOU-safe)."""
     target = resolve_workspace_path(root, user_path)
     blocked = _write_blocked_message(user_path, _relative_parts(root, target))
     if blocked:
         raise OpenTorusError(blocked)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    safe_write_text(root, target, user_path, content)
     return target
 
 
@@ -489,5 +579,5 @@ def apply_patch(root: Path, user_path: str, old: str, new: str) -> str:
         )
     updated = original.replace(old, new, 1)
     preview = patch_preview(original, updated, user_path)
-    target.write_text(updated, encoding="utf-8")
+    safe_write_text(root, target, user_path, updated)
     return preview
