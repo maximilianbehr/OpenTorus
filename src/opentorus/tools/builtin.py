@@ -457,7 +457,9 @@ class FetchUrlTool(Tool):
     name = "fetch_url"
     description = (
         "Fetch an http(s) URL (e.g. a Wikipedia page) and return its readable text. "
-        "Use this to read a page the user links to."
+        "Use this to read a page the user links to. Local/private addresses are refused. "
+        "If a site answers with a captcha, a challenge or a rate limit, that is a "
+        "refusal: do not retry it or work around it (other URL, user agent, shell)."
     )
     input_schema: dict = {
         "type": "object",
@@ -469,8 +471,29 @@ class FetchUrlTool(Tool):
     risk_level = "medium"
     permission = "external"
 
-    def __init__(self, max_chars: int = 8000) -> None:
+    def __init__(self, max_chars: int = 8000, *, config=None, ot_dir=None) -> None:  # noqa: ANN001
         self._max_chars = max_chars
+        self._config = config
+        self._ot_dir = ot_dir
+
+    def _egress_guard(self):  # noqa: ANN202
+        if self._config is None:
+            return None
+        from opentorus.research.egress import EgressGuard
+
+        lit = self._config.tools.literature
+        return EgressGuard(
+            self._config.permissions.mode,
+            style=self._config.agent.style,
+            review=self._config.agent.mode == "review",
+            rate_limit_per_minute=lit.rate_limit_per_minute,
+            daily_request_budget=lit.daily_request_budget,
+            # The call itself was confirmed at the external-tool gate (which asks in
+            # exactly the modes the egress policy would) with the URL shown.
+            confirm=lambda host: True,
+            ledger_path=(self._ot_dir / "egress.json") if self._ot_dir is not None else None,
+            dlp=self._config.governance.dlp,
+        )
 
     def run(self, call: ToolCall) -> ToolResult:
         from opentorus.research.sources.base import SourceError
@@ -479,8 +502,15 @@ class FetchUrlTool(Tool):
         url = str(call.args.get("url", "")).strip()
         if not url:
             return self.fail(call, "fetch_url requires a 'url' argument.")
+        web = self._config.tools.web if self._config is not None else None
         try:
-            title, text, truncated = fetch_url(url, max_chars=self._max_chars)
+            title, text, truncated = fetch_url(
+                url,
+                max_chars=self._max_chars,
+                max_bytes=web.max_bytes if web is not None else 5_000_000,
+                allow_hosts=web.allow_private_hosts if web is not None else (),
+                egress=self._egress_guard(),
+            )
         except SourceError as exc:
             return self.fail(call, str(exc))
         header = f"# {title}\n({url})\n\n" if title else f"({url})\n\n"
@@ -557,7 +587,7 @@ def build_default_registry(
     if config is not None and config.tools.web.enabled:
         web = config.tools.web
         if web.fetch:
-            registry.register(FetchUrlTool(max_chars=web.max_chars))
+            registry.register(FetchUrlTool(max_chars=web.max_chars, config=config, ot_dir=ot_dir))
         if web.search:
             registry.register(WebSearchTool())
     if config is not None and config.tools.mcp:
