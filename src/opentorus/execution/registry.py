@@ -43,7 +43,7 @@ def _make_remote(name: str, config: Config) -> ExecutionBackend:
         time_limit=remote.time_limit,
         account=remote.account,
         extra_sbatch=remote.extra_sbatch,
-        **common,
+        **common,  # type: ignore[arg-type]
     )
 
 
