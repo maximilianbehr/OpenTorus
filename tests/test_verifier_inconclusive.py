@@ -150,7 +150,14 @@ def test_prover_crash_is_inconclusive(monkeypatch: pytest.MonkeyPatch, backend_c
     monkeypatch.setattr(
         "opentorus.research.verifiers.backends.run_shell", _fake_run(_shell("", exit_code=-11))
     )
-    result = backend.verify("theorem foo : True := trivial")
+    # The gate only runs a checker on a source naming a theorem it can audit, so each
+    # backend gets one in its own syntax.
+    source = (
+        "Theorem foo : True. Proof. exact I. Qed."
+        if backend_cls is CoqBackend
+        else "theorem foo : True := trivial"
+    )
+    result = backend.verify(source)
     assert result.accepted is False
     assert result.inconclusive is True
     assert "did not run to completion" in result.output

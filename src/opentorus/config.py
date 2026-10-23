@@ -338,6 +338,20 @@ class VerifiersConfig(BaseModel):
     lean_command: str = "lake env lean"
     coq_command: str = "coqc"
     smt_command: str = "z3"
+    # Confine the Lean/Coq checker under bwrap (no network, read-only filesystem,
+    # writable temp dir only). ``auto``: when a working bwrap exists; ``require``:
+    # refuse to run the checker without it (fail closed); ``off``: never.
+    confine: Literal["auto", "require", "off"] = "auto"
+    # Resident Lean REPL (leanprover-community/repl JSON protocol): one process with
+    # the header (e.g. ``import Mathlib``) elaborated once, reused per submission.
+    # Off by default; ``lean_repl_command`` is run from the Lean project directory.
+    lean_repl: bool = False
+    lean_repl_command: str = "lake exe repl"
+    lean_repl_header: str = "import Mathlib"
+    # Automatic tactic-suite pass on a Lean candidate whose only failures are `sorry`s
+    # (formalizer worker): each `sorry` is tried against a fixed tactic list and the
+    # result re-verified through the full gate.
+    lean_tactic_suite: bool = True
 
 
 class DatasetsConfig(BaseModel):

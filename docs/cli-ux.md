@@ -72,7 +72,7 @@ Markdown extraction defaults to the **LLM** path.
 | Workspace | `init`, `status`, `config show/set`, `actions` |
 | Coding | `diff`, `shell`, `check`, `patch …`, `checkpoint …` |
 | Claims & evidence | `claim …`, `evidence …`, `graph …`, `explain <id>` |
-| Experiments & proofs | `exp new/run/replay/summarize`, `proof submit/list` |
+| Experiments & proofs | `exp new/run/replay/summarize`, `proof submit/list/bench`, `proof statement add/accept/retire/list` |
 | Literature | `lit search/cite/link/gaps/doi`, `paper …` |
 | Datasets & code | `data fetch/list/link`, `repo clone/test/list` |
 | Knowledge & index | `index build/status/search`, `kb promote/query/stale` |
@@ -172,6 +172,21 @@ opentorus problem evidence --claim CLAIM-0001 --type FORMAL_PROOF --artifact PRO
 A missing, rejected, or inconclusive attempt is refused with the reason. If nothing was
 machine-checked, record support-only evidence (`EXPERIMENT`, `COMPUTATION`,
 `PROOF_SKETCH`) instead — that is honest, and it keeps the claim at `supported`.
+
+A Lean/Coq proof verifies a claim only when it is bound to the claim's human-accepted
+frozen formal statement (otherwise it is recorded as support):
+
+```bash
+opentorus proof statement add frozen.lean --claim CLAIM-0001   # → FSTMT-0001 (proposed)
+opentorus proof statement accept FSTMT-0001                     # human review + confirm
+opentorus proof submit lean4 proof.lean --claim CLAIM-0001      # statement-bound if it matches
+```
+
+`opentorus proof bench [--split dev|heldout --allow-heldout] [--item fb-001]` runs the
+frozen formal benchmark (`opentorus.evals.formal_bench`): the configured model proves
+each statement, the Lean gate checks it against the frozen file, and the pass rate is
+printed with the benchmark's manifest digest. The held-out split is never used as an
+example and must be requested explicitly.
 
 ### The report: one design, two renderings
 

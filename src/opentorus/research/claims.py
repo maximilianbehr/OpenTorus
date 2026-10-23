@@ -230,9 +230,21 @@ def _update_claim_locked(
             from opentorus.research.epistemics import assert_proof_required
             from opentorus.research.verifiers.proofs import accepted_proof_for_claim
 
-            assert_proof_required(
-                status, has_proof=accepted_proof_for_claim(ot_dir, claim_id) is not None
-            )
+            promoting = accepted_proof_for_claim(ot_dir, claim_id)
+            if promoting is None:
+                from opentorus.research.verifiers.proofs import can_promote, list_proofs
+
+                # Name the reason an accepted attempt does not count (statement
+                # fidelity) instead of claiming that no proof exists.
+                for proof in reversed(list_proofs(ot_dir)):
+                    if proof.claim_id == claim_id and proof.problem_id is None:
+                        if proof.accepted and not proof.inconclusive:
+                            raise OpenTorusError(
+                                f"Reaching '{status}' requires a promoting formal proof: "
+                                + can_promote(proof)[1]
+                                + "."
+                            )
+            assert_proof_required(status, has_proof=promoting is not None)
         if status in RESTRICTED_STATUSES:
             approved = confirm(target.status, status) if confirm is not None else False
             if not approved:

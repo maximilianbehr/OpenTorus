@@ -34,6 +34,25 @@ class VerificationResult(BaseModel):
     # of eleven accepted proofs in one sweep were of that kind. ``None`` means the
     # backend cannot tell, and nothing downstream may assume either way.
     general: bool | None = None
+    # Proof-assistant gate (Lean/Coq). ``rejection`` is a short machine-readable
+    # reason when the gate (not the mathematics) refused: ``forbidden_token``,
+    # ``sorry``, ``nonstandard_axioms``, ``no_theorem``, ``no_report``,
+    # ``statement_mismatch``, ``preamble_mismatch``, ``type_mismatch``,
+    # ``elaboration``, ``confinement_unavailable``, ``frozen_statement_invalid``.
+    rejection: str | None = None
+    # Axioms the accepted theorem(s) depend on, as printed by ``#print axioms`` /
+    # ``Print Assumptions`` behind the gate's marker.
+    axioms: list[str] | None = None
+    theorem: str | None = None
+    # True only when the source was checked against a human-accepted frozen formal
+    # statement (verbatim statement + elaborated-type probe). Only a bound proof
+    # assistant result may promote a claim; an unbound one is support.
+    statement_bound: bool = False
+    # Whether the checker ran inside the bwrap sandbox (``None``: not applicable).
+    confined: bool | None = None
+    # Structured checker feedback (error classes, first error, open goals); the raw
+    # output stays in ``output``.
+    diagnostics: dict | None = None
 
     def status_line(self) -> str:
         if not self.available:

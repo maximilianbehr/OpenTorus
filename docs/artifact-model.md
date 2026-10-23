@@ -33,6 +33,8 @@ inspectable: you can always trace a conclusion back to its evidence.
   theorems/              # THMREF references, relations, applicability checks, coverage/
   providers/capabilities.json   # doctor's probe cache (provider|model|base_url -> capabilities)
   proofs/PROOF-*/        # formal proof attempts (Lean/Coq/SMT)
+  formal_statements.jsonl  # FormalStatement (FSTMT-*): frozen formal statements of claims
+  formal_statements/     # FSTMT-*.lean / .v frozen source files
   reviews/REVIEW-*/      # critic reviews and findings
   figures/FIGURE-*/      # reproducible figures (script, data hash, seed)
   drafts/                # LaTeX/BibTeX paper drafts
@@ -55,6 +57,7 @@ inspectable: you can always trace a conclusion back to its evidence.
 | Repo | `REPO-` | External code at a pinned commit; test runs as evidence. |
 | Problem dossier | `PROBLEM-` | Scoped open problem with claims, evidence, and honest report. |
 | Proof | `PROOF-` | A formal proof attempt and its backend outcome. |
+| Frozen formal statement | `FSTMT-` | The exact Lean/Coq theorem a proof of one claim must prove; sha256-digested, human-accepted. |
 | Patch | `PATCH-` | A proposed edit (applyable / revertable). |
 | Review | `REVIEW-` | A critic review with structured findings. |
 | Figure | `FIGURE-` | A regenerable plot with provenance. |
@@ -144,6 +147,67 @@ The same distinction runs through the verifier backends: a result is `accepted`,
 mathematics. A solver timeout or an `unknown` verdict, a prover killed by a signal, and
 an interval enclosure too coarse to settle the question are all `inconclusive` — "the
 check did not conclude", never "the claim is false".
+
+### The Lean/Coq acceptance gate
+
+Exit code 0 is necessary, never sufficient: Lean exits 0 on a file full of `sorry`, Coq
+on one ending in `Admitted`. A Lean/Coq `PROOF-*` is `accepted` only when
+(`research/verifiers/backends.py`, `lean_rules.py`, `coq_rules.py`):
+
+1. a textual pre-scan, *before anything runs*, finds none of `sorry`, `native_decide`,
+   a user `axiom`, `set_option pp.*`/`debug.*`, or a code-execution / syntax-extension
+   word (`#eval`, `#exit`, `run_cmd`, `run_elab`, `macro`, `elab`, `syntax`,
+   `notation`, `initialize`, `implemented_by`, `extern`, `unsafe`, `IO`, `Lean.*` …;
+   Coq: `Admitted`, `admit`, `Axiom`, `Parameter`, `Declare ML Module`, `Load`,
+   `Unset … Checking` …) outside comments and strings. Constructs the lexer cannot
+   read unambiguously (interpolated/escaped strings, unclosed comments) are refused;
+2. the checker runs under `bwrap` without network, with a read-only filesystem and only
+   its temp dir writable (`tools.verifiers.confine`: `auto` — when bwrap works,
+   `require` — refuse without it, `off`); the attempt records `confined`;
+3. the gate appends `#print axioms <thm>` for every declared `theorem`/`lemma` (Coq:
+   `Print Assumptions`) behind a fresh random marker and reads *only* the output after
+   it: every theorem's axioms must be within {`propext`, `Classical.choice`,
+   `Quot.sound`} (Coq: closed under the global context), with no `sorryAx`. A file with
+   no identifiable theorem (only `example`s) is rejected — fail closed.
+
+The checker is `tools.verifiers.lean_command` (`lake env lean <file>`) or, with
+`tools.verifiers.lean_repl: true`, a resident leanprover-community/repl process with
+`lean_repl_header` (`import Mathlib`) elaborated once (`verifiers/lean_repl.py`:
+per-request deadline, kill on timeout, a single respawn on death — both inconclusive,
+never rejections). Only how Lean runs changes; the gate reading its output is the same.
+
+A gate refusal is recorded with a machine-readable `rejection` (`sorry`,
+`forbidden_token`, `nonstandard_axioms`, `no_theorem`, `no_report`, `elaboration`,
+`statement_mismatch`, `preamble_mismatch`, `type_mismatch`); `axioms`, `theorem` and
+structured `diagnostics` (error classes, first error, unsolved goal) are stored beside
+the verbatim output.
+
+### Frozen formal statements and statement fidelity
+
+An accepted Lean file proves *some* theorem; nothing ties that theorem to the claim
+it is cited for. A `FormalStatement` (`FSTMT-*`, `formal_statements.jsonl`) is a
+complete frozen file — preamble (imports, opens, definitions), exactly one theorem, and
+the placeholder proof `sorry` (Coq: `Admitted`) — bound to one claim (`claim_id`, plus
+`problem_id` for a dossier claim), with the source's `sha256`. It is `proposed`
+(`opentorus proof statement add FILE --claim CLAIM-…`) and binds nothing until a human
+`accept`s it (`opentorus proof statement accept FSTMT-…`, interactive confirmation; the
+digest is re-checked against the file at acceptance). Accepting a new statement retires
+the previous one for that claim and backend.
+
+A `proof_submit` against a claim with an accepted statement must contain the statement
+verbatim (whitespace-normalized, outside comments), begin with the frozen preamble (the
+checked file is rebuilt as *frozen preamble* + separator command + the candidate's
+remainder, so definitions cannot be redefined or continued), and elaborate the theorem
+to the same type as the frozen statement checked with `sorry` (`#check @thm` under
+`pp.all`, the "pristine type", cached on the FSTMT record per checker version). Such a
+proof is recorded with `statement_bound: true` and `statement_id`.
+
+**Only a statement-bound Lean/Coq proof promotes a claim** (`proofs.can_promote`): the
+workspace ladder (`formally_verified`) and dossier `FORMAL_PROOF` evidence both refuse an
+accepted but unbound one, naming the reason; its graph edge is `supports`, not
+`validates`. Lean/Coq proofs recorded before this rule carry `statement_bound: false`
+and no longer promote. SMT and the certificate checkers are not covered by frozen
+statements (they keep their earlier rules).
 
 A ``PROOF-*`` record carries two dossier references, and they answer different
 questions. `problem_id` says which claim *store* its `claim_id` belongs to — the

@@ -236,6 +236,15 @@ tools:
     lean_command: lake env lean
     coq_command: coqc
     smt_command: z3
+    # Run the Lean/Coq checker under bwrap (no network, read-only filesystem):
+    # auto = when a working bwrap exists; require = refuse without it; off = never.
+    confine: auto
+    # Resident Lean REPL (leanprover-community/repl): header elaborated once.
+    lean_repl: false
+    lean_repl_command: lake exe repl
+    lean_repl_header: import Mathlib
+    # Formalizer: try a fixed tactic list on a candidate whose only gaps are `sorry`s.
+    lean_tactic_suite: true
     # Seconds a checker may run before it is reported as inconclusive (not rejected).
     timeout_seconds: 120
     # Longest timeout proof_submit may ask for; a larger request is clamped to this
