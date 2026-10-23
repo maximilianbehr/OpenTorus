@@ -1,4 +1,4 @@
-"""OpenTorus CLI -- the approval queue for runs without a terminal."""
+"""OpenTorus CLI -- `opentorus approvals`: the queue for runs without a terminal."""
 
 from __future__ import annotations
 
