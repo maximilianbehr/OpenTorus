@@ -48,11 +48,19 @@ class StatusTool(Tool):
 
 class GitDiffTool(Tool):
     name = "git_diff"
-    description = "Show the git diff of the working tree."
+    description = (
+        "Show everything that changed since HEAD: staged, unstaged and new untracked "
+        "files, with a per-file summary. Long output is paged; pass the offset it names "
+        "to see more."
+    )
     input_schema: dict = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Optional workspace-relative path to diff."}
+            "path": {"type": "string", "description": "Optional workspace-relative path to diff."},
+            "offset": {
+                "type": "integer",
+                "description": "Character offset to continue a paged diff from (default 0).",
+            },
         },
     }
     risk_level = "low"
@@ -63,8 +71,15 @@ class GitDiffTool(Tool):
     def run(self, call: ToolCall) -> ToolResult:
         from opentorus.tools.git import git_diff
 
-        result = git_diff(self._root, call.args.get("path"))
-        return self.ok(call, result.output, is_repo=result.is_repo)
+        offset = call.args.get("offset") or 0
+        result = git_diff(self._root, call.args.get("path"), offset=int(offset))
+        return self.ok(
+            call,
+            result.output,
+            is_repo=result.is_repo,
+            truncated=result.truncated,
+            next_offset=result.next_offset,
+        )
 
 
 class MemoryListTool(Tool):
