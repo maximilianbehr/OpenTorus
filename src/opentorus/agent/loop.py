@@ -80,6 +80,7 @@ from opentorus.permissions.policy import PermissionDecision
 from opentorus.providers.base import BaseProvider, ProviderResponse
 from opentorus.providers.retry import ContextLengthExceededError
 from opentorus.tools.base import Tool
+from opentorus.tools.jobs import drain_notices
 from opentorus.tools.registry import ToolRegistry
 
 # Results recorded for the calls of a batch that a cancel/interrupt cut short. The two
@@ -688,6 +689,10 @@ class AgentLoop:
                 result_text = self._stop_run(stall)
                 stop_decision = stall
                 break
+            # A background job that finished since the last turn is announced (and
+            # recorded), so the model never has to poll or sleep for it.
+            for notice in drain_notices(self.registry):
+                self._append(SessionMessage(role="user", content=f"[OpenTorus notice] {notice}"))
             messages = build_messages(
                 self.root,
                 self.ot_dir,

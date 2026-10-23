@@ -78,7 +78,7 @@ def export_cmd(
     ),
 ) -> None:
     """Export a session as a privacy-clean, shareable bundle."""
-    from opentorus.bundle import export_session
+    from opentorus.bundle import export_session, read_bundle_manifest
 
     ot_dir = _require_workspace_dir()
     try:
@@ -87,6 +87,10 @@ def export_cmd(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
     console.print(f"[green]Exported session {session_id}[/green] to {path}")
+    for finding in read_bundle_manifest(path).secret_findings:
+        console.print(
+            f"[yellow]redacted[/yellow] {finding['kind']} in {finding['path']}:{finding['line']}"
+        )
 
 
 @app.command(name="import")
@@ -427,6 +431,7 @@ def shell(
         review=config.agent.mode == "review",
         confirm=_confirm,
         timeout=timeout,
+        env_allowlist=config.execution.env_allowlist,
     )
 
     if result is None:

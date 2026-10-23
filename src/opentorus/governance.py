@@ -32,15 +32,84 @@ _SECRET_SPECS: list[tuple[str, str]] = [
     ("anthropic_key", r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),
     ("aws_access_key", r"\bAKIA[0-9A-Z]{16}\b"),
     ("github_token", r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+    ("github_pat", r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
+    ("huggingface_token", r"\bhf_[A-Za-z0-9]{30,}\b"),
     ("slack_token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
     ("google_api_key", r"\bAIza[0-9A-Za-z_-]{30,}\b"),
-    ("private_key_block", r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
-    ("bearer_token", r"\b[Bb]earer\s+[A-Za-z0-9._-]{20,}\b"),
-    ("assigned_secret", r"(?i)\b(?:api[_-]?key|secret|password|passwd|token)\b\s*[:=]\s*\S{6,}"),
+    (
+        "private_key_block",
+        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----",
+    ),
+    ("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    (
+        "authorization_header",
+        r"(?i)\bauthorization\b[\"']?\s*[:=]\s*[\"']?(?:bearer|basic|token|bot)\s+"
+        r"(?P<value>[A-Za-z0-9._~+/=-]{8,})",
+    ),
+    ("bearer_token", r"\b[Bb]earer\s+(?P<value>[A-Za-z0-9._-]{20,})\b"),
+    (
+        "url_credentials",
+        r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s/:@'\"<>]+:(?P<value>[^\s/@'\"<>]{3,})@[^\s/'\"<>]+",
+    ),
+    (
+        "assigned_secret",
+        r"(?i)\b(?:api[_-]?key|secret|password|passwd|token)\b\s*[:=]\s*(?P<value>\S{6,})",
+    ),
+    # KEY=VALUE / KEY: VALUE for credential-named variables (HF_TOKEN=..., DB_PASSWORD:
+    # ...). The value must look like a secret -- no code expression -- so
+    # ``num_tokens = len(tokens)`` stays prose.
+    (
+        "env_assignment",
+        r"(?<![A-Za-z0-9])[A-Za-z0-9_]*(?:API_?KEY|ACCESS_?KEY|SECRET|TOKEN|PASSWORD|PASSWD)"
+        r"[A-Za-z0-9_]*[\"']?\s*[:=]\s*[\"']?(?P<value>[A-Za-z0-9_\-+/=.~]{8,})",
+    ),
 ]
 _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (name, re.compile(pat)) for name, pat in _SECRET_SPECS
 ]
+
+# Values that are obviously not real credentials: documentation placeholders,
+# template variables and masks. Matched against the value part of assignment-style
+# rules only -- a literal key format (sk-..., AKIA...) is never "a placeholder".
+_PLACEHOLDER_RE = re.compile(
+    r"""(?ix)^(?:
+        x{3,}.*|.*x{6,}.*|\*{3,}.*|\.{3,}|_+|-+|
+        <[^>]*>|\{\{.*\}\}|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%\([^)]*\)s|%s|
+        .*(?:changeme|change[_-]?me|replace[_-]?me|your[_-]?(?:api[_-]?)?(?:key|token|secret|password)
+           |placeholder|example|dummy|redacted|sample|fake|test[_-]?(?:key|token)|not[_-]?a[_-]?secret
+           |insert[_-]?here|todo|none|null|undefined).*
+    )$"""
+)
+# Rules whose match carries a free-form value that may be a placeholder.
+_VALUE_RULES = frozenset(
+    {"assigned_secret", "env_assignment", "url_credentials", "authorization_header", "bearer_token"}
+)
+
+
+_EXACT_PLACEHOLDERS = frozenset(
+    {"password", "pass", "passwd", "pwd", "pw", "secret", "token", "key", "apikey", "api_key"}
+)
+
+
+def _is_placeholder(value: str) -> bool:
+    v = value.strip("\"'`,;)")
+    return v.lower() in _EXACT_PLACEHOLDERS or bool(_PLACEHOLDER_RE.match(v))
+
+
+_CODE_VALUE_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
+_CODE_WORDS = frozenset(
+    {"api_key", "apikey", "token", "tokens", "secret", "password", "passwd", "true", "false"}
+)
+
+
+def _looks_like_code(value: str) -> bool:
+    """``token = match.group(0)``, ``api_key = self.api_key`` -- an expression, not a value."""
+    v = value.strip("\"'`,;")
+    return (
+        any(c in v for c in "()[]{}") or bool(_CODE_VALUE_RE.match(v)) or v.lower() in _CODE_WORDS
+    )
+
+
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
 
@@ -96,6 +165,176 @@ def _excerpt(match: re.Match[str]) -> str:
     return f"{head}…(redacted)" if len(text) > 6 else "…(redacted)"
 
 
+def _secret_matches(text: str) -> list[tuple[str, re.Match[str]]]:
+    """Secret matches in ``text`` (placeholders suppressed), earliest first."""
+    out: list[tuple[str, re.Match[str]]] = []
+    for kind, pattern in _SECRET_PATTERNS:
+        for match in pattern.finditer(text):
+            if kind in _VALUE_RULES:
+                value = match.groupdict().get("value") or ""
+                if _is_placeholder(value):
+                    continue
+                if kind in ("assigned_secret", "env_assignment") and _looks_like_code(value):
+                    continue
+                if kind == "env_assignment" and not (
+                    any(c.isdigit() for c in value) or len(value) >= 20
+                ):
+                    continue
+            out.append((kind, match))
+    out.sort(key=lambda item: item[1].start())
+    return out
+
+
+def _mask(secret: str) -> str:
+    """A masked preview: enough to recognise which value it was, never enough to use it."""
+    head = secret[:4] if len(secret) >= 12 else ""
+    return f"{head}…" if head else "…"
+
+
+def redact_secrets(text: str) -> tuple[str, list[SecretFinding]]:
+    """Replace every detected secret in ``text`` with a masked marker.
+
+    Used before anything is written to a log or put into an export. Works on the
+    text as given (no normalization) so offsets stay valid; the DLP send path still
+    scans the normalized form.
+    """
+    matches = _secret_matches(text)
+    if not matches:
+        return text, []
+    findings: list[SecretFinding] = []
+    pieces: list[str] = []
+    cursor = 0
+    for kind, match in matches:
+        start, end = match.span()
+        if "value" in match.re.groupindex and match.group("value"):
+            start, end = match.span("value")
+        if start < cursor:
+            continue  # overlaps a span already redacted
+        secret = text[start:end]
+        pieces.append(text[cursor:start])
+        pieces.append(f"{_mask(secret)}[redacted:{kind}]")
+        findings.append(SecretFinding(kind=kind, excerpt=_mask(secret) + "(redacted)"))
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces), findings
+
+
+def redact_secrets_in(value: object) -> object:
+    """:func:`redact_secrets` applied to every string inside a JSON-like value."""
+    if isinstance(value, str):
+        return redact_secrets(value)[0]
+    if isinstance(value, dict):
+        return {k: redact_secrets_in(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact_secrets_in(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(redact_secrets_in(v) for v in value)
+    return value
+
+
+class FileFinding(BaseModel):
+    path: str
+    kind: str
+    line: int
+    excerpt: str
+
+
+# Never scanned: version control, caches, virtualenvs, and the scan's own outputs.
+_SCAN_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "node_modules",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+    }
+)
+_SCAN_MAX_BYTES = 5 * 1024 * 1024
+
+
+def scan_path(path: Path) -> list[FileFinding]:
+    """Scan a file, or every text file under a directory, for secrets (not PII)."""
+    root = Path(path)
+    files = (
+        [root]
+        if root.is_file()
+        else sorted(
+            p
+            for p in root.rglob("*")
+            if p.is_file()
+            and not p.is_symlink()
+            and not any(part in _SCAN_SKIP_DIRS for part in p.relative_to(root).parts)
+        )
+    )
+    findings: list[FileFinding] = []
+    for file in files:
+        try:
+            if file.stat().st_size > _SCAN_MAX_BYTES:
+                continue
+            data = file.read_bytes()
+        except OSError:
+            continue
+        if b"\0" in data[:8192]:
+            continue  # binary
+        text = data.decode("utf-8", errors="replace")
+        rel = file.name if file == root else file.relative_to(root).as_posix()
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            end = -1
+            for kind, match in _secret_matches(line):
+                if match.start() < end:
+                    continue  # one finding per secret, not one per rule that sees it
+                end = match.end()
+                findings.append(
+                    FileFinding(path=rel, kind=kind, line=line_no, excerpt=_excerpt(match))
+                )
+    return findings
+
+
+class SecretsInExport(OpenTorusError):
+    """An export would contain secrets and was refused (``on_secret="refuse"``)."""
+
+
+def screen_export_entries(
+    entries: list[tuple[str, bytes]], *, on_secret: str = "redact"
+) -> tuple[list[tuple[str, bytes]], list[FileFinding]]:
+    """Scan export entries for secrets; redact them (default) or refuse the export.
+
+    Binary entries are passed through unscanned. Returns the (possibly redacted)
+    entries and every finding, with the archive name as the path.
+    """
+    if on_secret not in ("redact", "refuse"):
+        raise ValueError("on_secret must be 'redact' or 'refuse'")
+    out: list[tuple[str, bytes]] = []
+    findings: list[FileFinding] = []
+    for name, data in entries:
+        if b"\0" in data[:8192]:
+            out.append((name, data))
+            continue
+        text = data.decode("utf-8", errors="replace")
+        lines = text.splitlines(keepends=True)
+        changed = False
+        for i, line in enumerate(lines):
+            redacted, found = redact_secrets(line)
+            if found:
+                changed = True
+                lines[i] = redacted
+                findings.extend(
+                    FileFinding(path=name, kind=f.kind, line=i + 1, excerpt=f.excerpt)
+                    for f in found
+                )
+        out.append((name, "".join(lines).encode("utf-8") if changed else data))
+    if findings and on_secret == "refuse":
+        where = ", ".join(sorted({f"{f.path}:{f.line} ({f.kind})" for f in findings})[:10])
+        raise SecretsInExport(f"Export refused: {len(findings)} secret(s) found -- {where}.")
+    return out, findings
+
+
 def scan_secrets(text: str, *, scan_pii: bool = True) -> list[SecretFinding]:
     """Return secret/PII findings in ``text`` (excerpts are redacted, never raw).
 
@@ -107,9 +346,8 @@ def scan_secrets(text: str, *, scan_pii: bool = True) -> list[SecretFinding]:
 
     text = normalize_for_scan(text)
     findings: list[SecretFinding] = []
-    for kind, pattern in _SECRET_PATTERNS:
-        for match in pattern.finditer(text):
-            findings.append(SecretFinding(kind=kind, excerpt=_excerpt(match)))
+    for kind, match in _secret_matches(text):
+        findings.append(SecretFinding(kind=kind, excerpt=_excerpt(match)))
     if scan_pii:
         for match in _EMAIL_RE.finditer(text):
             findings.append(SecretFinding(kind="email", excerpt=_excerpt(match)))

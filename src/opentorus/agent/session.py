@@ -35,6 +35,14 @@ def session_path(workspace_dir: Path) -> Path:
 
 
 def append_message(workspace_dir: Path, message: SessionMessage) -> None:
+    # Secrets never reach the on-disk transcript (masked preview instead); the live
+    # in-memory message is untouched.
+    from opentorus.governance import redact_secrets, redact_secrets_in
+
+    content, found = redact_secrets(message.content) if message.content else ("", [])
+    metadata = redact_secrets_in(message.metadata) if message.metadata else message.metadata
+    if found or metadata != message.metadata:
+        message = message.model_copy(update={"content": content, "metadata": metadata})
     append_jsonl(session_path(workspace_dir), message)
 
 

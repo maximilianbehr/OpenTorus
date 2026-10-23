@@ -48,11 +48,19 @@ class StatusTool(Tool):
 
 class GitDiffTool(Tool):
     name = "git_diff"
-    description = "Show the git diff of the working tree."
+    description = (
+        "Show everything that changed since HEAD: staged, unstaged and new untracked "
+        "files, with a per-file summary. Long output is paged; pass the offset it names "
+        "to see more."
+    )
     input_schema: dict = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Optional workspace-relative path to diff."}
+            "path": {"type": "string", "description": "Optional workspace-relative path to diff."},
+            "offset": {
+                "type": "integer",
+                "description": "Character offset to continue a paged diff from (default 0).",
+            },
         },
     }
     risk_level = "low"
@@ -63,8 +71,15 @@ class GitDiffTool(Tool):
     def run(self, call: ToolCall) -> ToolResult:
         from opentorus.tools.git import git_diff
 
-        result = git_diff(self._root, call.args.get("path"))
-        return self.ok(call, result.output, is_repo=result.is_repo)
+        offset = call.args.get("offset") or 0
+        result = git_diff(self._root, call.args.get("path"), offset=int(offset))
+        return self.ok(
+            call,
+            result.output,
+            is_repo=result.is_repo,
+            truncated=result.truncated,
+            next_offset=result.next_offset,
+        )
 
 
 class MemoryListTool(Tool):
@@ -288,7 +303,10 @@ class RunShellTool(Tool):
         "For numpy/scipy use exp_new(environment='python-sci') + exp_run "
         "(run 'opentorus env prepare python-sci --file docker/Dockerfile' first). "
         "Use write_file for scripts, then run_shell with one simple argv "
-        "(e.g. bash path/run.sh)."
+        "(e.g. bash path/run.sh). Set timeout (seconds) for longer work; for work "
+        "longer than that use background=true, which returns a job id at once. "
+        "Never wait for a job in a loop or with sleep; never detach a process "
+        "(setsid, nohup) -- a background job keeps long work visible and stoppable."
     )
     input_schema: dict = {
         "type": "object",
@@ -300,14 +318,54 @@ class RunShellTool(Tool):
                     "Do not embed multi-line scripts."
                 ),
             },
+            "timeout": {
+                "type": "integer",
+                "description": "Seconds before the command is stopped (default 30).",
+            },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Run as a background job: returns a job id immediately; you are "
+                    "told when it finishes. Inspect or stop it with shell_jobs."
+                ),
+            },
         },
         "required": ["command"],
     }
     risk_level = "high"
     permission = "command"
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        env_allowlist: list[str] | tuple[str, ...] = (),
+        default_timeout: int = 30,
+        max_timeout: int = 600,
+        jobs=None,  # noqa: ANN001 — a tools.jobs.JobManager, or None (no background)
+    ) -> None:
         self._root = root
+        self._env_allowlist = tuple(env_allowlist)
+        self._default_timeout = default_timeout
+        self._max_timeout = max_timeout
+        self._jobs = jobs
+
+    def _timeout(self, call: ToolCall) -> tuple[float, str | None]:
+        raw = call.args.get("timeout")
+        if raw is None:
+            return float(self._default_timeout), None
+        try:
+            wanted = float(raw)
+        except (TypeError, ValueError):
+            return float(self._default_timeout), f"(ignored invalid timeout {raw!r})"
+        if wanted <= 0:
+            return float(self._default_timeout), f"(ignored non-positive timeout {raw!r})"
+        if wanted > self._max_timeout:
+            return float(self._max_timeout), (
+                f"(timeout capped at {self._max_timeout}s, tools.shell.max_timeout; use "
+                "background=true for longer work)"
+            )
+        return wanted, None
 
     def run(self, call: ToolCall) -> ToolResult:
         from opentorus.tools.shell import run_shell
@@ -315,8 +373,22 @@ class RunShellTool(Tool):
         command = call.args.get("command")
         if not command:
             return self.fail(call, "run_shell requires a 'command' argument.")
-        result = run_shell(command, cwd=self._root)
+        timeout, note = self._timeout(call)
+        if call.args.get("background") is True:
+            return self._background(call, str(command), note)
+        # A model-chosen command sees only the allowlisted environment: the dotenv
+        # loader put provider keys into os.environ, and `cat /proc/self/environ`
+        # passes every string-level command check.
+        result = run_shell(
+            command,
+            cwd=self._root,
+            timeout=timeout,
+            env_policy="clean",
+            env_allowlist=self._env_allowlist,
+        )
         body = f"exit_code={result.exit_code}\n"
+        if note:
+            body += note + "\n"
         if result.stdout.strip():
             body += f"stdout:\n{result.stdout.rstrip()}\n"
         if result.stderr.strip():
@@ -325,6 +397,28 @@ class RunShellTool(Tool):
         if result.exit_code == 0:
             return self.ok(call, body, exit_code=result.exit_code)
         return self.fail(call, body, exit_code=result.exit_code)
+
+    def _background(self, call: ToolCall, command: str, note: str | None) -> ToolResult:
+        if self._jobs is None:
+            return self.fail(call, "Background jobs are not available in this session.")
+        # A background job may run up to max_timeout unless the call asks for less.
+        raw = call.args.get("timeout")
+        limit = float(self._max_timeout) if raw is None else self._timeout(call)[0]
+        try:
+            job = self._jobs.start(
+                command, cwd=self._root, timeout=limit, env_allowlist=self._env_allowlist
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            return self.fail(call, f"Could not start background job: {exc}")
+        text = (
+            f"Started background job {job.job_id} (stopped after {limit:g}s): {command}\n"
+            "You will be told when it finishes. Meanwhile do other work; inspect it with "
+            f"shell_jobs(action='read', job_id='{job.job_id}') or stop it with "
+            "shell_jobs(action='stop', ...)."
+        )
+        if note:
+            text += "\n" + note
+        return self.ok(call, text, job_id=job.job_id, background=True)
 
 
 class LiteratureSearchTool(Tool):
@@ -451,7 +545,9 @@ class FetchUrlTool(Tool):
     name = "fetch_url"
     description = (
         "Fetch an http(s) URL (e.g. a Wikipedia page) and return its readable text. "
-        "Use this to read a page the user links to."
+        "Use this to read a page the user links to. Local/private addresses are refused. "
+        "If a site answers with a captcha, a challenge or a rate limit, that is a "
+        "refusal: do not retry it or work around it (other URL, user agent, shell)."
     )
     input_schema: dict = {
         "type": "object",
@@ -463,8 +559,29 @@ class FetchUrlTool(Tool):
     risk_level = "medium"
     permission = "external"
 
-    def __init__(self, max_chars: int = 8000) -> None:
+    def __init__(self, max_chars: int = 8000, *, config=None, ot_dir=None) -> None:  # noqa: ANN001
         self._max_chars = max_chars
+        self._config = config
+        self._ot_dir = ot_dir
+
+    def _egress_guard(self):  # noqa: ANN202
+        if self._config is None:
+            return None
+        from opentorus.research.egress import EgressGuard
+
+        lit = self._config.tools.literature
+        return EgressGuard(
+            self._config.permissions.mode,
+            style=self._config.agent.style,
+            review=self._config.agent.mode == "review",
+            rate_limit_per_minute=lit.rate_limit_per_minute,
+            daily_request_budget=lit.daily_request_budget,
+            # The call itself was confirmed at the external-tool gate (which asks in
+            # exactly the modes the egress policy would) with the URL shown.
+            confirm=lambda host: True,
+            ledger_path=(self._ot_dir / "egress.json") if self._ot_dir is not None else None,
+            dlp=self._config.governance.dlp,
+        )
 
     def run(self, call: ToolCall) -> ToolResult:
         from opentorus.research.sources.base import SourceError
@@ -473,8 +590,15 @@ class FetchUrlTool(Tool):
         url = str(call.args.get("url", "")).strip()
         if not url:
             return self.fail(call, "fetch_url requires a 'url' argument.")
+        web = self._config.tools.web if self._config is not None else None
         try:
-            title, text, truncated = fetch_url(url, max_chars=self._max_chars)
+            title, text, truncated = fetch_url(
+                url,
+                max_chars=self._max_chars,
+                max_bytes=web.max_bytes if web is not None else 5_000_000,
+                allow_hosts=web.allow_private_hosts if web is not None else (),
+                egress=self._egress_guard(),
+            )
         except SourceError as exc:
             return self.fail(call, str(exc))
         header = f"# {title}\n({url})\n\n" if title else f"({url})\n\n"
@@ -540,19 +664,35 @@ def build_default_registry(
     registry.register(ReadFileTool(root))
     registry.register(WriteFileTool(root))
     registry.register(ApplyPatchTool(root))
-    registry.register(RunShellTool(root))
+    from opentorus.tools.jobs import JobManager, ShellJobsTool
+
+    shell = config.tools.shell if config is not None else None
+    jobs = JobManager(
+        ot_dir / "jobs" if ot_dir.is_dir() else None,
+        max_jobs=shell.max_background_jobs if shell is not None else 4,
+    )
+    registry.register(
+        RunShellTool(
+            root,
+            env_allowlist=config.execution.env_allowlist if config is not None else (),
+            default_timeout=shell.default_timeout if shell is not None else 30,
+            max_timeout=shell.max_timeout if shell is not None else 600,
+            jobs=jobs,
+        )
+    )
+    registry.register(ShellJobsTool(jobs))
     if config is not None and config.tools.literature.enabled:
         registry.register(LiteratureSearchTool(config, ot_dir))
     if config is not None and config.tools.web.enabled:
         web = config.tools.web
         if web.fetch:
-            registry.register(FetchUrlTool(max_chars=web.max_chars))
+            registry.register(FetchUrlTool(max_chars=web.max_chars, config=config, ot_dir=ot_dir))
         if web.search:
             registry.register(WebSearchTool())
     if config is not None and config.tools.mcp:
         from opentorus.tools.mcp import register_mcp_tools
 
-        register_mcp_tools(registry, config)
+        register_mcp_tools(registry, config, ot_dir)
     if config is not None:
         from opentorus.tools.research import register_research_tools
 

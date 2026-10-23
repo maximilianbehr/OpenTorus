@@ -61,6 +61,9 @@ class BundleManifest(BaseModel):
     message_count: int = 0
     redacted_messages: int = 0
     files: list[str] = Field(default_factory=list)
+    # Secrets found (and redacted) in the exported files: where and what kind --
+    # never the value.
+    secret_findings: list[dict] = Field(default_factory=list)
 
 
 def _session_messages(ot_dir: Path, session_id: str) -> list[SessionMessage]:
@@ -87,8 +90,14 @@ def _patches_privacy_clean(ot_dir: Path) -> bytes | None:
     return ("\n".join(kept) + "\n").encode("utf-8") if kept else b""
 
 
-def export_session(ot_dir: Path, session_id: str, out_path: Path | None = None) -> Path:
-    """Bundle a session into a privacy-clean zip archive and return its path."""
+def export_session(
+    ot_dir: Path, session_id: str, out_path: Path | None = None, *, on_secret: str = "redact"
+) -> Path:
+    """Bundle a session into a privacy-clean zip archive and return its path.
+
+    Every text entry is secret-scanned first: secrets are redacted (masked preview)
+    and listed in the manifest, or, with ``on_secret="refuse"``, the export fails.
+    """
     messages = _session_messages(ot_dir, session_id)
     if not messages:
         raise OpenTorusError(f"No messages found for session '{session_id}'.")
@@ -135,6 +144,10 @@ def export_session(ot_dir: Path, session_id: str, out_path: Path | None = None) 
     if patches is not None:
         entries.append(("artifacts/patches.jsonl", patches))
 
+    from opentorus.governance import screen_export_entries
+
+    entries, findings = screen_export_entries(entries, on_secret=on_secret)
+    manifest.secret_findings = [f.model_dump() for f in findings]
     manifest.files = sorted(name for name, _ in entries)
 
     out_path = out_path or ot_dir / "bundles" / f"{session_id}.zip"

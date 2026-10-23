@@ -13,7 +13,7 @@ from pathlib import Path
 
 from opentorus.actions import log_action
 from opentorus.agent.control.models import PolicyAction, PolicyDecision, ReasonCode
-from opentorus.approvals import EXTERNAL_SESSION_KEY
+from opentorus.approvals import approval_scope, describe_action
 from opentorus.config import OperatingStyle, PermissionMode
 from opentorus.permissions.policy import (
     PermissionDecision,
@@ -25,8 +25,8 @@ from opentorus.tools.base import Tool
 from opentorus.tools.registry import ToolRegistry
 
 # A confirmation callback receives the decision, a human-readable description
-# of the pending action, and an optional session scope (e.g. "external" for all
-# network tools). Returns True to allow it.
+# of the pending action, and the approval scope (tool + canonical relevant args;
+# see opentorus.approvals.approval_scope). Returns True to allow it.
 ConfirmCallback = Callable[[PermissionDecision, str, str | None], bool]
 
 
@@ -83,11 +83,14 @@ def enforce_permission(
         )
         return f"Blocked: {decision.reason}"
     if decision.requires_confirmation:
-        description = args.get("command") or args.get("path") or name
         tool = registry.get(name)
-        is_external = tool is not None and tool.permission == "external"
-        scope = EXTERNAL_SESSION_KEY if is_external else None
-        approved = confirm(decision, str(description), scope) if confirm else False
+        if tool is not None:
+            description = describe_action(tool, args, ot_dir.parent)
+            scope: str | None = approval_scope(tool, args)
+        else:
+            description = str(args.get("command") or args.get("path") or name)
+            scope = None
+        approved = confirm(decision, description, scope) if confirm else False
         if not approved:
             log_action(
                 ot_dir,

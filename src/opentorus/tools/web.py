@@ -17,6 +17,8 @@ from __future__ import annotations
 import html
 import re
 import urllib.parse
+from collections.abc import Iterable
+from typing import Any
 
 from opentorus.research.sources.base import SourceError, http_get_text
 
@@ -68,18 +70,56 @@ def _clean_inline(raw: str) -> str:
     return html.unescape(_TAG_RE.sub("", raw)).strip()
 
 
-def fetch_url(url: str, *, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, str, bool]:
+DEFAULT_MAX_BYTES = 5_000_000
+
+
+def fetch_url(
+    url: str,
+    *,
+    max_chars: int = DEFAULT_MAX_CHARS,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    allow_hosts: Iterable[str] = (),
+    egress: Any | None = None,
+) -> tuple[str, str, bool]:
     """Fetch ``url`` and return ``(title, text, truncated)``.
 
-    Only ``http``/``https`` URLs are allowed. HTML is converted to readable text;
-    the result is capped at ``max_chars`` characters. Raises :class:`SourceError`
-    on an unreachable host or non-success status.
+    Only ``http``/``https`` URLs are allowed, and none whose host -- on any
+    redirect hop -- resolves to a loopback/private/link-local address unless it is
+    in ``allow_hosts``. With an ``egress`` guard every hop is authorized (host
+    consent, rate limit, daily budget) before it is requested. At most
+    ``max_bytes`` are read; HTML is converted to readable text capped at
+    ``max_chars``. A captcha/challenge/429 raises an access-denied
+    :class:`SourceError` that says not to work around it.
     """
     parsed = urllib.parse.urlparse(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise SourceError(f"Refusing to fetch non-http(s) URL: {url!r}")
+    if parsed.username or parsed.password:
+        raise SourceError("Refusing to fetch a URL with embedded credentials (user:pass@).")
 
-    raw = http_get_text(url)
+    on_redirect = None
+    if egress is not None:
+        from opentorus.research.egress import EgressBlocked
+
+        try:
+            egress.authorize(url)
+        except EgressBlocked as exc:
+            raise SourceError(f"Network egress denied: {exc}") from exc
+
+        def on_redirect(next_url: str) -> None:
+            try:
+                egress.authorize(next_url)
+            except EgressBlocked as exc:
+                raise SourceError(f"Network egress denied for redirect: {exc}") from exc
+
+    raw = http_get_text(
+        url,
+        max_bytes=max_bytes,
+        truncate=True,
+        allow_hosts=tuple(allow_hosts),
+        on_redirect=on_redirect,
+        detect_challenge=True,
+    )
     title, text = html_to_text(raw)
     truncated = len(text) > max_chars
     if truncated:

@@ -133,6 +133,10 @@ permissions:
   #   ask     — confirm writes, commands, and network tools (default)
   #   trusted — auto-allow low/medium-risk actions; high-risk still gated
   mode: ask
+  # Without a terminal (background campaign) approval requests are queued under
+  # .opentorus/approvals/ — decide with `opentorus approvals approve|deny <id>`.
+  # Seconds a run waits for that decision; 0 records a denial and moves on.
+  approval_wait_seconds: 0.0
 
 # --- Privacy ------------------------------------------------------------------
 privacy:
@@ -248,6 +252,18 @@ tools:
     search: true
     # Max characters returned per fetched page (lower = smaller prompts)
     max_chars: 8000
+    # Max bytes read from one response (streamed; the transfer stops there)
+    max_bytes: 5000000
+    # Loopback/private hosts fetch_url may reach anyway (default: none —
+    # internal addresses are refused on every redirect hop)
+    allow_private_hosts: []
+
+  shell:
+    # run_shell: the model may pick a timeout up to max_timeout seconds
+    default_timeout: 30
+    max_timeout: 600
+    # Background jobs (run_shell background=true) per session
+    max_background_jobs: 4
 
   verifiers:
     # Formal proof backends (opt-in; commands must be on PATH)
@@ -315,6 +331,12 @@ execution:
   memory_limit: null
   cpu_limit: null
   cache: true
+  # Extra env names (globs) for run_shell / local runs beyond PATH, HOME, locale,
+  # temp dirs and thread knobs; credential names are always stripped
+  env_allowlist: []
+  # Host confinement when a run asks for no network: auto (bwrap if usable) |
+  # require (refuse if it cannot be confined) | off
+  local_confinement: auto
   remote:
     # Required for ssh/slurm backends (credentials stay in ~/.ssh, not here)
     host: null

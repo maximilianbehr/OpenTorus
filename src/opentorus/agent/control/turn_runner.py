@@ -149,6 +149,11 @@ class TurnRunner:
         self.policies = policies
         self.deliverable = deliverable
         self.repeat_guard = repeat_guard or RepeatCallGuard()
+        # A non-observation call whose outcome is unknown (timed out after the
+        # request left) is never repeated automatically (opentorus.tools.effects).
+        from opentorus.tools.effects import UnknownOutcomeGuard
+
+        self.outcome_guard = UnknownOutcomeGuard()
         self.failure_tracker = failure_tracker or ToolFailureTracker()
         self.acquisition_guard = acquisition_guard or AcquisitionGuard()
         self.event_sink = event_sink
@@ -677,6 +682,19 @@ class TurnRunner:
                     started=started,
                 )
 
+        unknown_refusal = self.outcome_guard.refusal(tool, args)
+        if unknown_refusal is not None:
+            log_action(self.ot_dir, name, ok=False, args=args, stderr_summary=unknown_refusal)
+            return self._fail(
+                name,
+                args,
+                sig,
+                unknown_refusal,
+                blocked_by=ReasonCode.PERMISSION_DENIED,
+                call_id=call_id,
+                started=started,
+            )
+
         is_file_edit = tool.permission == "write" and bool(args.get("path"))
         old_content = self._read_path(args["path"]) if is_file_edit else None
 
@@ -697,6 +715,7 @@ class TurnRunner:
                 name, args, sig, message, blocked_by=None, call_id=call_id, started=started
             )
         self.failure_tracker.last_tool_ok = result.ok
+        self.outcome_guard.note(tool, args, result.metadata)
         self.tool_calls_this_run += 1
         self.tools_used_this_run.append(name)
         self.acquisition_guard.note_tool(name)

@@ -22,13 +22,27 @@ app.add_typer(pack_app, name="pack")
 @pack_app.command("export")
 def pack_export(
     out: str | None = typer.Option(None, "--out", help="Output .zip path."),
+    refuse_secrets: bool = typer.Option(
+        False, "--refuse-secrets", help="Fail instead of redacting when a secret is found."
+    ),
 ) -> None:
     """Bundle the investigation into a privacy/license-clean reviewer pack."""
-    from opentorus.research.pack import export_pack
+    from opentorus.errors import OpenTorusError
+    from opentorus.research.pack import export_pack, read_pack_manifest
 
     base = _require_workspace_dir()
-    path = export_pack(base, Path(out) if out else None)
+    try:
+        path = export_pack(
+            base, Path(out) if out else None, on_secret="refuse" if refuse_secrets else "redact"
+        )
+    except OpenTorusError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
     console.print(f"[green]Research pack[/green] written to {path}")
+    for finding in read_pack_manifest(path).secret_findings:
+        console.print(
+            f"[yellow]redacted[/yellow] {finding['kind']} in {finding['path']}:{finding['line']}"
+        )
 
 
 @pack_app.command("reproduce")

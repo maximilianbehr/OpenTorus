@@ -16,6 +16,7 @@ import urllib.request
 
 import pytest
 
+from opentorus.research.sources import base as source_base
 from opentorus.research.sources.base import SourceError, http_get_bytes, http_get_text
 
 
@@ -35,7 +36,8 @@ def test_timeout_is_not_a_urlerror() -> None:
 
 
 def test_http_get_text_timeout_becomes_source_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(urllib.request, "urlopen", _raise_timeout)
+    # The helpers open through the guarded opener (tools/netguard), not urlopen.
+    monkeypatch.setattr(source_base, "_open_url", _raise_timeout)
     with pytest.raises(SourceError) as exc:
         http_get_text("https://example.invalid/api", timeout=7)
     message = str(exc.value)
@@ -47,7 +49,7 @@ def test_http_get_text_timeout_becomes_source_error(monkeypatch: pytest.MonkeyPa
 
 
 def test_http_get_bytes_timeout_becomes_source_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(urllib.request, "urlopen", _raise_timeout)
+    monkeypatch.setattr(source_base, "_open_url", _raise_timeout)
     with pytest.raises(SourceError):
         http_get_bytes("https://example.invalid/paper.pdf", timeout=5)
 

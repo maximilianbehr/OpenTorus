@@ -46,9 +46,15 @@ is sent — and the privacy filter applies:
   workflow for every cloud provider, and the only way out was disabling DLP entirely,
   which gave up secret protection as well. The redaction rewrites the outbound payload
   in full — message text *and* tool-call arguments — so the address never reaches the
-  wire, and the send is blocked outright if any PII survives the rewrite. It is not a
-  disk control: a message is appended to `session.jsonl` before the turn carrying it is
-  screened, so the workspace log still holds the original text.
+  wire, and the send is blocked outright if any PII survives the rewrite. PII redaction
+  is not a disk control: a message is appended to `session.jsonl` before the turn
+  carrying it is screened, so the workspace log still holds the original text (emails
+  included). **Secrets** are different: `session.jsonl` and `actions.jsonl` are
+  secret-scanned before every write and a detected secret is replaced by a masked
+  preview, so an API key a tool printed never lands on disk.
+- Child processes (shell commands, background jobs, local experiments, MCP servers)
+  never receive this process's credentials: their environment is an allowlist with
+  every credential-named variable removed (see [safety.md](safety.md)).
 - With model routing, the DLP scan (and the cost estimate) follow the provider
   that is **leased** for the task, not the workspace default: a cloud profile
   routed for one task class under a local default is screened and priced as a
@@ -66,9 +72,23 @@ All scholarly/network access is governed by an egress guard:
   sensitive files.
 - **No bulk harvesting and no paywall bypass.** Full text is only acquired via
   the legal resolver chain (Crossref → Unpaywall → arXiv → institutional access).
+- **Never inward.** A fetched page cannot redirect a request to this machine or the
+  local network (loopback/private/link-local addresses are refused on every hop),
+  so a local vLLM/Ollama server or a cloud metadata endpoint is unreachable from
+  `fetch_url` and the literature connectors. `fetch_url` and MCP-over-HTTP requests
+  pass the same guard as literature access.
+- **Refusals are respected.** Captchas, challenge pages and rate limits are
+  reported as access denied, not worked around.
 
 ## Sharing safely
 
 `opentorus export` and `opentorus pack export` produce privacy/license-clean
-bundles for review. Even so, be mindful not to include secrets or sensitive data
-in artifacts you share. See [safety.md](safety.md) for the enforcement details.
+bundles for review. Every text file in them is secret-scanned: secrets are
+redacted and listed (location and kind, never the value) in the manifest, or the
+export is refused with `opentorus pack export --refuse-secrets`. Before
+committing shared material (e.g. `examples/`), run `opentorus gov scan <dir>`.
+The scan matches key formats, private-key blocks, JWTs, Authorization headers,
+`user:pass@` URLs and credential-named `KEY=VALUE` assignments, and ignores
+placeholders such as `xxx`, `<your-key>`, `${VAR}` or `changeme`. It cannot know
+every secret format, so stay mindful of what you share. See
+[safety.md](safety.md) for the enforcement details.

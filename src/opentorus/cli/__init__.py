@@ -31,6 +31,7 @@ from opentorus.cli import (  # noqa: F401
     pack,
     paper,
     patch,
+    pending_approvals,
     problem,
     proof,
     replay,
