@@ -213,6 +213,19 @@ flag, and a provider **leased from the pool** for the role's task class, so the
 routing decision id and the campaign / branch / work item / role tags land on
 every usage-ledger row.
 
+**Working rules.** Every model-driven campaign worker prompt (prover, falsifier,
+numerical and symbolic experimenter; campaign prompts only -- `prove`, `research` and
+the REPL keep theirs) ends with the same rules (`workers.base.worker_rules`): "A reply
+without a tool call ends your run; keep working through your tools", "Do not submit
+what you have not checked yourself", "Do not restart an unsuccessful branch
+indefinitely; use what was learned", and the give-up rule (see failure signatures).
+The strategist and the duplicate check are told "rewording is not different": a
+direction restated in new words is a duplicate, and one that was abandoned is as taken
+as one being worked. Reviewed workers see the judge's standard with their review
+findings: "a plausible argument with a gap is a rejection, and the reviewer's reason
+says where the gap is" (the critic itself is deterministic; it makes no model call).
+None of these strings reach the mock path's golden transcripts.
+
 **Result.** `WorkerResult{status: completed | failed | blocked | branch_done,
 artifacts_created, proposed_nodes, obligations, closure_proposals,
 failure_signature, usage, routing_decision_id, notes, reviews, verifications,

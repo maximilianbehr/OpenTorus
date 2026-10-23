@@ -27,6 +27,7 @@ from opentorus.campaign.models import (
     WorkerRole,
 )
 from opentorus.campaign.workers.base import (
+    REWORDING_RULE,
     WorkerRuntime,
     acquire_lease,
     bounded_loop,
@@ -144,7 +145,8 @@ def strategist_prompt(ctx: PortfolioContext) -> str:
         '"objective": str, "strategy_summary": str, "root_relation": one of [' + relations + "], "
         '"assumption_context": [str], "why_distinct": str}. Include a proof route and a '
         "counterexample route; include a literature branch when coverage is insufficient. "
-        "Answer with the JSON array only."
+        + REWORDING_RULE
+        + " Answer with the JSON array only."
     )
 
 

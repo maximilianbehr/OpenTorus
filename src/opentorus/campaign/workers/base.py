@@ -85,6 +85,22 @@ ABANDON_RULE = (
     "'GIVE UP: <what you tried> -- <why it fails>'."
 )
 MAX_ABANDON_REASON_CHARS = 800
+
+# Working rules for campaign workers (campaign prompts only; ``prove`` and the REPL keep
+# their own prompts). Each one names a failure seen in recorded runs: a worker that
+# answered in prose and thereby ended its work item, a submission nobody had run, and a
+# branch restarted from scratch after every failure.
+TOOL_REPLY_RULE = "A reply without a tool call ends your run; keep working through your tools."
+CHECK_BEFORE_SUBMIT_RULE = "Do not submit what you have not checked yourself."
+NO_ENDLESS_RESTART_RULE = (
+    "Do not restart an unsuccessful branch indefinitely; use what was learned."
+)
+# For whoever proposes or de-duplicates lines of attack (strategist, duplicate check).
+REWORDING_RULE = (
+    "Rewording is not different: a direction that restates an existing branch in new "
+    "words is a duplicate, and a direction that was abandoned (suspended, exhausted or "
+    "rejected) is as taken as one being worked."
+)
 _GIVE_UP = re.compile(
     r"^[ \t>*_#-]*(?:give[ -]?up|giving[ -]up|abandon(?:ed|ing)?)[ \t*_]*[:\u2013\u2014-][ \t]*",
     re.IGNORECASE | re.MULTILINE,
@@ -155,6 +171,17 @@ JUDGE_RULE = (
     "A plausible argument with a gap is a rejection, and the reviewer's reason says "
     "where the gap is."
 )
+
+
+def worker_rules() -> list[str]:
+    """The rules every model-driven campaign worker's prompt ends with."""
+    return [
+        "Working rules:",
+        f"- {TOOL_REPLY_RULE}",
+        f"- {CHECK_BEFORE_SUBMIT_RULE}",
+        f"- {NO_ENDLESS_RESTART_RULE}",
+        f"- {ABANDON_RULE}",
+    ]
 
 
 def review_block(ctx: WorkerContext) -> list[str]:
@@ -467,9 +494,13 @@ def diff_artifacts(
 
 __all__ = [
     "ABANDON_RULE",
+    "CHECK_BEFORE_SUBMIT_RULE",
     "JUDGE_RULE",
     "MAX_ABANDON_REASON_CHARS",
+    "NO_ENDLESS_RESTART_RULE",
+    "REWORDING_RULE",
     "ROLE_ALLOWED_TOOLS",
+    "TOOL_REPLY_RULE",
     "ArtifactIndex",
     "RegistryFactory",
     "Worker",
@@ -487,4 +518,5 @@ __all__ = [
     "snapshot_artifacts",
     "stated_abandon_reason",
     "usage_tags",
+    "worker_rules",
 ]

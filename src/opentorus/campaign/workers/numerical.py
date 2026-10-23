@@ -31,7 +31,6 @@ from opentorus.campaign.models import (
     WorkerRole,
 )
 from opentorus.campaign.workers.base import (
-    ABANDON_RULE,
     WorkerRuntime,
     acquire_lease,
     bounded_loop,
@@ -40,6 +39,7 @@ from opentorus.campaign.workers.base import (
     is_mock_provider,
     review_block,
     stated_abandon_reason,
+    worker_rules,
 )
 from opentorus.campaign.workers.falsifier import (
     branch_experiments,
@@ -89,7 +89,7 @@ def _prompt(ctx: WorkerContext, template: str) -> str:
             )
         )
     lines.extend(review_block(ctx))
-    lines.append(ABANDON_RULE)
+    lines.extend(worker_rules())
     return "\n".join(lines)
 
 

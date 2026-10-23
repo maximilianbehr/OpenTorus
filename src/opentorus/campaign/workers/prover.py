@@ -45,13 +45,13 @@ from opentorus.campaign.models import (
     WorkerRole,
 )
 from opentorus.campaign.workers.base import (
-    ABANDON_RULE,
     WorkerRuntime,
     acquire_lease,
     bounded_loop,
     formal_backends,
     review_block,
     stated_abandon_reason,
+    worker_rules,
 )
 from opentorus.errors import OpenTorusError
 
@@ -123,7 +123,7 @@ def branch_instructions(ctx: WorkerContext) -> str:
         lines.append("Open obligations on this branch:")
         lines.extend(f"  - {ob.obligation_id}: {ob.statement}" for ob in ctx.open_obligations[:12])
     lines.extend(review_block(ctx))
-    lines.append(ABANDON_RULE)
+    lines.extend(worker_rules())
     return "\n".join(lines)
 
 

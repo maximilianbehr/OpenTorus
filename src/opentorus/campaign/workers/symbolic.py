@@ -31,13 +31,13 @@ from opentorus.campaign.models import (
     WorkerRole,
 )
 from opentorus.campaign.workers.base import (
-    ABANDON_RULE,
     WorkerRuntime,
     acquire_lease,
     bounded_loop,
     is_mock_provider,
     review_block,
     stated_abandon_reason,
+    worker_rules,
 )
 from opentorus.errors import OpenTorusError
 
@@ -77,7 +77,7 @@ def _prompt(ctx: WorkerContext) -> str:
         '"vars": {"x": "real"}} via proof_submit(backend="sympy", source=<json>). Only an '
         "ACCEPTED submission is machine-checked; record anything else as an open gap.\n"
         + "".join(line + "\n" for line in review_block(ctx))
-        + ABANDON_RULE
+        + "\n".join(worker_rules())
     )
 
 
