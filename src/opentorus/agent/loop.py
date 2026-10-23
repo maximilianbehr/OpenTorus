@@ -255,6 +255,11 @@ class AgentLoop:
         self.model_tool_calls = 0
         self.bootstrap_used = False
         self.hit_max_steps = False
+        # Provider-reported size of the last request, and the ratio of that to the local
+        # chars/4 estimate of the same request: the compaction trigger uses both, so it
+        # measures the history in the tokens the provider actually counts.
+        self._last_prompt_tokens: int | None = None
+        self._token_scale: float | None = None
 
     # --- delegating surface (compatibility) -----------------------------------------------
 
@@ -689,6 +694,8 @@ class AgentLoop:
                 goal=task,
                 provider=self.provider,
                 history_session_id=self.session_id if self.isolate_history else None,
+                reported_prompt_tokens=self._last_prompt_tokens,
+                token_scale=self._token_scale,
             )
             recovery_hint = None
             tool_choice: str | dict | None = None
@@ -704,6 +711,7 @@ class AgentLoop:
                 # (no-op for a local/mock provider, whose payload does not leave the
                 # machine). Then the provider turn, then the usage ledger.
                 turn = self._runner.request(messages, tool_choice=tool_choice)
+                self._calibrate_tokens(messages, turn.response)
             except ProviderError as exc:
                 if tool_parse_retries < _MAX_TOOL_PARSE_RETRIES and is_recoverable_tool_parse_error(
                     exc
@@ -892,6 +900,26 @@ class AgentLoop:
             task=task,
         )
         return result_text
+
+    def _calibrate_tokens(
+        self, messages: list[SessionMessage], response: ProviderResponse | None
+    ) -> None:
+        """Remember the provider's prompt-token count and its ratio to our estimate."""
+        usage = getattr(response, "usage", None) if response is not None else None
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0) if usage is not None else 0
+        if prompt <= 0:
+            return
+        import json
+
+        from opentorus.agent.compaction import estimate_tokens, total_tokens
+
+        try:
+            specs = json.dumps(self.registry.specs(), default=str)
+        except (TypeError, ValueError):
+            specs = ""
+        estimate = total_tokens(messages) + (estimate_tokens(specs) if specs else 0)
+        self._last_prompt_tokens = prompt
+        self._token_scale = prompt / estimate if estimate > 0 else None
 
     def _record_unrun(self, calls: list[tuple[str, dict, str]], *, interrupted: str | None) -> None:
         """Persist an explicit result for each call of a batch that did not complete.

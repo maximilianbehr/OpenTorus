@@ -253,12 +253,21 @@ class ContextConfig(BaseModel):
     # Well within modern model context windows; lower it for small local models.
     token_budget: int = 24000
     compaction_enabled: bool = True
-    # Persistently rewrite session.jsonl when history exceeds this fraction of token_budget.
+    # Compact the session history (an appended marker; session.jsonl is never rewritten)
+    # when it exceeds this fraction of token_budget. Measured in provider-reported tokens
+    # when the provider reports them (the estimate is calibrated by the last request's
+    # prompt_tokens), chars/4 otherwise.
     compaction_threshold: float = Field(default=0.85, ge=0.1, le=1.0)
     # Summarize compacted turns with the chat provider when available (falls back to heuristics).
     compaction_llm: bool = True
     # Fraction of token_budget to keep as recent verbatim turns after a session compaction.
     compaction_keep_ratio: float = Field(default=0.5, ge=0.1, le=0.95)
+    # Upper bound on one compaction summary (characters; 0 = unbounded). Large enough to
+    # keep exact paths, numbers, commands and error text, and what failed and why.
+    compaction_summary_max_chars: int = Field(default=12_000, ge=0)
+    # Optional absolute trigger: compact once the provider reports a request of at least
+    # this many prompt tokens (e.g. 200000 for a 262k-context vLLM model). None = off.
+    compact_at_prompt_tokens: int | None = Field(default=None, ge=1)
     # Hybrid retrieval (Milestone 46): BM25 + embeddings from the chat provider
     # (OpenAI/Ollama) or optional local sentence-transformers.
     embeddings_enabled: bool = True
