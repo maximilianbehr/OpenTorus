@@ -164,6 +164,40 @@ closure and branch status never enter it (`tests/test_settlement.py`
 yields `STATUS_UNCERTAIN` / `UNSOLVED` with the error as rationale -- never an
 exception.
 
+## Formal proof-state continuation (formalizer branches)
+
+A formalizer branch is a chain of Lean/Coq candidates, not a series of unrelated
+attempts. `campaign/workers/formalizer.continuation` reads the branch's own earlier
+`PROOF-*` submissions (`WorkerContext.branch_artifact_ids`, ids only) and picks the
+next work item's mode:
+
+* `root` — nothing to continue;
+* `repair` — the previous candidate was rejected or inconclusive: the prompt carries
+  its source (bounded) and the structured checker feedback
+  (`verifiers.diagnostics`: error classes, first error and line, unsolved goal,
+  `repairable` when at most 3 errors) and asks to fix the first error rather than
+  restart;
+* `fresh_root` — every `FRESH_ROOT_EVERY`-th (4th) attempt, or after an accepted
+  candidate: start again from the problem statement (cf. open-math-harness
+  `pi_doubling`: keep repair continuations, keep adding root attempts, so one bad
+  skeleton cannot capture the branch).
+
+When the claim has an accepted frozen formal statement (`FSTMT-*`), the prompt shows
+it verbatim with the instruction to replace only its `sorry`.
+
+After the model's turns, a candidate refused *only* for `sorry` gets an automatic
+tactic-suite pass (`verifiers.tactic_suite`, `tools.verifiers.lean_tactic_suite`,
+default on): the file must elaborate with no other error under
+`set_option maxHeartbeats 100000`; each `sorry`'s position is found by splicing
+`by sorry`; `rfl`, `simp`, `omega`, `norm_num`, `linarith`, `nlinarith`, `positivity`,
+`decide`, `aesop`, `exact?` are spliced one at a time (`tac` or `(by tac)`); an
+`exact?` closer is replaced by its `Try this:` suggestion. Only when every `sorry`
+closes is the splice re-submitted — through `submit_proof`, i.e. the full gate
+(sorry/axiom/code-execution ban, `#print axioms`, statement binding). The pass never
+accepts anything itself. `tactic_suite.hollow_sorries` mechanically flags a
+`have … : <goal> := sorry` that restates the theorem's conclusion (whitespace-
+normalized; binders are not matched), the case where the whole proof hides in one gap.
+
 ## Validation
 
 `validation.validate_graph(graph)` returns typed `ValidationIssue{code,
