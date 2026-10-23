@@ -201,7 +201,7 @@ def build_messages(
     # run (examples/matrix-spencer): 1,263,204 prompt tokens against 51,534 completion
     # tokens, with prompt_eval_count climbing 8k -> 30k in lockstep with latency, i.e.
     # no reuse at all. So: stable blocks first, volatile state last.
-    system_prompt = build_system_prompt(config.project.mode, config.agent.style)
+    system_prompt = build_system_prompt(config.project.mode, config.agent.style, tool_names)
     messages: list[SessionMessage] = [SessionMessage(role="system", content=system_prompt)]
     from opentorus.agent.prompts import TOOL_ROUTING_GUIDE
 
