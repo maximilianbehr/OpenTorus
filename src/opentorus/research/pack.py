@@ -59,14 +59,20 @@ class PackManifest(BaseModel):
     # Copyrighted PDFs are excluded from the pack; this index lets a reviewer
     # re-acquire the open-access copy and verify it against the recorded hash.
     papers: list[PaperRef] = Field(default_factory=list)
+    # Secrets found (and redacted) in packed files: where and what kind, never values.
+    secret_findings: list[dict] = Field(default_factory=list)
 
 
 def _pack_clean(path: Path) -> bool:
     return not is_sensitive_path(path) and path.suffix.lower() not in _EXCLUDED_SUFFIXES
 
 
-def export_pack(ot_dir: Path, out_path: Path | None = None) -> Path:
-    """Bundle an investigation into a privacy/license-clean reviewer pack."""
+def export_pack(ot_dir: Path, out_path: Path | None = None, *, on_secret: str = "redact") -> Path:
+    """Bundle an investigation into a privacy/license-clean reviewer pack.
+
+    Text entries are secret-scanned: redacted and reported in the manifest by
+    default, or the export refused with ``on_secret="refuse"``.
+    """
     from opentorus.execution.environments import list_environments
     from opentorus.research.experiments import list_experiments
 
@@ -84,6 +90,9 @@ def export_pack(ot_dir: Path, out_path: Path | None = None) -> Path:
                 arc = f"pack/{file.relative_to(ot_dir).as_posix()}"
                 entries.append((arc, file.read_bytes()))
 
+    from opentorus.governance import screen_export_entries
+
+    entries, findings = screen_export_entries(entries, on_secret=on_secret)
     pinned = [env.image for env in list_environments(ot_dir).values() if env.image is not None]
     from opentorus.research.papers import list_papers
 
@@ -103,6 +112,7 @@ def export_pack(ot_dir: Path, out_path: Path | None = None) -> Path:
         pinned_environments=sorted(pinned),
         experiment_count=len(list_experiments(ot_dir)),
         papers=papers,
+        secret_findings=[f.model_dump() for f in findings],
     )
 
     out_path = out_path or ot_dir / "packs" / "research-pack.zip"

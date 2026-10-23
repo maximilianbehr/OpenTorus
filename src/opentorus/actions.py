@@ -46,16 +46,19 @@ def log_action(
     stderr_summary: str | None = None,
     changed_files: list[str] | None = None,
 ) -> ActionLogEntry:
+    from opentorus.governance import redact_secrets_in
+
     path = actions_path(workspace_dir)
     existing = read_jsonl(path, ActionLogEntry)
+    # Secrets in arguments or output never reach the on-disk log (masked preview).
     entry = ActionLogEntry(
         id=next_sequential_id("ACTION", len(existing)),
         tool_name=tool_name,
-        args=args or {},
+        args=redact_secrets_in(args or {}),  # type: ignore[arg-type]
         permission_decision=permission_decision or {},
         ok=ok,
-        stdout_summary=stdout_summary,
-        stderr_summary=stderr_summary,
+        stdout_summary=redact_secrets_in(stdout_summary),  # type: ignore[arg-type]
+        stderr_summary=redact_secrets_in(stderr_summary),  # type: ignore[arg-type]
         changed_files=changed_files or [],
     )
     append_jsonl(path, entry)
