@@ -6,6 +6,82 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Parity work after a review of the Open Math OS runtime (open-math-harness): the
+verification, safety, agent-loop, memory and campaign mechanisms it does better.
+
+### Security
+
+- **Lean/Coq proofs can no longer be accepted with `sorry` or extra axioms.** The
+  checker used to accept any exit code 0. A pre-scan now refuses `sorry`,
+  `native_decide`, user `axiom`s and code-execution commands (`#eval`, `run_cmd`, …),
+  and an appended `#print axioms` (read only after a random marker) must list nothing
+  beyond `propext`, `Classical.choice`, `Quot.sound`. Coq: `Admitted`/`Axiom` refused,
+  `Print Assumptions` must be closed. Checkers run under bubblewrap without network
+  (`tools.verifiers.confine: auto|require|off`).
+- **Statement fidelity.** A formal proof promotes a claim only when it proves an
+  accepted frozen statement (`FSTMT-*`, `opentorus proof statement …`), verbatim and
+  with an identical elaborated type. Earlier unbound Lean/Coq proofs now only support.
+- **Child processes get a clean environment.** `run_shell`, local experiments and MCP
+  servers no longer inherit API keys; Apptainer runs with `--containall --cleanenv`;
+  timeouts and cancels kill the whole process group; local runs that ask for no
+  network run under bwrap (`execution.local_confinement`).
+- **Web fetches** refuse loopback/private/link-local addresses on every redirect hop,
+  stream under a byte cap, go through the egress guard and report captcha/429 pages
+  as access denied.
+- **Approvals** are keyed on tool + canonical arguments and the policy version; tools
+  carry an effect class, irreversible calls are approved per call, and an identical
+  repeat of a call with unknown outcome is refused. Background campaigns queue
+  approvals (`opentorus approvals list|approve|deny`); the agent cannot run those or
+  `proof statement accept` itself.
+- **Secrets** are redacted from session/action logs before they are written, and
+  bundles/packs are scanned (`opentorus gov scan <dir>`).
+- Writes open with `O_NOFOLLOW` and verify the opened file; Slurm submissions record
+  an intent before `sbatch` and look the job up instead of resubmitting.
+
+### Added
+
+- Resident Lean REPL backend, structured Lean feedback (error classes, first error,
+  unsolved goal), repair-first formalizer continuation with periodic fresh roots, a
+  tactic-suite pass for remaining `sorry`s, and a frozen formal benchmark with a
+  held-out split (`opentorus proof bench`).
+- MCP: persistent per-session servers with timeouts, tool allowlists, a 1 MiB bound,
+  and a Streamable HTTP transport (e.g. LMFDB).
+- Background shell jobs (`run_shell background=true`, `shell_jobs`) with finish
+  notices and a model-chosen timeout up to `tools.shell.max_timeout`.
+- Project memory: `opentorus memory consolidate` builds `.opentorus/MEMORY.md`
+  from session and campaign summaries under strict evidence rules; the agent cites
+  the entries it used and uncited ones age out. Project skills
+  (`.opentorus/skills/<name>/SKILL.md`, `skill_load`, `opentorus skills`).
+- Reasoning effort per task class (vLLM `chat_template_kwargs`/`reasoning_effort`,
+  Ollama `think`), failure-class retry/backoff, opt-in streaming for
+  OpenAI-compatible endpoints, and one forced compaction on context overflow.
+- **Campaigns run workers in parallel** (`campaign.max_parallel_workers > 1`,
+  threads on distinct branches; steps reserved before dispatch, single-writer event
+  log, exact per-item attribution, replay still verifies; ADR 0002). Each branch
+  gets its own scratch directory.
+- Campaign findings board: workers post unverified lemmas, partial results,
+  counterexamples and dead ends (`board_post`, `opentorus campaign board`); sibling
+  branches see them quoted as untrusted data. Findings never count as evidence.
+- Portfolio growth: the strategist sees every branch in every state plus recorded
+  failures, and is asked for new branches when none is left
+  (`campaign.max_total_branches`); optional fail-closed model duplicate check.
+- Workers give up with a reason (it becomes the failure signature's
+  counterargument); the latest review goes into the branch's next brief, and two
+  consecutive rejections suspend the branch.
+- A package-wide import-direction test.
+
+### Changed
+
+- A reply cut off at the output limit is never accepted as final and its tool calls
+  never run; the model is asked to continue. Tool results are bounded (64k chars),
+  cutting the longest field first.
+- Compaction appends a marker instead of rewriting `session.jsonl`, triggers on the
+  provider-reported prompt tokens, and keeps what failed and why. A cancelled batch
+  records "not executed" vs "outcome unknown" per call.
+- `git_diff` shows staged, unstaged and untracked files (paged), with OpenTorus'
+  own `.opentorus/` state counted rather than shown.
+- System prompt: untrusted-input and denial rules; the tool list is the enabled one.
+
 ### Fixed
 
 - **A refuted branch lemma no longer marks the primary conjecture `contradicted`.**
