@@ -290,7 +290,8 @@ class FormalizerWorker:
         loop.run(_prompt(ctx, backends, ot_dir=rt.ot_dir, mode=mode, previous=previous))
         steps = max(1, loop.steps_run)
         proofs = sorted(
-            (p for p in list_proofs(rt.ot_dir) if p.id not in before), key=lambda p: p.id
+            (p for p in list_proofs(rt.ot_dir) if p.id not in before and not rt.is_foreign(p.id)),
+            key=lambda p: p.id,
         )
         if not any(p.accepted for p in proofs):
             proofs += tactic_suite_pass(rt, proofs)

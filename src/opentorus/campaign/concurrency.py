@@ -40,9 +40,10 @@ from typing import Any
 from opentorus.campaign.models import ArtifactRef, BudgetLedger, WorkerRole
 from opentorus.tools.base import Tool, ToolCall, ToolResult
 
-# Roles whose own "what did I create" bookkeeping is not foreign-aware (the formalizer
-# is owned elsewhere): they run alone, never next to another work item.
-EXCLUSIVE_ROLES: frozenset[WorkerRole] = frozenset({WorkerRole.formalizer})
+# Roles whose own "what did I create" bookkeeping is not foreign-aware run alone, never
+# next to another work item. Every worker (the formalizer included) now filters
+# sibling-created artifacts via ``WorkerRuntime.is_foreign``, so none is exclusive.
+EXCLUSIVE_ROLES: frozenset[WorkerRole] = frozenset()
 # Tools that wait on a subprocess and write only inside their own experiment directory:
 # they release the gate while they run so a half-hour experiment does not stall the
 # other branches' tool calls.

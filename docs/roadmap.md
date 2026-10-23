@@ -46,9 +46,17 @@ or `prove`, re-recording golden transcripts, or rewriting existing dossiers.
 What it deliberately does *not* do is decide mathematics: a campaign can finish
 without solving the problem, and the problem's status stays derived from
 dossier artifacts. Open ends this band leaves for later, in the same
-milestone style: real parallel workers (`max_parallel_workers` is capped to 1
-today), an LLM-driven de-duplication and scheduling advisor behind the reserved
-task classes, and a migration of `prove` / `research` callers from the
+milestone style: an LLM-driven scheduling advisor behind the reserved task
+classes, and a migration of `prove` / `research` callers from the
 `AgentLoop` compatibility facade to the control-plane policy objects directly.
 See [campaign-engine.md](campaign-engine.md) for the workflow and
 [model-routing.md](model-routing.md) for routing.
+
+## Harness parity (unreleased)
+
+A review of the Open Math OS runtime (open-math-harness) led to a band of parity
+work: real parallel campaign workers ([adr/0002](adr/0002-parallel-campaign-workers.md)),
+a cross-branch findings board, portfolio growth with an optional model-based
+duplicate check, a Lean/Coq sorry/axiom gate with statement fidelity and
+confinement, clean child environments and network guards, append-only compaction,
+project memory and skills. See the Unreleased section of `CHANGELOG.md`.
