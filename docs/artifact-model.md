@@ -191,7 +191,9 @@ lean` (with `~/.elan/bin` on PATH). For the REPL, build leanprover-community/rep
 the project's toolchain tag and use `lean_repl_command: env -C ~/lean/mathlib-env lake
 env ~/lean/repl/.lake/build/bin/repl`. On a 16 GB machine a cold `import Mathlib`
 takes 1.5–2.5 minutes per check with or without bwrap; the resident REPL pays that
-once and then checks in ~0.1 s. `pytest -m integration tests/test_real_provers.py`
+once and then checks in ~0.1 s, but it keeps the Mathlib environment resident: on a
+16 GB machine running other work it was OOM-killed (14 GB peak), so enable it only with
+memory to spare. `pytest -m integration tests/test_real_provers.py`
 with `OPENTORUS_LEAN_PROJECT` set runs the gate against the real checkers.
 
 A gate refusal is recorded with a machine-readable `rejection` (`sorry`,
