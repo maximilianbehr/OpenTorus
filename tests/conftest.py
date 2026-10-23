@@ -38,6 +38,14 @@ def _deterministic_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NO_COLOR", "1")
 
 
+@pytest.fixture(autouse=True)
+def _instant_provider_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provider retries back off for real seconds; a test only needs them to happen."""
+    import opentorus.providers.retry as retry
+
+    monkeypatch.setattr(retry, "_sleep", lambda _seconds: None)
+
+
 @pytest.fixture
 def accepted_proof():
     """Record a genuinely accepted ``PROOF-*`` artifact and return its id.

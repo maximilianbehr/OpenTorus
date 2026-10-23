@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+from types import SimpleNamespace
 
 from opentorus.agent.session import SessionMessage
 from opentorus.config import Config
@@ -18,9 +19,20 @@ from opentorus.errors import ProviderError
 from opentorus.providers._convert import to_function_tools, to_openai_messages
 from opentorus.providers.base import (
     BaseProvider,
+    OnText,
     ProviderResponse,
     TokenUsage,
     ToolCallRequest,
+    apportion_thinking,
+)
+from opentorus.providers.retry import (
+    ContextLengthExceededError,
+    FailureClass,
+    RetryableFailure,
+    call_with_retries,
+    classify_status,
+    is_context_length_message,
+    parse_retry_after,
 )
 
 _logger = logging.getLogger("opentorus.providers")
@@ -48,6 +60,8 @@ class OpenAIProvider(BaseProvider):
 
     def __init__(self, config: Config) -> None:
         self.config = config
+        # Opt-in SSE streaming (model.stream): text then reaches ``on_text`` as it arrives.
+        self.supports_streaming = bool(getattr(config.model, "stream", False))
         # Fail here rather than at the first model call. The SDK is an optional
         # dependency, and when it was missing a run set up its whole workspace,
         # fetched papers, built a container and only then died inside step 1 —
@@ -56,6 +70,32 @@ class OpenAIProvider(BaseProvider):
 
     def generate(
         self, messages: list[SessionMessage], tools: list[dict] | None = None
+    ) -> ProviderResponse:
+        return self._complete(messages, tools)
+
+    def respond(
+        self,
+        messages: list[SessionMessage],
+        tools: list[dict] | None = None,
+        on_text: OnText | None = None,
+        *,
+        stream: bool = False,
+        tool_choice: str | dict | None = None,
+        on_thinking: OnText | None = None,
+    ) -> ProviderResponse:
+        response = self._complete(messages, tools, on_text=on_text, on_thinking=on_thinking)
+        if on_text and not self.supports_streaming and response.kind == "message":
+            if response.content:
+                on_text(response.content)
+        return response
+
+    def _complete(
+        self,
+        messages: list[SessionMessage],
+        tools: list[dict] | None,
+        *,
+        on_text: OnText | None = None,
+        on_thinking: OnText | None = None,
     ) -> ProviderResponse:
         api_key = os.environ.get(self.api_key_env)
         if not api_key:
@@ -71,35 +111,247 @@ class OpenAIProvider(BaseProvider):
                 self.config, api_key=api_key, default_base_url=self.default_base_url
             )
         )
+        # The failure-class retry below owns retries (long backoff when the endpoint
+        # answered 408/425/429/5xx, short when it did not answer, never on other 4xx);
+        # the SDK's own retries must not stack underneath it.
+        with_options = getattr(client, "with_options", None)
+        caller = with_options(max_retries=0) if callable(with_options) else client
         endpoint = _endpoint_key(self.name, self.config.model.base_url)
         known_bad = _REJECTED_FIELDS.setdefault(endpoint, set())
         for stale in known_bad & kwargs.keys():
             kwargs.pop(stale)
+        _apply_effort_remap(endpoint, kwargs)
+        streaming = bool(getattr(self.config.model, "stream", False))
+        if streaming:
+            kwargs["stream"] = True
+            if "stream_options" not in known_bad:
+                kwargs["stream_options"] = {"include_usage": True}
+        adaptations = 0
+
+        def attempt() -> ProviderResponse:
+            nonlocal adaptations
+            while True:
+                try:
+                    if streaming:
+                        return self._read_stream(caller, kwargs, on_text, on_thinking)
+                    return _parse_completion(caller.chat.completions.create(**kwargs))
+                except (ProviderError, RetryableFailure):
+                    raise
+                except Exception as exc:  # noqa: BLE001 - translate, never leak the SDK's type
+                    # An endpoint that rejects an optional field is answered by dropping
+                    # (or re-mapping) that field — a bounded adaptation, not a retry.
+                    if adaptations < 3 and _adapt_request(exc, kwargs, endpoint, self.name):
+                        adaptations += 1
+                        continue
+                    raise _classified(exc, self.name) from exc
+
+        return call_with_retries(
+            attempt, max_retries=int(self.config.model.max_retries or 0), label=self.name
+        )
+
+    def _read_stream(
+        self,
+        caller: object,
+        kwargs: dict,
+        on_text: OnText | None,
+        on_thinking: OnText | None,
+    ) -> ProviderResponse:
+        """Assemble a streamed completion; only a stream that never started is retried."""
+        received = False
+        content: list[str] = []
+        thinking: list[str] = []
+        calls: dict[int, dict] = {}
+        finish: str | None = None
+        usage: TokenUsage | None = None
+        model: str | None = None
+        stream = caller.chat.completions.create(**kwargs)  # type: ignore[attr-defined]
         try:
-            completion = client.chat.completions.create(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - translate, never leak the SDK's own type
-            field = unsupported_request_field(exc)
-            if field is None or field not in kwargs:
-                raise _provider_error(exc, self.name) from exc
-            _logger.info(
-                "%s rejected the request field %r; dropping it for this endpoint.",
-                self.name,
-                field,
+            for chunk in stream:
+                received = True
+                model = getattr(chunk, "model", None) or model
+                if getattr(chunk, "usage", None) is not None:
+                    usage = _openai_usage(chunk)
+                for choice in getattr(chunk, "choices", None) or []:
+                    delta = getattr(choice, "delta", None)
+                    text = getattr(delta, "content", None) if delta is not None else None
+                    if text:
+                        content.append(text)
+                        if on_text is not None:
+                            on_text(text)
+                    # vLLM's reasoning parser streams the thinking as ``reasoning_content``
+                    # (newer servers: ``reasoning``); it is shown, never the answer.
+                    reasoning = getattr(delta, "reasoning_content", None) or getattr(
+                        delta, "reasoning", None
+                    )
+                    if isinstance(reasoning, str) and reasoning:
+                        thinking.append(reasoning)
+                        if on_thinking is not None:
+                            on_thinking(reasoning)
+                    for call in (getattr(delta, "tool_calls", None) or []) if delta else []:
+                        slot = calls.setdefault(
+                            int(getattr(call, "index", 0) or 0),
+                            {"id": None, "name": "", "arguments": ""},
+                        )
+                        if getattr(call, "id", None):
+                            slot["id"] = call.id
+                        function = getattr(call, "function", None)
+                        if function is not None:
+                            slot["name"] += getattr(function, "name", None) or ""
+                            slot["arguments"] += getattr(function, "arguments", None) or ""
+                    if getattr(choice, "finish_reason", None):
+                        finish = str(choice.finish_reason)
+        except Exception as exc:  # noqa: BLE001 - translate; maybe retry if nothing arrived
+            if not received:
+                raise
+            raise ProviderError(
+                f"{self.name} stream broke after the response had started "
+                f"({type(exc).__name__}: {exc}). Not retried: part of the answer had already "
+                "arrived, and a second attempt could differ from what was shown."
+            ) from exc
+        if finish is None:
+            error = ProviderError(
+                f"{self.name} stream ended without a finish_reason — the response is "
+                "incomplete and was not accepted."
             )
-            known_bad.add(field)
-            kwargs.pop(field)
-            try:
-                completion = client.chat.completions.create(**kwargs)
-            except Exception as retry_exc:  # noqa: BLE001 - same translation, second try
-                raise _provider_error(retry_exc, self.name) from retry_exc
-        choice = completion.choices[0]
-        response = parse_openai_message(choice.message)
-        response.usage = _openai_usage(completion)
-        # The model id the API reports (a routed alias may resolve to a dated snapshot).
-        response.model = getattr(completion, "model", None) or None
-        # finish_reason "length" means the output hit the token ceiling (truncated).
-        response.truncated = getattr(choice, "finish_reason", None) == "length"
+            if not received:
+                raise RetryableFailure(FailureClass.UNREACHABLE, error)
+            raise error
+        message = SimpleNamespace(
+            content="".join(content),
+            tool_calls=[
+                SimpleNamespace(
+                    id=slot["id"] or f"call_{index}",
+                    function=SimpleNamespace(name=slot["name"], arguments=slot["arguments"]),
+                )
+                for index, slot in sorted(calls.items())
+            ]
+            or None,
+        )
+        response = parse_openai_message(message)
+        if usage is not None and thinking and not usage.thinking_tokens:
+            usage.thinking_tokens = apportion_thinking(
+                usage.completion_tokens, "".join(thinking), "".join(content)
+            )
+        response.usage = usage
+        response.model = model
+        response.truncated = finish == "length"
         return response
+
+
+def _parse_completion(completion: object) -> ProviderResponse:
+    choice = completion.choices[0]  # type: ignore[attr-defined]
+    response = parse_openai_message(choice.message)
+    response.usage = _openai_usage(completion)
+    # The model id the API reports (a routed alias may resolve to a dated snapshot).
+    response.model = getattr(completion, "model", None) or None
+    # finish_reason "length" means the output hit the token ceiling (truncated).
+    response.truncated = getattr(choice, "finish_reason", None) == "length"
+    return response
+
+
+def _status_of(exc: Exception) -> int | None:
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _classified(exc: Exception, provider: str) -> RetryableFailure:
+    """Wrap an SDK failure with its failure class (see ``providers.retry``)."""
+    name = type(exc).__name__
+    status = _status_of(exc)
+    text = str(exc)
+    if status is None:
+        if name == "APITimeoutError" or isinstance(exc, TimeoutError):
+            failure = FailureClass.TIMEOUT
+        elif name == "APIConnectionError" or isinstance(exc, ConnectionError):
+            failure = FailureClass.UNREACHABLE
+        elif is_context_length_message(text):
+            failure = FailureClass.CONTEXT_LENGTH
+        else:
+            failure = FailureClass.PERMANENT
+    else:
+        failure = classify_status(status, text)
+    if failure is FailureClass.CONTEXT_LENGTH:
+        return RetryableFailure(
+            failure,
+            ContextLengthExceededError(
+                f"{provider}: the request does not fit the model's context window ({exc})"
+            ),
+        )
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    retry_after = None
+    if headers is not None:
+        try:
+            retry_after = parse_retry_after(headers.get("retry-after"))
+        except AttributeError:
+            retry_after = None
+    return RetryableFailure(failure, _provider_error(exc, provider), retry_after)
+
+
+# Reasoning efforts in increasing order, across the vocabularies endpoints use.
+_EFFORT_SCALE = ("minimal", "low", "medium", "high", "xhigh", "max")
+# vLLM, for a model whose chat template defines its own levels:
+#   400 "Unexpected reasoning effort high. Supported types are xhigh (default), medium,
+#   and low."
+_EFFORT_REJECTED = re.compile(
+    r"Unexpected reasoning effort ['\"]?(?P<asked>\w+)['\"]?\.?\s*Supported "
+    r"(?:types|values) (?:are|is)\s*(?P<supported>[^.\n]+)",
+    re.IGNORECASE,
+)
+# endpoint -> {asked effort -> the nearest effort that endpoint accepts}
+_EFFORT_REMAP: dict[str, dict[str, str]] = {}
+
+
+def _nearest_effort(asked: str, supported: list[str]) -> str | None:
+    known = [s for s in supported if s in _EFFORT_SCALE]
+    if not known or asked not in _EFFORT_SCALE:
+        return known[0] if known else None
+    target = _EFFORT_SCALE.index(asked)
+    # Ties go to the higher level: an asked-for effort is a request for more thinking.
+    return min(known, key=lambda s: (abs(_EFFORT_SCALE.index(s) - target), -_EFFORT_SCALE.index(s)))
+
+
+def _apply_effort_remap(endpoint: str, kwargs: dict) -> None:
+    asked = kwargs.get("reasoning_effort")
+    if isinstance(asked, str):
+        mapped = _EFFORT_REMAP.get(endpoint, {}).get(asked)
+        if mapped:
+            kwargs["reasoning_effort"] = mapped
+
+
+def _adapt_request(exc: Exception, kwargs: dict, endpoint: str, provider: str) -> bool:
+    """Change the request so the endpoint can accept it; False when nothing applies."""
+    text = str(exc)
+    match = _EFFORT_REJECTED.search(text)
+    asked = kwargs.get("reasoning_effort")
+    if match is not None and isinstance(asked, str):
+        supported = re.findall(r"[a-z]+", match.group("supported").lower())
+        supported = [s for s in supported if s not in {"and", "or", "default"}]
+        chosen = _nearest_effort(asked, supported)
+        if chosen and chosen != asked:
+            _logger.info(
+                "%s does not take reasoning_effort=%r; using %r (supported: %s).",
+                provider,
+                asked,
+                chosen,
+                ", ".join(supported),
+            )
+            _EFFORT_REMAP.setdefault(endpoint, {})[asked] = chosen
+            kwargs["reasoning_effort"] = chosen
+            return True
+    field = unsupported_request_field(exc)
+    if field is None or field not in kwargs:
+        return False
+    _logger.info(
+        "%s rejected the request field %r; dropping it for this endpoint.", provider, field
+    )
+    _REJECTED_FIELDS.setdefault(endpoint, set()).add(field)
+    kwargs.pop(field)
+    return True
 
 
 # An OpenAI-compatible endpoint is not OpenAI. Mistral rejects `seed` outright:
@@ -114,7 +366,22 @@ _EXTRA_FORBIDDEN = re.compile(
 )
 # Optional sampling knobs only: never retry by dropping `messages`, `model` or `tools`,
 # where a silent retry would change the question rather than the request shape.
-_DROPPABLE_FIELDS = frozenset({"seed", "top_p", "max_tokens", "temperature", "stream_options"})
+_DROPPABLE_FIELDS = frozenset(
+    {
+        "seed",
+        "top_p",
+        "max_tokens",
+        "temperature",
+        "stream_options",
+        "reasoning_effort",
+        "chat_template_kwargs",
+    }
+)
+# OpenAI's own wording for a parameter a model does not take:
+#   400 "Unsupported parameter: 'reasoning_effort' is not supported with this model."
+_UNSUPPORTED_PARAMETER = re.compile(
+    r"Unsupported (?:parameter|value)s?:?\s*['\"](?P<field>[A-Za-z_][A-Za-z0-9_]*)['\"]"
+)
 
 
 # Remembered per endpoint for the life of the process. Without this the field is sent,
@@ -129,11 +396,15 @@ def _endpoint_key(provider: str, base_url: str | None) -> str:
 
 def unsupported_request_field(exc: Exception) -> str | None:
     """The optional request field this endpoint rejected as unknown, if it said so."""
-    match = _EXTRA_FORBIDDEN.search(str(exc))
+    text = str(exc)
+    match = _EXTRA_FORBIDDEN.search(text) or _UNSUPPORTED_PARAMETER.search(text)
     if match is None:
         return None
     field = match.group("field")
-    return field if field in _DROPPABLE_FIELDS else None
+    if field not in _DROPPABLE_FIELDS:
+        return None
+    # chat_template_kwargs travels inside extra_body; dropping it drops that wrapper.
+    return "extra_body" if field == "chat_template_kwargs" else field
 
 
 def _provider_error(exc: Exception, provider: str) -> ProviderError:
@@ -214,7 +485,42 @@ def build_openai_request(
         kwargs["seed"] = config.model.seed
     if tools:
         kwargs["tools"] = to_function_tools(tools)
+    kwargs.update(reasoning_request_fields(config))
     return kwargs
+
+
+# OpenAI's ``reasoning_effort`` has no "off" and no "max": map onto its own scale.
+_OPENAI_EFFORT = {"off": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "high"}
+
+
+def reasoning_request_fields(config: Config) -> dict:
+    """Request fields that carry ``model.reasoning_effort`` to the endpoint.
+
+    vLLM (and other servers that render a chat template) take the switch as
+    ``chat_template_kwargs`` in the request body — Qwen3/Gemma templates read
+    ``enable_thinking`` — which the SDK sends via ``extra_body``. OpenAI takes
+    ``reasoning_effort``. ``model.reasoning_api`` picks one, both or neither; "auto"
+    sends both to a custom ``base_url`` and only ``reasoning_effort`` to OpenAI. A field
+    an endpoint rejects is dropped and remembered (see ``unsupported_request_field``).
+    """
+    effort = getattr(config.model, "reasoning_effort", None)
+    if effort is None:
+        return {}
+    api = getattr(config.model, "reasoning_api", "auto")
+    if api == "none":
+        return {}
+    if api == "auto":
+        api = "both" if config.model.base_url else "reasoning_effort"
+    fields: dict = {}
+    if api in ("chat_template_kwargs", "both"):
+        fields["extra_body"] = {"chat_template_kwargs": {"enable_thinking": effort != "off"}}
+    if api in ("reasoning_effort", "both"):
+        if api == "both" and effort == "off":
+            # A chat-template server already has thinking switched off; "minimal" is an
+            # OpenAI-only value a vLLM server would reject.
+            return fields
+        fields["reasoning_effort"] = _OPENAI_EFFORT[effort]
+    return fields
 
 
 def _openai_usage(completion: object) -> TokenUsage | None:

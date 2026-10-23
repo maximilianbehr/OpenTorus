@@ -28,6 +28,13 @@ OperatingStyle = Literal["cautious", "normal", "fast", "autonomous"]
 PermissionMode = Literal["safe", "ask", "trusted"]
 AgentMode = Literal["normal", "review"]
 EmbeddingsBackend = Literal["auto", "local", "openai", "ollama", "off"]
+# How hard a reasoning model thinks per call. "off" disables thinking where the server
+# can (vLLM chat_template_kwargs.enable_thinking=false, Ollama think=false).
+ReasoningEffort = Literal["off", "low", "medium", "high", "max"]
+# How an OpenAI-compatible endpoint is told the effort: vLLM-style chat-template kwargs
+# (enable_thinking), the OpenAI ``reasoning_effort`` field, both, or nothing. "auto":
+# both for a custom base_url (vLLM, llama.cpp, …), ``reasoning_effort`` for OpenAI.
+ReasoningApi = Literal["auto", "chat_template_kwargs", "reasoning_effort", "both", "none"]
 
 
 def _literal_off(value: object) -> object:
@@ -118,6 +125,15 @@ class ModelConfig(BaseModel):
     # also reads Ollama /api/show). OpenTorus is useless without tool calling, so a model
     # that cannot is refused with a clear message. Set false to skip the check.
     verify_tool_calling: bool = True
+    # Reasoning effort sent with every request (None = the server's default). A task
+    # class can override it via governance.routing.task_effort.
+    reasoning_effort: ReasoningEffort | None = None
+    _reasoning_effort_off = field_validator("reasoning_effort", mode="before")(_literal_off)
+    reasoning_api: ReasoningApi = "auto"
+    # OpenAI-compatible providers only: stream the response (SSE). Retries happen only
+    # before the first byte arrives; a stream that ends without a finish_reason is an
+    # error, never a silently short answer. Off by default.
+    stream: bool = False
 
 
 class ModelProfile(ModelConfig):
@@ -497,6 +513,18 @@ class RoutingConfig(BaseModel):
     enabled: bool = False
     task_models: dict[str, str] = Field(default_factory=dict)
     task_routes: dict[str, list[str]] = Field(default_factory=dict)
+    # Task class -> reasoning effort (off/low/medium/high/max), e.g.
+    # {proof_development: high, narration: off, default: medium}. Applied to the leased
+    # profile by the provider pool whether or not ``enabled`` is set; a class without an
+    # entry (and no "default" entry) keeps the profile's own model.reasoning_effort.
+    task_effort: dict[str, ReasoningEffort] = Field(default_factory=dict)
+
+    @field_validator("task_effort", mode="before")
+    @classmethod
+    def _task_effort_off(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {k: _literal_off(v) for k, v in value.items()}
+        return value
 
 
 class GovernanceConfig(BaseModel):

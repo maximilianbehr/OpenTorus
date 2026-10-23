@@ -423,8 +423,11 @@ def maybe_compact_session(
 
     keep_budget = max(200, int(config.context.token_budget * config.context.compaction_keep_ratio))
     if force or over_hard:
-        # The provider said the context is (nearly) full: keep a smaller recent window.
-        keep_budget = max(200, keep_budget // 2)
+        # The provider said the context is (nearly) full: keep a smaller recent window —
+        # at most half of what is there now, whatever the configured budget says (an
+        # overflow means the configured budget did not fit this model).
+        current = int(total_tokens(active) * scale)
+        keep_budget = max(200, min(keep_budget // 2, current // 2))
     older, kept = _split_recent(active, keep_budget, scale)
     if not older:
         return False

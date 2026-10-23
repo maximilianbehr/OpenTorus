@@ -190,7 +190,10 @@ def build_messages(
     ``token_scale`` carry the previous request's provider-reported size into the
     compaction trigger (see ``maybe_compact_session``).
     """
-    compaction = {"reported_prompt_tokens": reported_prompt_tokens, "token_scale": token_scale}
+    compaction: dict = {
+        "reported_prompt_tokens": reported_prompt_tokens,
+        "token_scale": token_scale,
+    }
     from opentorus.agent.prompts import build_system_prompt, build_task_execution_prompt
 
     # Ordering matters for cost, not just for clarity. Everything below is re-sent on

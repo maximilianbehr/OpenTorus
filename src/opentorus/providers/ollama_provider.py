@@ -28,8 +28,20 @@ from opentorus.providers.base import (
     ToolCallRequest,
     apportion_thinking,
 )
+from opentorus.providers.retry import (
+    ContextLengthExceededError,
+    FailureClass,
+    RetryableFailure,
+    call_with_retries,
+    classify_status,
+    parse_retry_after,
+)
 
 DEFAULT_HOST = "http://localhost:11434"
+
+
+class _ThinkUnsupported(Exception):
+    """The model rejected ``think`` (no thinking support): resend without it."""
 
 
 def ollama_options(config: Config, *, tools_enabled: bool) -> dict:
@@ -71,7 +83,24 @@ def build_ollama_chat_body(
         body["tools"] = to_function_tools(tools)
     if tool_choice is not None and tools:
         body["tool_choice"] = tool_choice
+    think = ollama_think(config)
+    if think is not None:
+        body["think"] = think
     return body
+
+
+def ollama_think(config: Config) -> bool | str | None:
+    """Ollama's ``think`` field for ``model.reasoning_effort`` (None = leave unset).
+
+    Most thinking models take a boolean; gpt-oss takes a level ("low"/"medium"/"high")
+    and cannot switch thinking off, so "off" becomes its lowest level there.
+    """
+    effort = getattr(config.model, "reasoning_effort", None)
+    if effort is None:
+        return None
+    if "gpt-oss" in (config.model.name or "").lower():
+        return {"off": "low", "max": "high"}.get(effort, effort)
+    return effort != "off"
 
 
 class OllamaProvider(BaseProvider):
@@ -120,6 +149,38 @@ class OllamaProvider(BaseProvider):
             self.config, messages, tools, stream=stream, tool_choice=tool_choice
         )
 
+        state = {"received": False, "think_dropped": False}
+
+        def attempt() -> ProviderResponse:
+            while True:
+                try:
+                    return self._chat_once(body, stream, on_text, on_thinking, state)
+                except _ThinkUnsupported:
+                    # A model without thinking support rejects ``think``; drop it once.
+                    body.pop("think", None)
+                    state["think_dropped"] = True
+
+        return call_with_retries(
+            attempt, max_retries=int(self.config.model.max_retries or 0), label="ollama"
+        )
+
+    def _timeout_error(self) -> ProviderError:
+        return ProviderError(
+            f"Ollama timed out after {self.config.model.timeout_seconds}s waiting for "
+            f"model '{self.config.model.name}'. The context may be too large, or the "
+            f"model is slow — try a smaller model, reduce tools.web.max_chars, or raise "
+            f"model.timeout_seconds in config."
+        )
+
+    def _chat_once(
+        self,
+        body: dict,
+        stream: bool,
+        on_text: OnText | None,
+        on_thinking: OnText | None,
+        state: dict,
+    ) -> ProviderResponse:
+        """One HTTP attempt; failures leave as ``RetryableFailure`` with their class."""
         request = urllib.request.Request(
             f"{self.host}/api/chat",
             data=json.dumps(body).encode("utf-8"),
@@ -129,7 +190,7 @@ class OllamaProvider(BaseProvider):
             timeout = self.config.model.timeout_seconds
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 if stream:
-                    return self._read_stream(response, on_text, on_thinking)
+                    return self._read_stream(response, on_text, on_thinking, state)
                 data = json.loads(response.read().decode("utf-8"))
                 msg = data.get("message", {})
                 result = parse_ollama_message(msg)
@@ -146,54 +207,69 @@ class OllamaProvider(BaseProvider):
                 result.truncated = data.get("done_reason") == "length"
                 return result
         except TimeoutError as exc:
-            raise ProviderError(
-                f"Ollama timed out after {self.config.model.timeout_seconds}s waiting for "
-                f"model '{self.config.model.name}'. The context may be too large, or the "
-                f"model is slow — try a smaller model, reduce tools.web.max_chars, or raise "
-                f"model.timeout_seconds in config."
-            ) from exc
+            # The configured wait ran out; another attempt would only extend it.
+            raise RetryableFailure(FailureClass.TIMEOUT, self._timeout_error()) from exc
         except (http.client.HTTPException, ConnectionError, json.JSONDecodeError) as exc:
             # RemoteDisconnected/BadStatusLine/IncompleteRead are HTTPExceptions and
             # escape both URLError and TimeoutError; a reset mid-stream surfaces as
             # ConnectionError or as a JSONDecodeError on a truncated chunk. Observed:
             # a transient server drop killed an hours-long prove run with a raw
             # traceback (exit 1) instead of a clean, resumable provider error.
-            raise ProviderError(
+            error = ProviderError(
                 f"Connection to Ollama at {self.host} dropped mid-request "
                 f"({type(exc).__name__}) — a transient server/network hiccup, not a model "
                 f"failure. The run state is preserved; re-run to resume. If this recurs, "
                 f"check the Ollama server's load and logs."
-            ) from exc
+            )
+            error.__cause__ = exc
+            # Retried only while nothing of the answer has been shown: a stream that
+            # already emitted text would be shown twice (and could differ).
+            failure = FailureClass.PERMANENT if state["received"] else FailureClass.UNREACHABLE
+            raise RetryableFailure(failure, error) from exc
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
+            lowered = detail.lower()
+            if "think" in body and not state["think_dropped"] and "support thinking" in lowered:
+                raise _ThinkUnsupported() from exc
             hint = ""
-            if "error parsing tool call" in detail.lower() or "parse json" in detail.lower():
+            tool_parse = "error parsing tool call" in lowered or "parse json" in lowered
+            if tool_parse:
                 hint = (
                     " The model emitted invalid or truncated tool-call JSON — use write_file "
                     "for scripts and run_shell with a short one-liner; raise model.num_ctx "
                     "or upgrade Ollama if this persists."
                 )
-            raise ProviderError(
+            message = (
                 f"Ollama returned HTTP {exc.code} for model "
                 f"'{self.config.model.name}': {detail or exc.reason}.{hint}"
-            ) from exc
+            )
+            failure = classify_status(exc.code, detail)
+            if tool_parse:
+                # Not transient: the agent loop's tool-parse recovery owns this one.
+                failure = FailureClass.PERMANENT
+            http_error: ProviderError = (
+                ContextLengthExceededError(message)
+                if failure is FailureClass.CONTEXT_LENGTH
+                else ProviderError(message)
+            )
+            http_error.__cause__ = exc
+            retry_after = parse_retry_after(exc.headers.get("Retry-After")) if exc.headers else None
+            raise RetryableFailure(failure, http_error, retry_after) from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
-                raise ProviderError(
-                    f"Ollama timed out after {self.config.model.timeout_seconds}s waiting for "
-                    f"model '{self.config.model.name}'. The context may be too large, or the "
-                    f"model is slow — try a smaller model, reduce tools.web.max_chars, or raise "
-                    f"model.timeout_seconds in config."
-                ) from exc
-            raise ProviderError(
+                raise RetryableFailure(FailureClass.TIMEOUT, self._timeout_error()) from exc
+            error = ProviderError(
                 f"Could not reach Ollama at {self.host}. Is `ollama serve` running? ({exc})"
-            ) from exc
+            )
+            error.__cause__ = exc
+            raise RetryableFailure(FailureClass.UNREACHABLE, error) from exc
 
     def _read_stream(
         self,
         response: object,
         on_text: OnText | None,
         on_thinking: OnText | None = None,
+        state: dict | None = None,
     ) -> ProviderResponse:
         accumulated = ""
         accumulated_thinking = ""
@@ -230,6 +306,8 @@ class OllamaProvider(BaseProvider):
             if not raw_line:
                 continue
             chunk = json.loads(raw_line.decode("utf-8"))
+            if state is not None:
+                state["received"] = True
             if chunk.get("model"):
                 reported_model = str(chunk["model"])
             if chunk.get("done_reason"):

@@ -78,6 +78,7 @@ from opentorus.config import Config, OperatingStyle
 from opentorus.errors import OpenTorusError, ProviderError, is_recoverable_tool_parse_error
 from opentorus.permissions.policy import PermissionDecision
 from opentorus.providers.base import BaseProvider, ProviderResponse
+from opentorus.providers.retry import ContextLengthExceededError
 from opentorus.tools.base import Tool
 from opentorus.tools.registry import ToolRegistry
 
@@ -647,6 +648,9 @@ class AgentLoop:
         result_text = "Reached the maximum number of steps without a final answer."
         stop_decision: PolicyDecision | None = None
         tool_parse_retries = 0
+        # The provider said the request does not fit its context window: compact the
+        # session once (forced) and ask again; a second overflow in the run is raised.
+        context_overflow_compacted = False
         deliverable_retries = 0
         # Consecutive replies cut off at the output-token limit (reset by a complete one).
         length_continuations = 0
@@ -712,6 +716,11 @@ class AgentLoop:
                 # machine). Then the provider turn, then the usage ledger.
                 turn = self._runner.request(messages, tool_choice=tool_choice)
                 self._calibrate_tokens(messages, turn.response)
+            except ContextLengthExceededError:
+                if not context_overflow_compacted and self._compact_after_overflow():
+                    context_overflow_compacted = True
+                    continue
+                raise
             except ProviderError as exc:
                 if tool_parse_retries < _MAX_TOOL_PARSE_RETRIES and is_recoverable_tool_parse_error(
                     exc
@@ -900,6 +909,24 @@ class AgentLoop:
             task=task,
         )
         return result_text
+
+    def _compact_after_overflow(self) -> bool:
+        """Force one session compaction after a context-length rejection."""
+        from opentorus.agent.compaction import maybe_compact_session
+
+        _logger.info("The request exceeded the model's context window; compacting once.")
+        try:
+            return maybe_compact_session(
+                self.ot_dir,
+                self.config,
+                provider=self.provider,
+                reported_prompt_tokens=self._last_prompt_tokens,
+                token_scale=self._token_scale,
+                force=True,
+            )
+        except OpenTorusError as exc:
+            _logger.debug("Forced compaction failed: %s", exc)
+            return False
 
     def _calibrate_tokens(
         self, messages: list[SessionMessage], response: ProviderResponse | None
