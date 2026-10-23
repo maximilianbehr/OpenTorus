@@ -1,10 +1,23 @@
 """Concrete execution backends: local host, Docker, Podman, Apptainer.
 
 Container backends build an explicit argv that wraps the logical command, apply
-least-privilege defaults (no network unless requested, read-only workspace mount,
-optional cpu/memory limits), and run it via the shared ``run_argv`` helper so the
+least-privilege defaults, and run it via the shared ``run_argv`` helper so the
 result shape matches the rest of OpenTorus. The argv assembly is pure and tested
 without invoking any real container.
+
+Defaults, stated exactly:
+
+* no network unless the request asks for it;
+* the request's working directory is bound **read-write** at ``/work`` -- it is the
+  run's own directory (an experiment or figure dir) and outputs are written there.
+  When that directory is a workspace root, its ``.opentorus/`` artifact store is
+  bound again **read-only** on top, so a run can never rewrite claims, evidence or
+  logs. A caller that wants the whole workspace read-only passes
+  :func:`opentorus.execution.base.sandboxed_mounts` (read-only ``/work`` plus one
+  writable ``results/``);
+* Apptainer runs with ``--containall --cleanenv``: no host environment, no host
+  ``$HOME`` (so no ``~/.ssh``), private ``/tmp``, PID and IPC namespaces;
+* optional cpu/memory limits.
 """
 
 from __future__ import annotations
@@ -64,6 +77,17 @@ def _process_alive(pid: int) -> bool:
     return True
 
 
+def _workspace_store_guard(workdir: Path | str, mounts: list[Mount]) -> list[Mount]:
+    """A read-only re-bind of ``<workdir>/.opentorus`` when the workdir is a workspace."""
+    from opentorus.paths import WORKSPACE_DIRNAME
+
+    store = Path(workdir) / WORKSPACE_DIRNAME
+    target = f"{_WORKDIR_TARGET}/{WORKSPACE_DIRNAME}"
+    if not store.is_dir() or any(m.target == target for m in mounts):
+        return []
+    return [Mount(source=store.as_posix(), target=target, read_only=True)]
+
+
 def _image_ref_docker(image: str) -> str:
     return image
 
@@ -78,10 +102,17 @@ def _image_ref_apptainer(image: str) -> str:
 
 
 class LocalBackend:
-    """Run on the host, exactly like the previous ``run_shell`` behaviour."""
+    """Run on the host.
+
+    The child sees only the clean, allowlisted environment (never credentials) and
+    leads its own process group, so a timeout or cancel ends every descendant.
+    """
 
     name = "local"
     requires_image = False
+
+    def __init__(self, *, env_allowlist: list[str] | tuple[str, ...] = ()) -> None:
+        self.env_allowlist = tuple(env_allowlist)
 
     def is_available(self) -> bool:
         return True
@@ -102,6 +133,8 @@ class LocalBackend:
             timeout=request.limits.timeout,
             label=request.command,
             env=request.env or None,
+            env_policy="clean",
+            env_allowlist=self.env_allowlist,
         )
 
 
@@ -134,6 +167,7 @@ class _OciBackend:
                     read_only=False,
                 ),
             )
+            mounts.extend(_workspace_store_guard(request.workdir, mounts))
         return mounts
 
     def build_argv(self, request: ExecutionRequest, *, name: str | None = None) -> list[str]:
@@ -288,17 +322,23 @@ class ApptainerBackend:
     def build_argv(self, request: ExecutionRequest) -> list[str]:
         if not request.image:
             raise ValueError("Backend 'apptainer' requires an image.")
-        argv = [self.binary, "exec"]
+        # Apptainer passes the whole host environment and binds $HOME by default --
+        # on an HPC login node that is every API key in the shell and ~/.ssh.
+        # --containall = --contain (no $HOME, private /tmp and /dev) + --cleanenv +
+        # PID/IPC namespaces; only the binds below (and --env) reach the container.
+        argv = [self.binary, "exec", "--containall", "--cleanenv"]
         # Apptainer shares the host network by default; isolate unless requested.
         if not request.network:
             argv += ["--net", "--network", "none"]
         argv += ["--pwd", _WORKDIR_TARGET]
-        bound_work = any(m.target == _WORKDIR_TARGET for m in request.mounts)
+        mounts = list(request.mounts)
+        bound_work = any(m.target == _WORKDIR_TARGET for m in mounts)
         if not bound_work:
             # as_posix: bind sources are recorded in manifests and must not
             # vary with the host's path separator.
             argv += ["--bind", f"{Path(request.workdir).as_posix()}:{_WORKDIR_TARGET}"]
-        for mount in request.mounts:
+            mounts.extend(_workspace_store_guard(request.workdir, mounts))
+        for mount in mounts:
             suffix = ":ro" if mount.read_only else ""
             argv += ["--bind", f"{mount.source}:{mount.target}{suffix}"]
         if request.limits.memory:

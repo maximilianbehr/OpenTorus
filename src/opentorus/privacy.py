@@ -23,23 +23,12 @@ from opentorus.agent.session import SessionMessage
 from opentorus.config import Config
 from opentorus.permissions.policy import is_sensitive_path
 
+# Credential names (values are read at redaction time, never stored) are shared
+# with the child-process environment filter.
+from opentorus.tools.childenv import CREDENTIAL_ENV_NAMES
+
 REDACTION = "[redacted: sensitive content excluded from provider context]"
 
-# Environment variables whose *value* must never be forwarded. Names only — the
-# values are read from the environment at redaction time and never stored.
-CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "MISTRAL_API_KEY",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "HF_TOKEN",
-    "HUGGING_FACE_HUB_TOKEN",
-    "GITHUB_TOKEN",
-    "GH_TOKEN",
-    "GOOGLE_API_KEY",
-    "AZURE_OPENAI_API_KEY",
-)
 # A placeholder key ("x" in a local-vLLM setup, and this project's own examples do
 # exactly that) would otherwise turn every letter x in the transcript into a
 # redaction marker. Only values long enough to be real secrets are scrubbed.

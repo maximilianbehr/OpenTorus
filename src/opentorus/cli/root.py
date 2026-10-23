@@ -421,6 +421,7 @@ def shell(
         review=config.agent.mode == "review",
         confirm=_confirm,
         timeout=timeout,
+        env_allowlist=config.execution.env_allowlist,
     )
 
     if result is None:

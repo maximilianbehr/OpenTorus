@@ -190,6 +190,11 @@ class AgentConfig(BaseModel):
 
 class PermissionsConfig(BaseModel):
     mode: PermissionMode = "ask"
+    # Without a terminal (a setsid background campaign) an approval request is
+    # queued under .opentorus/approvals/pending/ and decided with
+    # ``opentorus approvals approve|deny <id>``. The run waits up to this many
+    # seconds for the decision; 0 records a denial at once and moves on.
+    approval_wait_seconds: float = 0.0
 
 
 class PrivacyConfig(BaseModel):
@@ -264,9 +269,24 @@ class McpServerConfig(BaseModel):
     """One external Model-Context-Protocol server (opt-in, disabled by default)."""
 
     name: str
-    command: str
+    # ``stdio`` starts ``command`` as a child process; ``http`` speaks MCP Streamable
+    # HTTP to ``url`` (gated by the external-tool permission and the egress guard).
+    transport: Literal["stdio", "http"] = "stdio"
+    command: str = ""
     args: list[str] = Field(default_factory=list)
+    url: str | None = None
     enabled: bool = False
+    # Environment for a stdio server: nothing from the parent beyond the clean
+    # allowlist (PATH, HOME, locale) -- credentials only when named here.
+    env: dict[str, str] = Field(default_factory=dict)
+    # Extra HTTP headers for an http server (e.g. an Authorization header).
+    headers: dict[str, str] = Field(default_factory=dict)
+    # Tool allowlist. None exposes every tool the server lists; a list exposes only
+    # those, and a listed tool the server does not offer fails the startup.
+    tools: list[str] | None = None
+    # Seconds to wait for one response; a timed-out call's outcome is unknown and is
+    # never retried automatically.
+    timeout: float = 30.0
 
 
 class LiteratureConfig(BaseModel):
@@ -397,6 +417,22 @@ class WebConfig(BaseModel):
     fetch: bool = True
     search: bool = True
     max_chars: int = 8000
+    # Bytes read from one response before the transfer is cut (streamed, not
+    # buffered whole).
+    max_bytes: int = 5_000_000
+    # Hosts on loopback/private networks that may be fetched anyway. Everything
+    # else resolving to such an address -- on any redirect hop -- is refused, which
+    # keeps a fetched page from reaching a local vLLM/Ollama or a cloud metadata
+    # endpoint.
+    allow_private_hosts: list[str] = Field(default_factory=list)
+
+
+class ShellToolConfig(BaseModel):
+    """``run_shell`` limits: the model picks a timeout up to ``max_timeout``."""
+
+    default_timeout: int = 30
+    max_timeout: int = 600
+    max_background_jobs: int = 4
 
 
 class ToolsConfig(BaseModel):
@@ -405,6 +441,7 @@ class ToolsConfig(BaseModel):
     mcp: list[McpServerConfig] = Field(default_factory=list)
     literature: LiteratureConfig = Field(default_factory=LiteratureConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     verifiers: VerifiersConfig = Field(default_factory=VerifiersConfig)
     datasets: DatasetsConfig = Field(default_factory=DatasetsConfig)
     code_evidence: CodeEvidenceConfig = Field(default_factory=CodeEvidenceConfig)
@@ -449,6 +486,15 @@ class ExecutionConfig(BaseModel):
     memory_limit: str | None = None
     cpu_limit: str | None = None
     cache: bool = True  # content-addressed result cache (Phase 21, M66)
+    # Extra environment names (glob patterns) passed to run_shell and local
+    # experiment runs on top of PATH/HOME/locale/temp/thread knobs. Credential
+    # names (*_KEY, *_TOKEN, *SECRET*, *PASSWORD*, ...) are stripped regardless.
+    env_allowlist: list[str] = Field(default_factory=list)
+    # Host-backend confinement. ``auto``: when a run asks for no network and
+    # bubblewrap works, wrap it in ``bwrap --unshare-net`` and apply rlimits;
+    # otherwise run unconfined. ``require``: refuse a run that cannot be confined.
+    # ``off``: never wrap (rlimits still apply).
+    local_confinement: Literal["off", "auto", "require"] = "auto"
     remote: RemoteExecConfig = Field(default_factory=RemoteExecConfig)
 
 

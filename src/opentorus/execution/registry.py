@@ -47,10 +47,16 @@ def _make_remote(name: str, config: Config) -> ExecutionBackend:
     )
 
 
+def _local(config: Config | None) -> LocalBackend:
+    if config is None:
+        return LocalBackend()
+    return LocalBackend(env_allowlist=config.execution.env_allowlist)
+
+
 def make_backend(name: str, config: Config | None = None) -> ExecutionBackend:
     """Instantiate a backend by name (``local``, a container, or a remote runtime)."""
     if name == "local":
-        return LocalBackend()
+        return _local(config)
     if name in _REMOTE_BACKENDS:
         if config is None:
             raise ValueError(
@@ -65,7 +71,7 @@ def make_backend(name: str, config: Config | None = None) -> ExecutionBackend:
 
 def available_backends(config: Config) -> dict[str, ExecutionBackend]:
     """Return all installed backends, keyed by name (``local`` always present)."""
-    found: dict[str, ExecutionBackend] = {"local": LocalBackend()}
+    found: dict[str, ExecutionBackend] = {"local": _local(config)}
     for name in _CONTAINER_BACKENDS:
         backend = make_backend(name)
         if backend.is_available():
@@ -85,11 +91,11 @@ def select_backend(config: Config, *, needs_image: bool = False) -> ExecutionBac
         return make_backend(choice, config)
 
     if not needs_image:
-        return LocalBackend()
+        return _local(config)
 
     for name in config.execution.auto_preference:
         if name in _CONTAINER_BACKENDS:
             backend = make_backend(name)
             if backend.is_available():
                 return backend
-    return LocalBackend()
+    return _local(config)

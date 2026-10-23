@@ -306,8 +306,9 @@ class RunShellTool(Tool):
     risk_level = "high"
     permission = "command"
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, env_allowlist: list[str] | tuple[str, ...] = ()) -> None:
         self._root = root
+        self._env_allowlist = tuple(env_allowlist)
 
     def run(self, call: ToolCall) -> ToolResult:
         from opentorus.tools.shell import run_shell
@@ -315,7 +316,12 @@ class RunShellTool(Tool):
         command = call.args.get("command")
         if not command:
             return self.fail(call, "run_shell requires a 'command' argument.")
-        result = run_shell(command, cwd=self._root)
+        # A model-chosen command sees only the allowlisted environment: the dotenv
+        # loader put provider keys into os.environ, and `cat /proc/self/environ`
+        # passes every string-level command check.
+        result = run_shell(
+            command, cwd=self._root, env_policy="clean", env_allowlist=self._env_allowlist
+        )
         body = f"exit_code={result.exit_code}\n"
         if result.stdout.strip():
             body += f"stdout:\n{result.stdout.rstrip()}\n"
@@ -540,7 +546,12 @@ def build_default_registry(
     registry.register(ReadFileTool(root))
     registry.register(WriteFileTool(root))
     registry.register(ApplyPatchTool(root))
-    registry.register(RunShellTool(root))
+    registry.register(
+        RunShellTool(
+            root,
+            env_allowlist=config.execution.env_allowlist if config is not None else (),
+        )
+    )
     if config is not None and config.tools.literature.enabled:
         registry.register(LiteratureSearchTool(config, ot_dir))
     if config is not None and config.tools.web.enabled:
