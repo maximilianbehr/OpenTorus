@@ -193,8 +193,8 @@ def create_campaign(
     notice: Callable[[str], None],
 ) -> RunContext:
     """Validate a start request, apply the primary-claim rule, allocate the id and
-    create the store (``campaign_created`` + the primary-claim artifact reference and
-    the parallelism diagnostic when applicable). Nothing runs yet."""
+    create the store (``campaign_created`` + the primary-claim artifact reference when
+    applicable). Nothing runs yet."""
     from opentorus.campaign import events as ev
     from opentorus.campaign.budget import budget_from_config
     from opentorus.campaign.models import ArtifactRef, CampaignRecord
@@ -247,11 +247,9 @@ def create_campaign(
             actor="engine",
             refs=[primary_created],
         )
-    if cfg.max_parallel_workers > 1:
-        store.append(
-            ev.EventType.parallelism_capped,
-            ev.ParallelismCappedPayload(requested=cfg.max_parallel_workers, effective=1),
-        )
+    # ``max_parallel_workers > 1`` runs work items of distinct branches concurrently
+    # (``campaign.concurrency``); ``parallelism_capped`` is no longer emitted -- the
+    # event type stays readable for logs written by builds that capped it to 1.
     return RunContext(store=store, record=record, profile=mode_profile(resolved_mode))
 
 

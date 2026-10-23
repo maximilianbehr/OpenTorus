@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from opentorus.campaign.failures import build_failure_signature
+from opentorus.campaign.failures import build_failure_signature, describe_failure
 from opentorus.campaign.models import (
     ArtifactRef,
     CostTotals,
@@ -45,6 +45,11 @@ from opentorus.campaign.workers.base import (
     experiment_deliverable,
     experiment_timeout_gate,
     is_mock_provider,
+    review_block,
+    scratch_block,
+    sibling_block,
+    stated_abandon_reason,
+    worker_rules,
 )
 from opentorus.errors import OpenTorusError
 
@@ -105,8 +110,14 @@ def _prompt(ctx: WorkerContext) -> str:
     if ctx.failure_signatures:
         lines.append(
             "Do not repeat these failed searches unchanged: "
-            + "; ".join(f"{s.tool_or_solver}: {s.counterargument}" for s in ctx.failure_signatures)
+            + "; ".join(
+                f"{f.tool_or_solver}: {describe_failure(f)}" for f in ctx.failure_signatures
+            )
         )
+    lines.extend(review_block(ctx))
+    lines.extend(sibling_block(ctx))
+    lines.extend(scratch_block(ctx))
+    lines.extend(worker_rules())
     return "\n".join(lines)
 
 
@@ -120,6 +131,7 @@ class FalsifierWorker:
         counterargument: str,
         artifact_ids: list[str],
         error_category: ErrorCategory = "no_witness_found",
+        abandon_reason: str = "",
     ) -> FailureSignature:
         return build_failure_signature(
             role=self.role,
@@ -129,6 +141,7 @@ class FalsifierWorker:
             error_category=error_category,
             counterargument=counterargument,
             artifact_ids=artifact_ids,
+            abandon_reason=abandon_reason,
         )
 
     def run(self, ctx: WorkerContext, rt: WorkerRuntime) -> WorkerResult:
@@ -160,6 +173,7 @@ class FalsifierWorker:
             notes.append(f"branch-level workspace claim {claim_id} created for evidence")
         evidence_before = {e.id for e in list_evidence(rt.ot_dir)}
         turns = 0
+        final: str | None = None
         exp_ids: list[str] = []
         if is_mock_provider(lease.provider):
             prior = branch_experiments(ctx, rt)
@@ -204,7 +218,9 @@ class FalsifierWorker:
                 exp_ids = [created_exp.id]
         else:
             before = {e.id for e in _list_ws_experiments(rt.ot_dir)}
-            gate, hint = experiment_deliverable(rt.ot_dir, template=SEARCH_TEMPLATE, before=before)
+            gate, hint = experiment_deliverable(
+                rt.ot_dir, template=SEARCH_TEMPLATE, before=before, is_foreign=rt.is_foreign
+            )
             timeout_coercions: list[str] = []
             loop = bounded_loop(
                 ctx,
@@ -216,7 +232,7 @@ class FalsifierWorker:
                 session_gate=gate,
                 session_recovery_hint=hint,
             )
-            loop.run(_prompt(ctx))
+            final = loop.run(_prompt(ctx))
             turns = loop.steps_run
             if timeout_coercions:
                 notes.append(
@@ -224,12 +240,18 @@ class FalsifierWorker:
                     f"{rt.config.campaign.max_experiment_seconds}s (asked: "
                     f"{', '.join(timeout_coercions)})"
                 )
-            exp_ids = sorted(e.id for e in _list_ws_experiments(rt.ot_dir) if e.id not in before)
+            exp_ids = sorted(
+                e.id
+                for e in _list_ws_experiments(rt.ot_dir)
+                if e.id not in before and not rt.is_foreign(e.id)
+            )
         # Evidence the model recorded through tools during the session must survive the
         # worker outcome — a live falsifier once filed contradicting evidence that the
         # canned no-witness signature then buried.
         session_evidence = sorted(
-            e.id for e in list_evidence(rt.ot_dir) if e.id not in evidence_before
+            e.id
+            for e in list_evidence(rt.ot_dir)
+            if e.id not in evidence_before and not rt.is_foreign(e.id)
         )
         for ev_id in session_evidence:
             artifacts.append(
@@ -307,13 +329,16 @@ class FalsifierWorker:
             counterargument = "bounded search found no witness in the searched range"
         else:
             counterargument = f"no search experiment produced in {max(1, turns)} model turn(s)"
+        abandon = stated_abandon_reason(rt.ot_dir, ctx.session_id, final)
         sig = self._signature(
             ctx,
             counterargument=counterargument,
             artifact_ids=[*exp_ids, *evidence_ids, *session_evidence],
             error_category=category,
+            abandon_reason=abandon,
         )
         return WorkerResult(
+            abandon_reason=abandon,
             status="failed",
             error_category=category,
             message=counterargument,

@@ -634,7 +634,7 @@ class CampaignConfig(BaseModel):
     initial_branches: int = 4
     # Branches scheduled concurrently; the rest queue as ``proposed``.
     max_active_branches: int = 3
-    # v1 executes sequentially; a larger value is capped to 1 with a diagnostic.
+    # Work items of distinct branches run concurrently (threads); 1 = sequential.
     max_parallel_workers: int = 1
     # Total model turns across all workers; 0 = not configured / unlimited.
     max_steps: int = 50
@@ -653,6 +653,14 @@ class CampaignConfig(BaseModel):
     persist_every_event: bool = True
     # Opt-in: ``opentorus research`` also records an exploration campaign.
     record_research: bool = False
+    # Portfolio growth: when the active set runs dry, a real-provider strategist is asked
+    # for new branches (de-duplicated against every branch ever proposed) until this many
+    # non-rejected branches exist; 0 = never grow past the initial portfolio.
+    max_total_branches: int = 12
+    # Opt-in: one model verdict per surviving proposal ("duplicate of BRANCH-x" or
+    # null); anything else refuses the proposal. Real providers only; Jaccard stays
+    # the deterministic check either way.
+    model_duplicate_check: bool = False
     scheduler_weights: SchedulerWeights = Field(default_factory=SchedulerWeights)
 
 

@@ -8,6 +8,7 @@ it, never a silent edit.
 | # | Title | Status |
 |---|-------|--------|
 | [0001](0001-campaign-engine.md) | Campaign engine: control plane, routing, persistence, proof tree, theorem references | accepted |
+| [0002](0002-parallel-campaign-workers.md) | Parallel campaign workers: work lock, exact attribution, reserved budgets | accepted |
 
 Conventions: ASCII only (no Mermaid, no Unicode box drawing), one decision table
 per record, and a "Consequences" section that names what gets harder as well as

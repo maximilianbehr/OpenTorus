@@ -231,6 +231,10 @@ class CampaignConfigSnapshot(_Persisted):
     require_literature_mapping: bool = True
     require_root_relation: bool = True
     persist_every_event: bool = True
+    # 0 for records written before portfolio growth existed: an old campaign resumes
+    # under the rules it was started with (no growth).
+    max_total_branches: int = 0
+    model_duplicate_check: bool = False
     scheduler_weights: SchedulerWeights = Field(default_factory=SchedulerWeights)
     governance_token_budget: int | None = None
     governance_cost_budget_usd: float | None = None
@@ -316,6 +320,8 @@ class BranchRecord(_Persisted):
     consecutive_failures: int = 0
     target_claim_id: str | None = None
     strategy_key: str | None = None
+    # Seq of the latest ``branch_reactivated``: review-rejection streaks restart there.
+    reactivated_seq: int | None = None
 
 
 class ScoreBreakdown(_Persisted):
@@ -418,6 +424,10 @@ class FailureSignature(_Persisted):
     # ``verification_backend_changed`` reactivation condition has something to compare
     # against without re-reading an old config.
     verifier_backends: list[str] = Field(default_factory=list)
+    # What the worker itself said it tried and why it fails when it gave up (model
+    # text, unverified). Deliberately *not* part of ``key``: prose differs run to run,
+    # and keying on it would make every model-driven failure look new to the retry gate.
+    abandon_reason: str = ""
 
 
 class Obligation(_Persisted):
@@ -442,6 +452,30 @@ class Obligation(_Persisted):
     updated_seq: int = 0
     source_proof_id: str | None = None
     gap_marker: str | None = None
+
+
+FindingKind = Literal["lemma", "partial", "counterexample", "dead_end", "note"]
+FINDING_KINDS: tuple[str, ...] = ("lemma", "partial", "counterexample", "dead_end", "note")
+# A finding longer than this is refused, never truncated.
+MAX_FINDING_BYTES = 1500
+MAX_FINDING_PATHS = 8
+
+
+class Finding(_Persisted):
+    """One unverified note on the cross-branch board (see :mod:`campaign.board`).
+
+    Written by a worker's model, shared with sibling branches as data: never an
+    artifact reference, never evidence, never a closure of anything.
+    """
+
+    finding_id: str = ""
+    kind: FindingKind = "note"
+    text: str
+    paths: list[str] = Field(default_factory=list)
+    branch_id: str | None = None
+    work_item_id: str | None = None
+    role: WorkerRole | None = None
+    seq: int | None = None
 
 
 class WorkerContext(BaseModel):
@@ -488,6 +522,15 @@ class WorkerContext(BaseModel):
     # The branch's strategy template key (``proof_sketch``, ``counterexample_search``, …)
     # — the ``strategy_class`` of any failure signature the worker records.
     strategy_key: str | None = None
+    # The latest review of this branch's submissions: a header line naming the review
+    # and its verdict, then the reviewer's findings (rendered quoted, as data).
+    review_findings: tuple[str, ...] = ()
+    # The newest board findings of *other* branches (bounded; unverified data).
+    sibling_findings: tuple[Finding, ...] = ()
+    # The branch's scratch directory and the parent of every branch's one, relative to
+    # the workspace root (posix). Writes go to ``work_dir``; siblings' dirs are read-only.
+    work_dir: str = ""
+    work_root: str = ""
 
     @field_serializer("allowed_tools")
     def _sorted_tools(self, value: frozenset[str]) -> list[str]:
@@ -523,6 +566,12 @@ class WorkerResult(_Persisted):
     # engine turns them into ``review_recorded`` / ``verification_recorded`` events.
     reviews: list[ReviewRef] = Field(default_factory=list)
     verifications: list[VerificationRef] = Field(default_factory=list)
+    # When the worker gave up: what it tried and why it fails, in its own words (the
+    # ``GIVE UP:`` line of a model-driven worker's final message). Recorded on the
+    # failure signature so the next brief names the dead end instead of repeating it.
+    abandon_reason: str = ""
+    # Unverified notes for the sibling branches (the ``board_post`` tool adds to these).
+    findings: list[Finding] = Field(default_factory=list)
 
 
 class WorkItem(_Persisted):
@@ -609,6 +658,18 @@ class ReviewRef(_Persisted):
     kind: str = "review"
     verdict: str = ""
     seq: int | None = None
+    # The artifact ids the review covered (a referee report covers the round's claims
+    # and proof attempts, a claim review its one claim), the branches that produced
+    # them (filled by the engine from the snapshot's artifact refs), and the reviewer's
+    # findings as short lines — quoted, as data, into those branches' next briefs.
+    covers: list[str] = Field(default_factory=list)
+    branch_ids: list[str] = Field(default_factory=list)
+    findings: list[str] = Field(default_factory=list)
+
+
+# Review verdicts that reject the submission: a plausible argument with a gap is a
+# rejection ("revise"), not a pass with remarks.
+REJECTING_VERDICTS: frozenset[str] = frozenset({"revise", "block"})
 
 
 class VerificationRef(_Persisted):
@@ -682,6 +743,8 @@ class CampaignSnapshot(_Persisted):
     campaign_nodes: dict[str, CampaignNodeState] = Field(default_factory=dict)
     reviews: list[ReviewRef] = Field(default_factory=list)
     verifications: list[VerificationRef] = Field(default_factory=list)
+    # The cross-branch board: unverified notes, never evidence (see campaign.board).
+    findings: list[Finding] = Field(default_factory=list)
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     counters: dict[str, int] = Field(default_factory=dict)
     phase_history: list[PhaseEntry] = Field(default_factory=list)
@@ -713,12 +776,18 @@ __all__ = [
     "Diagnostic",
     "DiagnosticKind",
     "ErrorCategory",
+    "FINDING_KINDS",
     "FailureSignature",
+    "Finding",
+    "FindingKind",
+    "MAX_FINDING_BYTES",
+    "MAX_FINDING_PATHS",
     "NormalizedProblem",
     "Obligation",
     "ObligationProposal",
     "ObligationStatus",
     "PhaseEntry",
+    "REJECTING_VERDICTS",
     "ReactivationCondition",
     "ReviewRef",
     "RootRelation",

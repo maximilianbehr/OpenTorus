@@ -33,6 +33,7 @@ from opentorus.campaign.models import (
     Diagnostic,
     ErrorCategory,
     FailureSignature,
+    Finding,
     NormalizedProblem,
     Obligation,
     ReactivationCondition,
@@ -93,6 +94,7 @@ class EventType(StrEnum):
     problem_normalized = "problem_normalized"
     branch_updated = "branch_updated"
     retry_allowed = "retry_allowed"
+    finding_posted = "finding_posted"
 
 
 ASSIGNMENT_EVENT_TYPES: frozenset[str] = frozenset(
@@ -174,6 +176,8 @@ class BranchSuspendedPayload(_Payload):
     branch_id: str
     reason_code: str
     reactivation_conditions: list[ReactivationCondition] = Field(default_factory=list)
+    # Human-readable why (e.g. the two review ids that rejected the branch in a row).
+    reason: str = ""
 
 
 class BranchReactivatedPayload(_Payload):
@@ -218,6 +222,8 @@ class WorkerFailedPayload(_Payload):
     # What the worker did before failing (experiments run, coercions, capped timeouts):
     # the diagnosis a failed item needs most, and it used to be dropped on this path.
     notes: list[str] = Field(default_factory=list)
+    # The worker's own "what I tried and why it fails" when it gave up (unverified text).
+    abandon_reason: str = ""
 
 
 class ProofNodeUpdatedPayload(_Payload):
@@ -248,6 +254,10 @@ class BudgetConsumedPayload(_Payload):
     tokens: int = 0
     cost_usd: float = 0.0
     wall_seconds: float = 0.0
+    # Parallel batches: the wall seconds this event adds to the *campaign* ledger when
+    # they differ from the item's own (concurrent items overlap in time). ``None`` =
+    # same as ``wall_seconds`` (every sequential event).
+    campaign_wall_seconds: float | None = None
 
 
 class BudgetExhaustedPayload(_Payload):
@@ -388,6 +398,7 @@ EVENT_PAYLOADS: dict[str, type[BaseModel]] = {
     EventType.problem_normalized: NormalizedProblem,
     EventType.branch_updated: BranchUpdatedPayload,
     EventType.retry_allowed: RetryAllowedPayload,
+    EventType.finding_posted: Finding,
 }
 
 

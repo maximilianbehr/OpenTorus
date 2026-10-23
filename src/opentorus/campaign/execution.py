@@ -24,6 +24,7 @@ the rest of the layer relies on:
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -34,15 +35,19 @@ from pydantic import BaseModel
 from opentorus.agent.control.events import RunEvent, RunEventSink, TurnCompleted
 from opentorus.campaign import events as ev
 from opentorus.campaign import ids
+from opentorus.campaign.board import sibling_findings
 from opentorus.campaign.budget import CampaignBudgetPolicy
 from opentorus.campaign.clock import Clock
+from opentorus.campaign.concurrency import ConcurrencyGate, GatedPool, InFlight
 from opentorus.campaign.failures import find_signature, signature_key
 from opentorus.campaign.lifecycle import RunContext
 from opentorus.campaign.models import (
     ArtifactRef,
     BranchRecord,
+    CampaignSnapshot,
     CostTotals,
     ErrorCategory,
+    Finding,
     NormalizedProblem,
     Obligation,
     ObligationStatus,
@@ -81,11 +86,14 @@ class UsageCollector:
     """Folds ``TurnCompleted`` events of a worker's loop into tokens/cost/turns and
     forwards every event to the caller's sink (if any)."""
 
-    def __init__(self, inner: RunEventSink | None) -> None:
+    def __init__(self, inner: RunEventSink | None, *, lock: threading.Lock | None = None) -> None:
         self.inner = inner
         self.turns = 0
         self.tokens = 0
         self.cost_usd = 0.0
+        # Shared by the per-work-item collectors of a parallel batch: the caller's sink
+        # sees one event at a time.
+        self._lock = lock
 
     def reset(self) -> None:
         self.turns = 0
@@ -99,7 +107,11 @@ class UsageCollector:
             self.cost_usd += event.cost_usd
         if self.inner is not None:
             try:
-                self.inner.emit(event)
+                if self._lock is not None:
+                    with self._lock:
+                        self.inner.emit(event)
+                else:
+                    self.inner.emit(event)
             except Exception:  # noqa: BLE001 - a sink must never break the run
                 _logger.debug("campaign event sink raised", exc_info=True)
 
@@ -114,6 +126,12 @@ class ExecuteContext:
     result: WorkerResult = field(default_factory=WorkerResult)
     new_refs: list[ArtifactRef] = field(default_factory=list)
     wall_seconds: float = 0.0
+    # What the worker's model posted with ``board_post`` during the run.
+    posted_findings: list[Finding] = field(default_factory=list)
+    # Parallel batches only: the share of the batch's elapsed wall time charged to the
+    # campaign ledger for this item (the first item carries it all; per-item wall time
+    # stays in ``wall_seconds``), so concurrent items do not count the same seconds twice.
+    campaign_wall_seconds: float | None = None
 
 
 def failed_result_for_exception(exc: BaseException, ec: ExecuteContext) -> WorkerResult:
@@ -155,6 +173,21 @@ def failed_result_for_exception(exc: BaseException, ec: ExecuteContext) -> Worke
     )
 
 
+def latest_review_findings(snap: CampaignSnapshot, branch_id: str) -> tuple[str, ...]:
+    """The newest review of ``branch_id``'s submissions as brief lines: a header naming
+    the review and its verdict, then its findings (``()`` when none was recorded)."""
+    from opentorus.campaign.models import REJECTING_VERDICTS
+
+    mine = [r for r in snap.reviews if branch_id in r.branch_ids]
+    if not mine:
+        return ()
+    latest = max(mine, key=lambda r: (r.seq or 0, r.review_id))
+    covered = f" of {', '.join(latest.covers)}" if latest.covers else ""
+    outcome = "REJECTED" if latest.verdict in REJECTING_VERDICTS else "passed"
+    header = f"{latest.review_id} ({latest.kind}){covered}: verdict {latest.verdict} ({outcome})"
+    return (header, *latest.findings)
+
+
 class WorkerExecutor:
     """Runs workers for an engine and records their results as events."""
 
@@ -185,13 +218,42 @@ class WorkerExecutor:
 
     # -- services -------------------------------------------------------------------
 
-    def runtime(self, run: RunContext, *, item_started: datetime | None = None) -> WorkerRuntime:
+    def runtime(
+        self,
+        run: RunContext,
+        *,
+        item_started: datetime | None = None,
+        board: list[Finding] | None = None,
+        collector: UsageCollector | None = None,
+        inflight: InFlight | None = None,
+        gate: ConcurrencyGate | None = None,
+        item_budget: WorkBudget | None = None,
+        work_item_id: str | None = None,
+    ) -> WorkerRuntime:
         cfg = run.cfg
+        own = collector or self.collector
 
         def _should_stop() -> bool:
             if self._stop_flag is not None and self._stop_flag():
                 return True
-            if CampaignBudgetPolicy(cfg, run.snap.budget).is_exhausted():
+            if inflight is not None:
+                if inflight.cancelled.is_set():
+                    return True
+                # Concurrent items spend the same budget: check what is recorded *plus*
+                # what every in-flight item has spent so far, and this item's reserved
+                # share of the token / cost budget.
+                if CampaignBudgetPolicy(cfg, inflight.projected(run.snap.budget)).is_exhausted():
+                    return True
+                if item_budget is not None:
+                    if item_budget.tokens_remaining is not None and (
+                        own.tokens >= item_budget.tokens_remaining
+                    ):
+                        return True
+                    if item_budget.cost_remaining_usd is not None and (
+                        own.cost_usd >= item_budget.cost_remaining_usd
+                    ):
+                        return True
+            elif CampaignBudgetPolicy(cfg, run.snap.budget).is_exhausted():
                 return True
             # The ledger only learns a work item's wall time when the item finishes, so a
             # long item (thirty turns of half-hour experiments, live) ran on long after
@@ -201,16 +263,22 @@ class WorkerExecutor:
                 return run.snap.budget.wall_seconds_used + elapsed >= cfg.max_wall_seconds
             return False
 
+        pool: ProviderPool = self._pool()
+        if gate is not None:
+            pool = GatedPool(pool, gate)  # type: ignore[assignment]
         return WorkerRuntime(
             root=self.root,
             ot_dir=self.ot_dir,
             config=self.config,
-            pool=self._pool(),
+            pool=pool,
             clock=self.clock,
-            event_sink=self.collector,
+            event_sink=own,
             confirm=self._confirm,  # type: ignore[arg-type]
             registry_factory=self._registry_factory,
             should_stop=_should_stop,
+            board=board,
+            gate=gate,
+            foreign=(gate.foreign(work_item_id) if gate is not None and work_item_id else None),
         )
 
     # -- worker context -------------------------------------------------------------
@@ -311,7 +379,27 @@ class WorkerExecutor:
             target_claim_id=branch.target_claim_id if branch else None,
             review_targets=tuple(review_targets),
             strategy_key=branch.strategy_key if branch else None,
+            review_findings=latest_review_findings(snap, branch.branch_id) if branch else (),
+            sibling_findings=sibling_findings(snap, branch.branch_id) if branch else (),
+            work_dir=self._relative(self.work_dir(run, branch.branch_id)) if branch else "",
+            work_root=self._relative(self.work_root(run)) if branch else "",
         )
+
+    def work_root(self, run: RunContext) -> Path:
+        from opentorus.campaign import paths
+
+        return paths.work_root(self.ot_dir, run.pid, run.cid)
+
+    def work_dir(self, run: RunContext, branch_id: str) -> Path:
+        from opentorus.campaign import paths
+
+        return paths.work_dir(self.ot_dir, run.pid, run.cid, branch_id)
+
+    def _relative(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(self.root.resolve()).as_posix()
+        except ValueError:
+            return path.as_posix()
 
     # -- stale items ------------------------------------------------------------------
 
@@ -347,7 +435,9 @@ class WorkerExecutor:
 
     def run_worker(self, run: RunContext, worker: Worker, ec: ExecuteContext) -> None:
         started = self.clock.now()
-        rt = self.runtime(run, item_started=started)
+        # The branch's own scratch directory; siblings may read it, only it writes there.
+        self.work_dir(run, ec.branch.branch_id).mkdir(parents=True, exist_ok=True)
+        rt = self.runtime(run, item_started=started, board=ec.posted_findings)
         self.collector.reset()
         before = snapshot_artifacts(self.ot_dir, run.pid)
         try:
@@ -381,6 +471,82 @@ class WorkerExecutor:
                 work_item_id=ec.item.work_item_id,
                 role=ec.item.role,
             )
+            if r.artifact_id not in seen
+        ]
+        ec.new_refs = [*result.artifacts_created, *derived]
+
+    def run_worker_concurrent(
+        self,
+        run: RunContext,
+        worker: Worker | None,
+        ec: ExecuteContext,
+        *,
+        gate: ConcurrencyGate,
+        inflight: InFlight,
+        clock_lock: threading.Lock,
+        sink_lock: threading.Lock,
+    ) -> None:
+        """:meth:`run_worker` for one item of a parallel batch (called on its own thread).
+
+        Differences, all forced by concurrency: the item has its own usage collector
+        (registered with ``inflight`` for live budget checks), its runtime leases
+        gate-releasing providers and checks the projected budget, the worker runs under
+        ``gate`` (so its writes are serialized with the other items'), and the artifacts
+        it produced come from the gate's exact attribution instead of a before/after
+        window diff (which would also see the siblings' artifacts). Nothing here
+        appends an event: the engine thread records the result.
+        """
+        wid = ec.item.work_item_id
+        collector = UsageCollector(self.collector.inner, lock=sink_lock)
+        inflight.register(wid, collector)
+        with clock_lock:
+            started = self.clock.now()
+        with gate.hold(wid):
+            self.work_dir(run, ec.branch.branch_id).mkdir(parents=True, exist_ok=True)
+            rt = self.runtime(
+                run,
+                item_started=started,
+                board=ec.posted_findings,
+                collector=collector,
+                inflight=inflight,
+                gate=gate,
+                item_budget=ec.ctx.budget,
+                work_item_id=wid,
+            )
+            if worker is None:
+                result = WorkerResult(
+                    status="failed",
+                    error_category="tool_unavailable",
+                    message=f"no worker registered for role {ec.item.role.value} in this version",
+                    usage=CostTotals(steps=1),
+                )
+            else:
+                try:
+                    result = worker.run(ec.ctx, rt)
+                except Exception as exc:  # noqa: BLE001 - a worker bug is a failed item
+                    _logger.warning("worker %s failed on %s: %s", ec.item.role.value, wid, exc)
+                    result = failed_result_for_exception(exc, ec)
+        with clock_lock:
+            finished = self.clock.now()
+        ec.wall_seconds = round(max(0.0, (finished - started).total_seconds()), 3)
+        result.usage = CostTotals(
+            steps=max(1, result.usage.steps, collector.turns),
+            tokens=max(result.usage.tokens, collector.tokens),
+            cost_usd=max(result.usage.cost_usd, collector.cost_usd),
+            work_items=1,
+            wall_seconds=ec.wall_seconds,
+        )
+        ec.result = result
+        seen = {r.artifact_id for r in result.artifacts_created}
+        derived = [
+            r.model_copy(
+                update={
+                    "branch_id": ec.branch.branch_id,
+                    "work_item_id": wid,
+                    "role": ec.item.role,
+                }
+            )
+            for r in gate.attributed(wid)
             if r.artifact_id not in seen
         ]
         ec.new_refs = [*result.artifacts_created, *derived]
@@ -452,6 +618,7 @@ class WorkerExecutor:
                         ),
                         "branch_id": branch.branch_id,
                         "work_item_id": item.work_item_id,
+                        "abandon_reason": result.abandon_reason or sig.abandon_reason,
                     }
                 )
                 emit(ev.EventType.failure_signature_recorded, sig)
@@ -464,6 +631,7 @@ class WorkerExecutor:
                     message=result.message or "; ".join(result.notes),
                     failure_signature_id=sig_id,
                     notes=list(result.notes),
+                    abandon_reason=result.abandon_reason,
                 ),
             )
             if result.error_category == "tool_unavailable" and self.workers.get(item.role) is None:
@@ -494,6 +662,7 @@ class WorkerExecutor:
                 tokens=result.usage.tokens,
                 cost_usd=result.usage.cost_usd,
                 wall_seconds=ec.wall_seconds,
+                campaign_wall_seconds=ec.campaign_wall_seconds,
             ),
         )
         if result.routing_decision_id:
@@ -548,6 +717,7 @@ class WorkerExecutor:
                 )
         for review in result.reviews:
             emit(ev.EventType.review_recorded, review, refs=[review.review_id])
+        self._record_findings(run, emit, ec)
         if result.status == "branch_done":
             run.store.append(
                 ev.EventType.branch_completed,
@@ -558,6 +728,35 @@ class WorkerExecutor:
                 branch_id=branch.branch_id,
             )
             run.store.write_branch_card(run.snap.branches[branch.branch_id])
+
+    def _record_findings(
+        self, run: RunContext, emit: Callable[..., None], ec: ExecuteContext
+    ) -> None:
+        """``finding_posted`` for every valid board note of the work item (posted through
+        ``board_post`` or returned in ``WorkerResult.findings``); a note that fails
+        validation is refused with a diagnostic, never truncated or silently dropped."""
+        from opentorus.campaign.board import FINDING_PREFIX, validate_finding
+        from opentorus.campaign.models import Diagnostic
+
+        for finding in [*ec.result.findings, *ec.posted_findings]:
+            why = validate_finding(finding.kind, finding.text, finding.paths)
+            if why is not None:
+                emit(
+                    ev.EventType.diagnostic_recorded,
+                    Diagnostic(kind="invalid_payload", message=f"finding refused: {why}"),
+                )
+                continue
+            emit(
+                ev.EventType.finding_posted,
+                finding.model_copy(
+                    update={
+                        "finding_id": ids.mint(run.snap.counters, FINDING_PREFIX),
+                        "branch_id": ec.branch.branch_id,
+                        "work_item_id": ec.item.work_item_id,
+                        "role": ec.item.role,
+                    }
+                ),
+            )
 
     def _theorem_reference_payload(self, ref_id: str) -> ev.TheoremReferenceCreatedPayload:
         """The typed payload for a THMREF ref, read from the theorem ledger (a reference
@@ -611,4 +810,4 @@ class WorkerExecutor:
             emit(ev.EventType.verification_recorded, vref, refs=[aid])
 
 
-__all__ = ["ExecuteContext", "UsageCollector", "WorkerExecutor"]
+__all__ = ["ExecuteContext", "UsageCollector", "WorkerExecutor", "latest_review_findings"]

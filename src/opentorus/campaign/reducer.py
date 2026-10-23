@@ -40,6 +40,7 @@ from opentorus.campaign.models import (
     CurrentWorker,
     Diagnostic,
     FailureSignature,
+    Finding,
     NormalizedProblem,
     Obligation,
     ObligationStatus,
@@ -232,6 +233,7 @@ def _apply_branch_reactivated(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseM
     branch.suspension_reason = None
     branch.reactivation_conditions = []
     branch.consecutive_failures = 0
+    branch.reactivated_seq = e.seq
 
 
 def _apply_branch_updated(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
@@ -439,7 +441,9 @@ def _apply_budget_consumed(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseMode
     ledger.steps_used += p.steps
     ledger.tokens_used += p.tokens
     ledger.cost_used_usd += p.cost_usd
-    ledger.wall_seconds_used += p.wall_seconds
+    ledger.wall_seconds_used += (
+        p.wall_seconds if p.campaign_wall_seconds is None else p.campaign_wall_seconds
+    )
     if p.scope == "model_invocation":
         ledger.model_invocations += 1
     elif p.scope == "tool_execution":
@@ -587,6 +591,9 @@ def _apply_failure_signature_recorded(
                 existing.retry_notes.append(note)
         if sig.verifier_backends:
             existing.verifier_backends = list(sig.verifier_backends)
+        if sig.abandon_reason:
+            # The latest stated reason wins: it is the one the next brief should quote.
+            existing.abandon_reason = sig.abandon_reason
         sig = existing
     else:
         sig.first_seq = sig.first_seq or e.seq
@@ -644,6 +651,17 @@ def _apply_parallelism_capped(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseM
     )
 
 
+def _apply_finding_posted(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
+    assert isinstance(p, Finding)
+    finding = p.model_copy(deep=True)
+    finding.seq = e.seq
+    finding.branch_id = finding.branch_id or e.branch_id
+    finding.work_item_id = finding.work_item_id or e.work_item_id
+    finding.role = finding.role or e.role
+    s.findings.append(finding)
+    _bump_counter(s, "FIND", finding.finding_id)
+
+
 def _apply_problem_normalized(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
     assert isinstance(p, NormalizedProblem)
     s.normalized_problem = p.model_copy(deep=True)
@@ -694,6 +712,7 @@ _HANDLERS: dict[str, Handler] = {
     ev.EventType.diagnostic_recorded: _apply_diagnostic_recorded,
     ev.EventType.parallelism_capped: _apply_parallelism_capped,
     ev.EventType.problem_normalized: _apply_problem_normalized,
+    ev.EventType.finding_posted: _apply_finding_posted,
 }
 
 

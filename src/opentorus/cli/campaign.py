@@ -1,5 +1,5 @@
 """OpenTorus CLI — the ``campaign`` group (start / resume / status / pause / stop /
-list / verify / import-research).
+list / verify / board / import-research).
 
 Rendering only: every decision lives in ``opentorus.campaign``. Two statuses are
 shown and labelled everywhere: the *campaign status* (orchestration — phase, budget,
@@ -388,6 +388,42 @@ def campaign_verify(
                 )
     if unjustified or not report.matches:
         raise typer.Exit(code=1)
+
+
+@campaign_app.command("board")
+def campaign_board(
+    campaign_id: str = typer.Argument(..., help="Campaign id, e.g. CAMPAIGN-0001."),
+    as_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """List the cross-branch findings board: unverified notes workers shared with their
+    sibling branches. A finding is never evidence and never closes an obligation."""
+    from opentorus.campaign.store import open_campaign
+
+    base = _require_workspace_dir()
+    try:
+        snap = open_campaign(base, campaign_id).load().snapshot
+    except OpenTorusError as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit_json(
+            {
+                "campaign_id": snap.campaign_id,
+                "findings": [f.model_dump(mode="json") for f in snap.findings],
+            }
+        )
+        return
+    console.print(
+        f"{escape(snap.campaign_id)} board: {len(snap.findings)} finding(s) — unverified notes "
+        "written by workers' models; not evidence."
+    )
+    for f in snap.findings:
+        where = f"{f.branch_id or 'campaign'}" + (f" {f.work_item_id}" if f.work_item_id else "")
+        console.print(escape(f"  {f.finding_id} [{f.kind}] {where}"))
+        for line in f.text.splitlines():
+            console.print(f"    | {escape(line)}")
+        if f.paths:
+            console.print(f"    paths: {escape(', '.join(f.paths))}")
 
 
 @campaign_app.command("import-research")

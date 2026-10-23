@@ -189,6 +189,8 @@ def budget_from_config(
         require_literature_mapping=c.require_literature_mapping,
         require_root_relation=c.require_root_relation,
         persist_every_event=c.persist_every_event,
+        max_total_branches=c.max_total_branches,
+        model_duplicate_check=c.model_duplicate_check,
         scheduler_weights=c.scheduler_weights.model_copy(),
         governance_token_budget=config.governance.budgets.token_budget,
         governance_cost_budget_usd=config.governance.budgets.cost_budget_usd,

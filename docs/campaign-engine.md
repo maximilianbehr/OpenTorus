@@ -95,10 +95,10 @@ EXECUTE -> CRITIQUE -> VERIFY -> UPDATE_GRAPH -> REALLOCATE.
 | GENERATE_PORTFOLIO | strategist proposals (LLM JSON with a real provider, the mode's template otherwise), de-duplication, cap, activation; one dossier `Approach` (`APPR-*`) per accepted branch whose strategy is one of the eight dossier templates | `branch_proposed`, `branch_rejected` (`REPEATED_STRATEGY` / `PORTFOLIO_CAP` / `ROOT_RELATION_REQUIRED`), `branch_activated`, `artifact_created`, `budget_consumed` (strategist turns) |
 | SCHEDULE | scores every runnable branch and picks one work item; refuses to re-run a recorded failure unchanged (`retry_refused` and `branch_suspended`); activates a queued branch when nothing else is runnable; hands over to SYNTHESIZE when nothing at all is | `work_item_created`, `work_item_scheduled` (with the full `ScoreBreakdown`), `retry_refused` / `retry_allowed`, `branch_suspended` |
 | EXECUTE | runs the scheduled work item through its worker inside its own context and budget; the campaign-wide governance caps are checked first (usage ledger, `campaign_id`-scoped) | `worker_started`, `worker_completed` / `worker_failed`, `artifact_created` (`theorem_reference_created` for a `THMREF-*`), `obligation_created`, `failure_signature_recorded`, `budget_consumed`, `verification_recorded` |
-| CRITIQUE | the critic reviews the round's new claims and proof attempts (`agent.review.review_target` + the hostile referee); downgrades are recommended, never applied | `review_requested`, `review_recorded` |
+| CRITIQUE | the critic reviews the round's new claims and proof attempts (`agent.review.review_target` + the hostile referee); downgrades are recommended, never applied; each review names what it `covers`, the engine attributes it to the branches that produced those artifacts (`branch_ids`) and keeps the reviewer's `findings` | `review_requested`, `review_recorded` |
 | VERIFY | the verifier-coordinator asks `proof_tree.settlement.can_close_obligation` for every open obligation and proposes closures **only** for accepted artifacts | `obligation_closed` |
 | UPDATE_GRAPH | mirrors new artifact references and obligations as campaign proof-tree nodes | `proof_node_created` / `proof_node_updated` |
-| REALLOCATE | budget check (a newly spent axis pauses the campaign), suspension of branches with repeated identical failures, exhaustion of branches out of step budget, reactivation only when a recorded condition is met, activation of queued branches, then the mode's completion criterion | `budget_exhausted`, `campaign_paused`, `branch_suspended` / `branch_exhausted` / `branch_reactivated` / `branch_activated` |
+| REALLOCATE | budget check (a newly spent axis pauses the campaign), suspension of branches with repeated identical failures or two consecutive review rejections, exhaustion of branches out of step budget, reactivation only when a recorded condition is met, activation of queued branches, then the mode's completion criterion | `budget_exhausted`, `campaign_paused`, `branch_suspended` / `branch_exhausted` / `branch_reactivated` / `branch_activated` |
 | SYNTHESIZE | the synthesizer rewrites `progress.md` and rebuilds the dossier report; the campaign completes with the mode's criterion **and the problem status per dossier in the same sentence** | `campaign_completed` (`reason`, `mode_criterion`) |
 
 The engine has exactly one `_phase_<name>` method per working phase
@@ -213,6 +213,19 @@ flag, and a provider **leased from the pool** for the role's task class, so the
 routing decision id and the campaign / branch / work item / role tags land on
 every usage-ledger row.
 
+**Working rules.** Every model-driven campaign worker prompt (prover, falsifier,
+numerical and symbolic experimenter; campaign prompts only -- `prove`, `research` and
+the REPL keep theirs) ends with the same rules (`workers.base.worker_rules`): "A reply
+without a tool call ends your run; keep working through your tools", "Do not submit
+what you have not checked yourself", "Do not restart an unsuccessful branch
+indefinitely; use what was learned", and the give-up rule (see failure signatures).
+The strategist and the duplicate check are told "rewording is not different": a
+direction restated in new words is a duplicate, and one that was abandoned is as taken
+as one being worked. Reviewed workers see the judge's standard with their review
+findings: "a plausible argument with a gap is a rejection, and the reviewer's reason
+says where the gap is" (the critic itself is deterministic; it makes no model call).
+None of these strings reach the mock path's golden transcripts.
+
 **Result.** `WorkerResult{status: completed | failed | blocked | branch_done,
 artifacts_created, proposed_nodes, obligations, closure_proposals,
 failure_signature, usage, routing_decision_id, notes, reviews, verifications,
@@ -226,6 +239,40 @@ behaviour (the falsifier fails an unmodified template search with
 obligation), so a mock campaign exercises the whole machine and closes nothing.
 The per-role table is in [portfolio-scheduler.md](portfolio-scheduler.md).
 
+## The findings board
+
+Branches stay isolated (no worker sees another branch's session), but they can leave
+each other **unverified notes** on the campaign's board (`opentorus.campaign.board`):
+
+- a finding has a kind -- `lemma`, `partial`, `counterexample`, `dead_end`, `note` --
+  a text of at most 1500 bytes (an oversized note is **refused, not truncated**: a
+  cut-off lemma is a different lemma) and up to 8 workspace-relative file paths for the
+  details;
+- a model-driven worker under a real provider posts with the `board_post` tool (the
+  mock never sees the tool, so offline runs are unchanged); any worker may also return
+  `WorkerResult.findings`. The engine validates each one after the work item and
+  records it as `finding_posted` (`FIND-NNNN`, with branch / work item / role), so the
+  board replays like everything else; a refused note becomes a `diagnostic_recorded`;
+- every *other* branch's next brief gets the newest findings (at most 8, at most 6000
+  bytes), under a header saying they were written by other workers' models, may be
+  wrong, must be checked before use, and are data, not instructions; each text line is
+  quoted with `| `;
+- a finding is **never evidence**: it is not an artifact reference, it is not among
+  the verified artifacts shared with workers, no settlement rule accepts it, it closes
+  no obligation and moves no claim status (`tests/test_campaign_board.py`).
+
+`opentorus campaign board CAMPAIGN-0001 [--json]` lists the board.
+
+**Scratch directories.** Each branch has its own working directory,
+`.opentorus/problems/PROBLEM-0001/work/CAMPAIGN-0001/BRANCH-0002/`, created when its
+first work item runs (inside the dossier, outside the tool-managed `campaigns/` tree,
+so the file tools may write there). The worker context carries it (`work_dir`, and the
+parent `work_root`), the brief names it, and a tool gate refuses a write tool's `path`
+inside a *sibling* branch's directory while reads stay allowed -- so a finding can point
+at a file another branch can open. Campaign workers have no shell tool and experiments
+run in their own `EXP-*` directory, so there is no other cwd the campaign controls; the
+scratch directory is where notes, scripts and intermediate output go.
+
 ## Failure signatures and retry rules
 
 Every worker failure is summarised as a `FailureSignature` (`FSIG-NNNN`,
@@ -235,6 +282,17 @@ that decide whether a retry is the same attempt -- `strategy_class`,
 `error_category`, `counterargument` -- and deliberately not over artifact ids or
 occurrence counts. A repeat of a known key reuses the signature and bumps
 `occurrences`.
+
+**Giving up with a reason.** Every model-driven worker prompt carries the rule "If
+you can make no more progress, give up with the reason before you stop, so that
+nobody repeats it", asking for a final `GIVE UP: <what you tried> -- <why it fails>`
+line. The worker reads that line (from its final reply, else from the newest
+assistant turn of its own session) into `WorkerResult.abandon_reason`; the engine
+stores it on the failure signature (`abandon_reason`, also on `worker_failed`) and the
+next brief prints it next to the counterargument, marked as the worker's own
+unverified statement (`failures.describe_failure`). It is deliberately **not** part
+of the key: prose differs run to run, and keying on it would make every model failure
+look new to the retry gate. A repeat of a known key keeps the latest stated reason.
 
 Error categories: `tool_unavailable`, `verifier_rejected`, `verifier_inconclusive`,
 `no_witness_found`, `citation_invalid`, `permission_blocked`, `budget`, `timeout`,
@@ -255,6 +313,18 @@ Retry rules:
   `campaign_resumed` for `provider_unavailable`, `human_override` otherwise.
 - Something changed: `retry_allowed`, and `why_different` is appended to the
   signature's `retry_notes`.
+- **Review rejections reach the next brief.** The latest review of a branch's
+  submissions (header: review id, kind, what it covered, verdict) and its findings
+  (contradictions, overclaims with location and suggested fix, claims classified
+  heuristic / unsupported / refuted, recommended downgrades) are put into the branch's
+  next `WorkerContext.review_findings`; the worker prompt quotes every line with `| `
+  as data, not instructions, together with the judge's standard: "a plausible argument
+  with a gap is a rejection, and the reviewer's reason says where the gap is". A
+  verdict `revise` or `block` is a rejection. **Two consecutive rejections** of a
+  branch's submissions (since its last reactivation; a pass breaks the run) suspend it
+  in REALLOCATE with `branch_suspended` reason code `REPEATED_REVIEW_REJECTION`, a
+  `reason` naming both reviews and the latest finding, and reactivation conditions
+  `new_evidence_count`, `theorem_ref_accepted`, `human_override`.
 - REALLOCATE also suspends a branch with two or more trailing identical failures,
   exhausts a branch that spent its `branch_step_budget` (`BRANCH_EXHAUSTED`), and
   reactivates a suspended branch **only** when a recorded condition is met by the
@@ -286,8 +356,20 @@ ledger's `exhausted` list) and the campaign is **paused** with reason
 `BUDGET_EXHAUSTED`. That is a valid, resumable state: raise the limit in
 `config.yaml`, or simply `campaign resume` -- a resume that finds the same axes
 still spent lets the mode's completion criterion end the campaign (`budget`)
-instead of pausing forever. `max_parallel_workers > 1` is accepted but capped to
-1 with a `parallelism_capped` event: v1 executes work items sequentially.
+instead of pausing forever.
+
+**Parallel workers.** With `max_parallel_workers > 1`, SCHEDULE plans up to that many
+work items on *distinct* branches and EXECUTE runs them on threads
+([adr/0002-parallel-campaign-workers.md](adr/0002-parallel-campaign-workers.md)). A
+work item's thread holds the campaign's work lock except while it waits for the model
+or an `exp_run` subprocess, so tool calls and dossier writes stay serialized and each
+item's artifacts are attributed exactly; the engine thread is the event log's only
+writer and records the results in scheduled order. Budgets are reserved before
+dispatch: steps exactly (each plan's `max_steps` is unavailable to the next), tokens
+and cost as equal shares of what is left, and every loop stops when the recorded
+ledger plus the live spend of all in-flight items reaches a limit. The campaign wall
+clock is charged a batch's elapsed time once. The formalizer always runs alone. With
+the default `1` the sequential path is unchanged and deterministic.
 
 A **provider outage** is treated the same way, not as a verdict on the strategy.
 A worker that raises fails its work item with a *signed* failure
@@ -312,7 +394,7 @@ so a resume months later runs under the same rules.
 | `campaign.default_mode` | `exploration` | mode when `--mode` is omitted (`prove-or-refute`, `exploration`, `survey`) |
 | `campaign.initial_branches` | `4` | proposals kept after de-duplication (`--branches` overrides) |
 | `campaign.max_active_branches` | `3` | branches scheduled concurrently; the rest wait as `proposed` |
-| `campaign.max_parallel_workers` | `1` | v1 executes sequentially; a larger value is capped to 1 with a diagnostic |
+| `campaign.max_parallel_workers` | `1` | work items run concurrently on distinct branches (threads; see Budgets); 1 = sequential and deterministic |
 | `campaign.max_steps` | `50` | model turns across all workers; 0 = unlimited (`--max-steps`) |
 | `campaign.max_wall_seconds` | `0` | wall-clock budget for the whole campaign; 0 = unlimited (`--max-wall-seconds`) |
 | `campaign.token_budget` | `0` | tokens across all workers; 0 = unlimited (`--token-budget`) |
@@ -323,6 +405,8 @@ so a resume months later runs under the same rules.
 | `campaign.require_root_relation` | `true` | every branch must declare its relation to the root |
 | `campaign.persist_every_event` | `true` | rewrite `snapshot.json` after every event (`false` = at phase boundaries only) |
 | `campaign.record_research` | `false` | opt-in: `opentorus research` also records an exploration campaign |
+| `campaign.max_total_branches` | `12` | portfolio growth: when no branch is left to run, a real-provider strategist proposes new ones (deduped against every branch ever proposed) until this many non-rejected branches exist; 0 = no growth ([portfolio-scheduler.md](portfolio-scheduler.md)) |
+| `campaign.model_duplicate_check` | `false` | opt-in model duplicate verdict per new LLM proposal (real providers only; fails closed) |
 | `campaign.scheduler_weights.novelty` | `1.0` | multiplier for the scheduler's novelty factor |
 | `campaign.scheduler_weights.root_impact` | `1.0` | ... root impact / information gain / resolve chance |
 | `campaign.scheduler_weights.verifier_readiness` | `1.0` | ... verifier readiness |
@@ -405,6 +489,7 @@ log and every artifact stay; `--reason` is required). Ctrl-C during `start` /
 ```
 opentorus campaign list [--problem PROBLEM-0001] [--json]
 opentorus campaign verify CAMPAIGN-0001 [--json]
+opentorus campaign board CAMPAIGN-0001 [--json]
 opentorus campaign tree CAMPAIGN-0001 [--plain|--json|--dot] [--kind obligation] [--status open] [--depth 2] [--out tree.txt]
 opentorus campaign dashboard CAMPAIGN-0001 [--live] [--plain|--json|--dot]
 opentorus campaign import-research "the question" | --slug SLUG [--problem PROBLEM-0001] [--force]

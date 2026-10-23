@@ -82,9 +82,13 @@ def build_failure_signature(
     branch_id: str | None = None,
     work_item_id: str | None = None,
     verifier_backends: Sequence[str] = (),
+    abandon_reason: str = "",
 ) -> FailureSignature:
     """A signature with its key computed; ``signature_id`` is left empty for the engine
-    to mint (or to reuse from an existing signature with the same key)."""
+    to mint (or to reuse from an existing signature with the same key).
+
+    ``abandon_reason`` (the worker's own "what I tried and why it fails") is stored but
+    never keyed: see :attr:`FailureSignature.abandon_reason`."""
     sig = FailureSignature(
         signature_id="",
         key="",
@@ -98,9 +102,29 @@ def build_failure_signature(
         branch_id=branch_id,
         work_item_id=work_item_id,
         verifier_backends=sorted(verifier_backends),
+        abandon_reason=" ".join(abandon_reason.split()),
     )
     sig.key = signature_key(sig)
     return sig
+
+
+NO_COUNTERARGUMENT = "(no counterargument recorded)"
+
+
+def describe_failure(sig: FailureSignature) -> str:
+    """One line for a brief: the counterargument, plus the worker's stated reason for
+    giving up when it adds something (marked unverified — it is model text).
+
+    The counterargument is the engine's deterministic account; the abandon reason is
+    what the worker said it tried. Either alone is enough to name the dead end, so the
+    placeholder appears only when neither was recorded.
+    """
+    base = sig.counterargument.strip()
+    reason = sig.abandon_reason.strip()
+    if reason and normalize_text(reason) != normalize_text(base):
+        stated = f"worker's stated reason for giving up (unverified): {reason}"
+        return f"{base}; {stated}" if base else stated
+    return base or NO_COUNTERARGUMENT
 
 
 def find_signature(snapshot: CampaignSnapshot, key: str) -> FailureSignature | None:
@@ -274,7 +298,9 @@ __all__ = [
     "EVIDENCE_CATEGORIES",
     "RetryChanges",
     "RetryVerdict",
+    "NO_COUNTERARGUMENT",
     "build_failure_signature",
+    "describe_failure",
     "find_signature",
     "normalize_context",
     "normalize_text",

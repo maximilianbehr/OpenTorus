@@ -81,7 +81,7 @@ from opentorus.campaign.reallocation import (
     suspend_and_exhaust,
 )
 from opentorus.campaign.recording import mirror_graph, record_closures, record_portfolio
-from opentorus.campaign.scheduler import select_next
+from opentorus.campaign.scheduler import WorkItemPlan, select_next
 from opentorus.campaign.status import summarize_snapshot
 from opentorus.campaign.store import open_campaign
 from opentorus.campaign.workers import DEFAULT_WORKERS, Worker
@@ -494,9 +494,26 @@ class CampaignEngine:
     def _phase_generate_portfolio(self, run: RunContext) -> PhaseOutcome:
         """Propose, de-duplicate, cap and activate branches; one Approach per accepted one."""
 
+        self._collector.reset()
+        proposal = generate_portfolio(self._executor.runtime(run), self._portfolio_context(run))
+        self._record_strategist_usage(run)
+        record_portfolio(run, proposal, self.ot_dir)
+        active = sum(1 for b in run.snap.branches.values() if b.status is BranchStatus.active)
+        outcome = (
+            f"{len(proposal.proposals)} proposal(s) ({proposal.source}), "
+            f"{len(proposal.accepted)} accepted, {len(proposal.rejected)} rejected, "
+            f"{active} active"
+        )
+        if proposal.notes:
+            outcome += "; " + "; ".join(proposal.notes)
+        return PhaseOutcome(CampaignPhase.SCHEDULE, outcome)
+
+    def _portfolio_context(self, run: RunContext) -> PortfolioContext:
+        """What the strategist knows: the problem, coverage, and the campaign's whole
+        branch history with its failures (empty on the first portfolio)."""
         snap = run.snap
         problem = snap.normalized_problem or NormalizedProblem(problem_id=run.pid, statement="")
-        pctx = PortfolioContext(
+        return PortfolioContext(
             campaign_id=run.cid,
             mode=run.record.mode,
             problem=problem,
@@ -505,10 +522,15 @@ class CampaignEngine:
             initial_branches=run.cfg.initial_branches,
             max_active_branches=run.cfg.max_active_branches,
             branch_counter=int(snap.counters.get(ids.BRANCH_PREFIX, 0)),
-            existing_branches=tuple(snap.branches.values()),
+            existing_branches=tuple(snap.branches[b] for b in sorted(snap.branches)),
+            failure_signatures=tuple(
+                snap.failure_signatures[s] for s in sorted(snap.failure_signatures)
+            ),
+            max_total_branches=run.cfg.max_total_branches,
+            model_duplicate_check=run.cfg.model_duplicate_check,
         )
-        self._collector.reset()
-        proposal = generate_portfolio(self._executor.runtime(run), pctx)
+
+    def _record_strategist_usage(self, run: RunContext) -> None:
         if self._collector.turns:
             run.store.append(
                 ev.EventType.budget_consumed,
@@ -521,23 +543,52 @@ class CampaignEngine:
                 ),
                 role=WorkerRole.strategist,
             )
+
+    def _grow_portfolio(self, run: RunContext) -> int:
+        """Ask the strategist for new branches once the active set has run dry; the
+        number of branches accepted (0 = nothing new; no event is written then except
+        the strategist's usage). Bounded by ``max_total_branches`` and the budget."""
+        from opentorus.campaign.phases import runnable_branches
+        from opentorus.campaign.portfolio import grow_portfolio
+        from opentorus.campaign.scheduler import campaign_steps_remaining
+
+        snap = run.snap
+        if run.cfg.max_total_branches <= 0 or runnable_branches(snap):
+            return 0
+        if CampaignBudgetPolicy(run.cfg, snap.budget).is_exhausted():
+            return 0
+        if campaign_steps_remaining(snap) <= 0:
+            return 0
+        self._collector.reset()
+        proposal = grow_portfolio(self._executor.runtime(run), self._portfolio_context(run))
+        self._record_strategist_usage(run)
+        if not proposal.proposals:
+            _logger.info("portfolio growth for %s: %s", run.cid, "; ".join(proposal.notes))
+            return 0
         record_portfolio(run, proposal, self.ot_dir)
-        active = sum(1 for b in run.snap.branches.values() if b.status is BranchStatus.active)
-        outcome = (
-            f"{len(proposal.proposals)} proposal(s) ({proposal.source}), "
-            f"{len(proposal.accepted)} accepted, {len(proposal.rejected)} rejected, "
-            f"{active} active"
+        accepted = [
+            b.branch_id
+            for b in proposal.accepted
+            if run.snap.branches[b.branch_id].status is not BranchStatus.rejected
+        ]
+        _logger.info(
+            "portfolio grown for %s: %d proposal(s), %d accepted (%s)",
+            run.cid,
+            len(proposal.proposals),
+            len(accepted),
+            "; ".join(proposal.notes),
         )
-        if proposal.notes:
-            outcome += "; " + "; ".join(proposal.notes)
-        return PhaseOutcome(CampaignPhase.SCHEDULE, outcome)
+        return len(accepted)
 
     def _phase_schedule(self, run: RunContext) -> PhaseOutcome:
         """Pick the next work item — refusing an unchanged repeat of a recorded failure —
         or hand over to synthesis when nothing is runnable."""
+        if run.cfg.max_parallel_workers > 1:
+            return self._schedule_batch(run, max(1, run.cfg.max_parallel_workers))
         facts = self._facts(run)
         excluded: set[str] = set()
         refused = 0
+        grown = False
         while True:
             snap = run.snap
             plan = select_next(
@@ -551,6 +602,10 @@ class CampaignEngine:
             if plan is None:
                 if activate_queued(run):
                     continue
+                if not grown:
+                    grown = True
+                    if self._grow_portfolio(run):
+                        continue
                 note = f"; {refused} retry refused" if refused else ""
                 return PhaseOutcome(CampaignPhase.SYNTHESIZE, f"no runnable work item{note}")
             if not retry_gate(run, plan, facts, self.config):
@@ -558,7 +613,12 @@ class CampaignEngine:
                 excluded.add(plan.branch_id)
                 continue
             break
-        wid = ids.mint(snap.counters, ids.WORK_ITEM_PREFIX)
+        wid = self._create_work_item(run, plan, WorkBudget(max_steps=plan.max_steps))
+        return PhaseOutcome(CampaignPhase.EXECUTE, f"{wid} ({plan.role.value} on {plan.branch_id})")
+
+    def _create_work_item(self, run: RunContext, plan: WorkItemPlan, budget: WorkBudget) -> str:
+        """``work_item_created`` + ``work_item_scheduled`` for ``plan``; the new id."""
+        wid = ids.mint(run.snap.counters, ids.WORK_ITEM_PREFIX)
         item = WorkItem(
             work_item_id=wid,
             campaign_id=run.cid,
@@ -568,7 +628,7 @@ class CampaignEngine:
             objective=plan.objective,
             status=WorkItemStatus.created,
             session_id=f"{run.cid}:{plan.branch_id}:{wid}",
-            budget=WorkBudget(max_steps=plan.max_steps),
+            budget=budget,
         )
         run.store.append(
             ev.EventType.work_item_created, item, branch_id=plan.branch_id, work_item_id=wid
@@ -579,7 +639,85 @@ class CampaignEngine:
             branch_id=plan.branch_id,
             work_item_id=wid,
         )
-        return PhaseOutcome(CampaignPhase.EXECUTE, f"{wid} ({plan.role.value} on {plan.branch_id})")
+        return wid
+
+    def _schedule_batch(self, run: RunContext, parallel: int) -> PhaseOutcome:
+        """SCHEDULE for ``max_parallel_workers > 1``: up to ``parallel`` work items on
+        *distinct* branches, each budget reserved before dispatch.
+
+        Steps are reserved exactly (every plan's ``max_steps`` is taken out of what the
+        next plan may use, so the batch can never jointly exceed ``max_steps``); the
+        token and cost budgets left are split into equal per-item shares
+        (``WorkBudget.tokens_remaining`` / ``cost_remaining_usd``) that each item's loop
+        stops at. An exclusive role (the formalizer) is only ever scheduled alone.
+        """
+        from opentorus.campaign.concurrency import EXCLUSIVE_ROLES
+
+        facts = self._facts(run)
+        excluded: set[str] = set()
+        refused = 0
+        grown = False
+        plans: list[WorkItemPlan] = []
+        reserved = 0
+        while len(plans) < parallel:
+            plan = select_next(
+                run.snap,
+                run.cfg.scheduler_weights,
+                run.record.mode,
+                facts,
+                branch_step_budget=run.cfg.branch_step_budget,
+                exclude=frozenset(excluded),
+                reserved_steps=reserved,
+            )
+            if plan is None:
+                if activate_queued(run):
+                    continue
+                if not plans and not grown:
+                    grown = True
+                    if self._grow_portfolio(run):
+                        continue
+                break
+            excluded.add(plan.branch_id)
+            if plans and plan.role in EXCLUSIVE_ROLES:
+                continue
+            if not retry_gate(run, plan, facts, self.config):
+                refused += 1
+                continue
+            plans.append(plan)
+            reserved += plan.max_steps
+            if plan.role in EXCLUSIVE_ROLES:
+                break
+        if not plans:
+            note = f"; {refused} retry refused" if refused else ""
+            return PhaseOutcome(CampaignPhase.SYNTHESIZE, f"no runnable work item{note}")
+        ledger = run.snap.budget
+        token_share = (
+            max(0, run.cfg.token_budget - ledger.tokens_used) // len(plans)
+            if run.cfg.token_budget > 0
+            else None
+        )
+        cost_share = (
+            max(0.0, run.cfg.cost_budget - ledger.cost_used_usd) / len(plans)
+            if run.cfg.cost_budget > 0
+            else None
+        )
+        made = [
+            self._create_work_item(
+                run,
+                plan,
+                WorkBudget(
+                    max_steps=plan.max_steps,
+                    tokens_remaining=token_share,
+                    cost_remaining_usd=cost_share,
+                ),
+            )
+            + f" ({plan.role.value} on {plan.branch_id})"
+            for plan in plans
+        ]
+        note = f"; {refused} retry refused" if refused else ""
+        return PhaseOutcome(
+            CampaignPhase.EXECUTE, f"{len(made)} work item(s) in parallel: {', '.join(made)}{note}"
+        )
 
     def _scheduled_item(self, snap: CampaignSnapshot) -> WorkItem | None:
         scheduled = [wi for wi in snap.work_items.values() if wi.status is WorkItemStatus.scheduled]
@@ -592,6 +730,13 @@ class CampaignEngine:
         """Run the scheduled work item through its worker and record what happened."""
         stale = self._executor.fail_stale_running_items(run)
         snap = run.snap
+        if run.cfg.max_parallel_workers > 1:
+            batch = sorted(
+                (wi for wi in snap.work_items.values() if wi.status is WorkItemStatus.scheduled),
+                key=lambda wi: (wi.scheduled_seq or 0, wi.work_item_id),
+            )
+            if len(batch) > 1:
+                return self._execute_batch(run, batch)
         item = self._scheduled_item(snap)
         if item is None and stale:
             return PhaseOutcome(CampaignPhase.CRITIQUE, f"{stale} interrupted work item(s) failed")
@@ -636,6 +781,86 @@ class CampaignEngine:
             CampaignPhase.CRITIQUE, f"{item.work_item_id}: {exec_ctx.result.status}"
         )
 
+    def _execute_batch(self, run: RunContext, batch: list[WorkItem]) -> PhaseOutcome:
+        """EXECUTE for a parallel batch: one thread per work item (see
+        :mod:`opentorus.campaign.concurrency`), results recorded afterwards by this
+        thread -- the event log's only writer -- in scheduled order."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, wait
+
+        from opentorus.campaign.concurrency import ConcurrencyGate, InFlight
+
+        snap = run.snap
+        for item in batch:
+            if item.branch_id not in snap.branches:
+                self._fail(
+                    run, f"work item {item.work_item_id} names unknown branch {item.branch_id}"
+                )
+                return PhaseOutcome(None)
+        if not self._governance_ok(run):
+            return PhaseOutcome(None)
+        contexts: list[tuple[Worker | None, ExecuteContext]] = []
+        for item in batch:
+            branch = run.snap.branches[item.branch_id]
+            budget = item.budget or WorkBudget(max_steps=1)
+            ctx = self._executor.worker_context(run, branch=branch, item=item, budget=budget)
+            run.store.append(
+                ev.EventType.worker_started,
+                ev.WorkerStartedPayload(
+                    work_item_id=item.work_item_id,
+                    role=item.role,
+                    session_id=ctx.session_id,
+                    budget=budget,
+                ),
+                role=item.role,
+                branch_id=branch.branch_id,
+                work_item_id=item.work_item_id,
+                correlation_id=item.work_item_id,
+            )
+            contexts.append(
+                (self.workers.get(item.role), ExecuteContext(item=item, branch=branch, ctx=ctx))
+            )
+        gate = ConcurrencyGate(self.ot_dir, run.pid)
+        inflight = InFlight()
+        clock_lock = threading.Lock()
+        sink_lock = threading.Lock()
+        batch_started = self.clock.now()
+        with ThreadPoolExecutor(
+            max_workers=len(contexts), thread_name_prefix=f"{run.cid}-worker"
+        ) as pool:
+            futures = [
+                pool.submit(
+                    self._executor.run_worker_concurrent,
+                    run,
+                    worker,
+                    ec,
+                    gate=gate,
+                    inflight=inflight,
+                    clock_lock=clock_lock,
+                    sink_lock=sink_lock,
+                )
+                for worker, ec in contexts
+            ]
+            try:
+                wait(futures)
+            except KeyboardInterrupt:
+                # Stop every loop at its next turn, let the threads finish, then pause
+                # (the items stay 'running' and are failed as interrupted on resume).
+                inflight.cancelled.set()
+                wait(futures)
+                raise
+        elapsed = round(max(0.0, (self.clock.now() - batch_started).total_seconds()), 3)
+        for n, (_worker, ec) in enumerate(contexts):
+            # The campaign ledger is charged the batch's elapsed time once.
+            ec.campaign_wall_seconds = elapsed if n == 0 else 0.0
+            self._executor.record_result(run, ec)
+        statuses = ", ".join(f"{ec.item.work_item_id}: {ec.result.status}" for _w, ec in contexts)
+        return PhaseOutcome(
+            CampaignPhase.CRITIQUE,
+            f"{len(contexts)} work item(s) in parallel ({statuses}); "
+            f"{gate.max_concurrent_waits} waited concurrently",
+        )
+
     def _governance_ok(self, run: RunContext) -> bool:
         from opentorus.governance import BudgetExceeded, assert_within_budget
 
@@ -674,10 +899,16 @@ class CampaignEngine:
             result = worker.run(ctx, self._executor.runtime(run))
         except Exception as exc:  # noqa: BLE001 - a review failure must not block the round
             return PhaseOutcome(CampaignPhase.VERIFY, f"critic failed: {exc}")
+        owners = {r.artifact_id: r.branch_id for r in run.snap.artifact_refs if r.branch_id}
         for review in result.reviews:
+            # Which branches produced what the review covered: their next brief quotes
+            # the findings, and two rejections in a row suspend them (REALLOCATE).
+            branch_ids = sorted(
+                {*review.branch_ids, *(owners[c] for c in review.covers if c in owners)}
+            )
             run.store.append(
                 ev.EventType.review_recorded,
-                review,
+                review.model_copy(update={"branch_ids": branch_ids}),
                 role=WorkerRole.critic,
                 refs=[review.review_id, review.target_id],
             )
@@ -752,6 +983,11 @@ class CampaignEngine:
         if activated:
             notes.append(f"{activated} queued branch(es) activated")
         verdict = run.profile.completion(run.snap, self._facts(run))
+        if verdict.complete and verdict.criterion == "no_branches":
+            grown = self._grow_portfolio(run)
+            if grown:
+                notes.append(f"portfolio grown by {grown} branch(es)")
+                verdict = run.profile.completion(run.snap, self._facts(run))
         reason = verdict.reason + ("; " + "; ".join(notes) if notes else "")
         if verdict.complete:
             parked = sorted(

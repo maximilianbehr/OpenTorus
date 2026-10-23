@@ -79,7 +79,7 @@ Assignment types:
 | `branch_proposed` | `BranchRecord` | GENERATE_PORTFOLIO (also for later duplicates, kept as `rejected`) |
 | `branch_rejected` | `branch_id`, `reason_code` (`REPEATED_STRATEGY`, `PORTFOLIO_CAP`), `duplicate_of` | de-duplication and the cap |
 | `branch_activated` | `branch_id`, priority, slot | activation of a proposed branch |
-| `branch_suspended` | `branch_id`, `reason_code`, `reactivation_conditions` | a refused retry; repeated identical failures |
+| `branch_suspended` | `branch_id`, `reason_code`, `reactivation_conditions`, `reason` | a refused retry; repeated identical failures; two consecutive review rejections (`REPEATED_REVIEW_REJECTION`) |
 | `branch_reactivated` | `branch_id`, `condition_met`, observed | a recorded condition was met |
 | `work_item_created` | `WorkItem` (id, branch, role, task class, objective, session id, budget) | SCHEDULE |
 | `work_item_scheduled` | `work_item_id`, the full `ScoreBreakdown`, `claimed_by` | SCHEDULE |
@@ -91,7 +91,8 @@ Assignment types:
 | `proof_node_updated` | `node_id`, changes | UPDATE_GRAPH |
 | `theorem_reference_created` | `theorem_reference_id`, paper, review status | a worker created a THMREF |
 | `review_requested` | `target_id`, kind | CRITIQUE |
-| `review_recorded` | `ReviewRef` (review id, target, verdict) | CRITIQUE |
+| `finding_posted` | `Finding` (`FIND-NNNN`, kind, text <= 1500 bytes, paths, branch, work item, role) | EXECUTE, after a work item: an unverified board note (never evidence) |
+| `review_recorded` | `ReviewRef` (review id, target, verdict, `covers`, `branch_ids`, `findings`) | CRITIQUE |
 | `verification_requested` | `artifact_id`, backend | a worker submitted to a verifier |
 | `verification_recorded` | `VerificationRef` (artifact, backend, accepted, inconclusive) | the verifier ledger answered |
 | `budget_consumed` | scope (`campaign` / `branch` / `work_item` / `model_invocation` / `tool_execution` / `experiment`), ref, steps, tokens, cost, wall seconds | after every work item and strategist call |
@@ -119,7 +120,7 @@ Extras:
 | `migration_recorded` | source paths, sha256s, `imported_at`, `importer_version` | `campaign import-research` |
 | `diagnostic_recorded` | `Diagnostic` | the store or engine noticed something about the files themselves (the only event a terminal campaign still accepts) |
 | `campaign_failed` | reason | an illegal phase transition or a missing handler (terminal) |
-| `parallelism_capped` | requested, effective | `max_parallel_workers > 1` at start |
+| `parallelism_capped` | requested, effective | legacy: written by builds that capped `max_parallel_workers` to 1; still read, no longer emitted |
 | `problem_normalized` | `NormalizedProblem` | NORMALIZE |
 
 ## Reducer and replay
@@ -180,7 +181,7 @@ lists them):
 | `invalid_payload` | a known type whose payload the reducer could not validate |
 | `invalid_transition` | a phase move in an old log that the table forbids (skipped) |
 | `migration` | reserved for a record upgraded on read (every migration is the identity today) |
-| `parallelism_capped` | `max_parallel_workers > 1` |
+| `parallelism_capped` | legacy logs only (parallel workers are real since ADR 0002) |
 
 `schema_version` stamps every event and snapshot; `store.MIGRATIONS[v]` upgrades a
 raw event dict *to* version `v` and `migrate_events` runs a record through every

@@ -43,6 +43,7 @@ from opentorus.campaign.models import (
     BranchStatus,
     CampaignMode,
     CampaignSnapshot,
+    FailureSignature,
     NormalizedProblem,
     RootRelation,
     WorkerRole,
@@ -132,7 +133,13 @@ class PortfolioContext:
     initial_branches: int = 4
     max_active_branches: int = 3
     branch_counter: int = 0
+    # Every branch the campaign ever proposed, in every state (rejected, suspended and
+    # exhausted ones included), and its recorded failures: the strategist sees them and
+    # dedup compares against them -- an abandoned direction is as taken as a live one.
     existing_branches: tuple[BranchRecord, ...] = ()
+    failure_signatures: tuple[FailureSignature, ...] = ()
+    max_total_branches: int = 0
+    model_duplicate_check: bool = False
 
 
 @dataclass
@@ -313,16 +320,53 @@ class DedupResult:
     rejected: list[BranchRecord] = field(default_factory=list)  # status=rejected, duplicate_of set
 
 
+def _history_duplicate(
+    proposal: BranchRecord, history: Sequence[BranchRecord], threshold: float
+) -> BranchRecord | None:
+    tokens = normalize_objective(proposal.objective)
+    for old in sorted(history, key=lambda b: b.branch_id):
+        if old.kind is not proposal.kind or old.root_relation is not proposal.root_relation:
+            continue
+        if jaccard(tokens, normalize_objective(old.objective)) >= threshold:
+            return old
+    return None
+
+
 def dedup_proposals(
-    proposals: list[BranchRecord], *, threshold: float = JACCARD_DUPLICATE_THRESHOLD
+    proposals: list[BranchRecord],
+    *,
+    threshold: float = JACCARD_DUPLICATE_THRESHOLD,
+    history: Sequence[BranchRecord] = (),
 ) -> DedupResult:
     """First proposal wins; a later one with the same (kind, root_relation) and a
     Jaccard overlap ≥ ``threshold`` on its normalised objective is rejected as
     ``REPEATED_STRATEGY`` (kept, with ``duplicate_of`` naming the survivor). Survivors
     that were compared against something get a ``distinctness_note`` naming their
-    closest accepted neighbour, so "why is this a separate branch" is answerable."""
+    closest accepted neighbour, so "why is this a separate branch" is answerable.
+
+    ``history`` is every branch the campaign already has, in *every* state: the same
+    rule applied against it rejects a proposal that repeats an active, suspended,
+    exhausted, completed or rejected branch (a direction that was abandoned is as taken
+    as one being worked)."""
     result = DedupResult()
     for proposal in proposals:
+        old = _history_duplicate(proposal, history, threshold)
+        if old is not None:
+            result.rejected.append(
+                proposal.model_copy(
+                    update={
+                        "status": BranchStatus.rejected,
+                        "rejection_reason": ReasonCode.REPEATED_STRATEGY.value,
+                        "duplicate_of": old.branch_id,
+                        "distinctness_note": (
+                            f"objective overlaps {old.branch_id} ({old.status.value}; "
+                            f"Jaccard >= {threshold}): an abandoned direction is as taken "
+                            "as one being worked"
+                        ),
+                    }
+                )
+            )
+            continue
         tokens = normalize_objective(proposal.objective)
         dup: BranchRecord | None = None
         closest: tuple[float, str] | None = None
@@ -574,7 +618,13 @@ def generate_portfolio(runtime: WorkerRuntime | None, ctx: PortfolioContext) -> 
                 )
                 have.add(kind)
                 notes.append(f"template {kind.value} branch appended: the strategist omitted it")
-    dedup = dedup_proposals(proposals)
+    dedup = dedup_proposals(proposals, history=ctx.existing_branches)
+    if source == "llm" and runtime is not None and ctx.model_duplicate_check:
+        kept, refused, check_notes = apply_model_duplicate_check(
+            runtime, ctx, dedup.accepted, history=ctx.existing_branches
+        )
+        dedup = DedupResult(accepted=kept, rejected=[*dedup.rejected, *refused])
+        notes.extend(check_notes)
     capped = cap_proposals(
         dedup.accepted,
         initial_branches=ctx.initial_branches,
@@ -603,6 +653,121 @@ def generate_portfolio(runtime: WorkerRuntime | None, ctx: PortfolioContext) -> 
         activated=activated,
         notes=notes,
         source=source,
+    )
+
+
+DUPLICATE_CHECK_FAILED = "DUPLICATE_CHECK_FAILED"
+
+
+def apply_model_duplicate_check(
+    runtime: WorkerRuntime,
+    ctx: PortfolioContext,
+    accepted: Sequence[BranchRecord],
+    *,
+    history: Sequence[BranchRecord] = (),
+) -> tuple[list[BranchRecord], list[BranchRecord], list[str]]:
+    """``(kept, rejected, notes)`` after one model verdict per proposal that survived
+    Jaccard, compared against the history and the proposals kept before it.
+
+    A verdict naming a branch rejects the proposal ``REPEATED_STRATEGY`` with that
+    ``duplicate_of``; a check that fails in any way (see
+    :func:`~opentorus.campaign.workers.strategist.model_duplicate_check`) rejects it
+    ``DUPLICATE_CHECK_FAILED`` -- fail closed. Callers use it with real providers only.
+    """
+    from opentorus.campaign.workers.strategist import DuplicateCheckFailed, model_duplicate_check
+
+    kept: list[BranchRecord] = []
+    rejected: list[BranchRecord] = []
+    notes: list[str] = []
+    for proposal in accepted:
+        known = [*history, *kept]
+        if not known:
+            kept.append(proposal)
+            continue
+        try:
+            dup, reason = model_duplicate_check(runtime, ctx, proposal, known)
+        except DuplicateCheckFailed as exc:
+            rejected.append(
+                proposal.model_copy(
+                    update={
+                        "status": BranchStatus.rejected,
+                        "rejection_reason": DUPLICATE_CHECK_FAILED,
+                        "distinctness_note": f"refused: {exc}"[:300],
+                    }
+                )
+            )
+            notes.append(f"{proposal.branch_id} refused: {exc}")
+            continue
+        if dup is not None:
+            rejected.append(
+                proposal.model_copy(
+                    update={
+                        "status": BranchStatus.rejected,
+                        "rejection_reason": ReasonCode.REPEATED_STRATEGY.value,
+                        "duplicate_of": dup,
+                        "distinctness_note": f"model duplicate check: same as {dup}: {reason}"[
+                            :300
+                        ],
+                    }
+                )
+            )
+            continue
+        note = proposal.distinctness_note
+        suffix = (
+            f"model duplicate check: distinct ({reason})" if reason else "model check: distinct"
+        )
+        kept.append(
+            proposal.model_copy(
+                update={"distinctness_note": f"{note}; {suffix}"[:400] if note else suffix}
+            )
+        )
+    return kept, rejected, notes
+
+
+def grow_portfolio(runtime: WorkerRuntime | None, ctx: PortfolioContext) -> PortfolioProposal:
+    """New branches for a campaign whose active set ran dry (REALLOCATE / SCHEDULE).
+
+    Only a real-provider strategist grows a portfolio -- the template has nothing new
+    to offer a campaign that already ran it, so under the mock (or without a runtime)
+    nothing is proposed and no event is written. Proposals are de-duplicated against
+    *every* historical branch (and, with ``model_duplicate_check``, by one model verdict
+    each), capped so the non-rejected branch count never exceeds
+    ``max_total_branches``, and activated into the free active slots; the rest queue.
+    """
+    live = [b for b in ctx.existing_branches if b.status is not BranchStatus.rejected]
+    room = ctx.max_total_branches - len(live)
+    if room <= 0:
+        return PortfolioProposal(
+            notes=[f"growth: max_total_branches={ctx.max_total_branches} reached"],
+            source="none",
+        )
+    if runtime is None:
+        return PortfolioProposal(notes=["growth: no runtime"], source="none")
+    from opentorus.campaign.workers.strategist import propose_with_model
+
+    active = sum(1 for b in ctx.existing_branches if b.status is BranchStatus.active)
+    free = max(0, ctx.max_active_branches - active)
+    want = max(1, min(room, ctx.max_active_branches))
+    items, notes = propose_with_model(runtime, ctx, count=want + 1, growth=True)
+    if not items:
+        return PortfolioProposal(notes=notes, source="none")
+    proposals, item_notes = proposals_from_items(items, ctx, start_index=ctx.branch_counter + 1)
+    notes.extend(item_notes)
+    dedup = dedup_proposals(proposals, history=ctx.existing_branches)
+    if ctx.model_duplicate_check:
+        kept, refused, check_notes = apply_model_duplicate_check(
+            runtime, ctx, dedup.accepted, history=ctx.existing_branches
+        )
+        dedup = DedupResult(accepted=kept, rejected=[*dedup.rejected, *refused])
+        notes.extend(check_notes)
+    capped = cap_proposals(dedup.accepted, initial_branches=want)
+    activated = activate_initial(capped.accepted, max_active=free)
+    return PortfolioProposal(
+        accepted=capped.accepted,
+        rejected=[*dedup.rejected, *capped.rejected],
+        activated=activated,
+        notes=notes,
+        source="llm-growth",
     )
 
 
@@ -654,16 +819,19 @@ __all__ = [
     "COVERAGE_HINTS",
     "JACCARD_DUPLICATE_THRESHOLD",
     "KIND_TO_ROLE",
+    "DUPLICATE_CHECK_FAILED",
     "PORTFOLIO_SLACK",
     "STRATEGY_TITLES",
     "DedupResult",
     "PortfolioContext",
     "PortfolioProposal",
     "activate_initial",
+    "apply_model_duplicate_check",
     "bootstrap_portfolio",
     "cap_proposals",
     "dedup_proposals",
     "generate_portfolio",
+    "grow_portfolio",
     "initial_priority",
     "jaccard",
     "mandatory_branches",

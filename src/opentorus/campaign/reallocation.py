@@ -33,12 +33,15 @@ from opentorus.campaign.failures import (
 )
 from opentorus.campaign.lifecycle import RunContext
 from opentorus.campaign.models import (
+    REJECTING_VERDICTS,
     BranchRecord,
     BranchStatus,
     CampaignPhase,
     CampaignSnapshot,
     FailureSignature,
     ObligationStatus,
+    ReactivationCondition,
+    ReviewRef,
     WorkItemStatus,
 )
 from opentorus.campaign.phases import DossierFacts
@@ -238,6 +241,69 @@ def retry_gate(run: RunContext, plan: WorkItemPlan, facts: DossierFacts, config:
     return False
 
 
+# Two rejections in a row of a branch's submissions (referee / critic verdict ``revise``
+# or ``block``) suspend it: a third identical rewrite rarely fixes what two reviews
+# named, and the budget is better spent elsewhere until something new is known.
+REVIEW_REJECTION_LIMIT = 2
+REVIEW_REJECTION_REASON = "REPEATED_REVIEW_REJECTION"
+
+
+def review_rejection_streak(branch: BranchRecord, snap: CampaignSnapshot) -> list[ReviewRef]:
+    """The trailing run of rejecting reviews of ``branch``'s submissions, oldest first,
+    counted since its last reactivation (a pass breaks the run)."""
+    since = branch.reactivated_seq or 0
+    mine = sorted(
+        (r for r in snap.reviews if branch.branch_id in r.branch_ids and (r.seq or 0) > since),
+        key=lambda r: (r.seq or 0, r.review_id),
+    )
+    streak: list[ReviewRef] = []
+    for review in reversed(mine):
+        if review.verdict not in REJECTING_VERDICTS:
+            break
+        streak.append(review)
+    return list(reversed(streak))
+
+
+def suspend_for_rejections(
+    run: RunContext, branch: BranchRecord, rejected: list[ReviewRef], facts: DossierFacts
+) -> None:
+    """``branch_suspended`` (``REPEATED_REVIEW_REJECTION``) naming the rejecting reviews;
+    reactivation needs something new: evidence, an accepted theorem reference, or a human."""
+    named = ", ".join(f"{r.review_id} ({r.verdict})" for r in rejected)
+    first_finding = next((f for r in reversed(rejected) for f in r.findings), "")
+    reason = f"{len(rejected)} consecutive review rejections of this branch's submissions: {named}"
+    if first_finding:
+        reason += f"; latest finding: {first_finding}"
+    conditions = [
+        ReactivationCondition(
+            kind="new_evidence_count",
+            reference=branch.branch_id,
+            threshold=float(facts.evidence_count + 1),
+            observed_at_suspension=float(facts.evidence_count),
+        ),
+        ReactivationCondition(
+            kind="theorem_ref_accepted",
+            reference=branch.branch_id,
+            threshold=float(facts.accepted_theorem_ref_count + 1),
+            observed_at_suspension=float(facts.accepted_theorem_ref_count),
+        ),
+        ReactivationCondition(kind="human_override", reference=branch.branch_id),
+    ]
+    run.store.append(
+        ev.EventType.branch_suspended,
+        ev.BranchSuspendedPayload(
+            branch_id=branch.branch_id,
+            reason_code=REVIEW_REJECTION_REASON,
+            reactivation_conditions=conditions,
+            reason=reason[:600],
+        ),
+        branch_id=branch.branch_id,
+        refs=[r.review_id for r in rejected],
+    )
+    run.store.write_branch_card(run.snap.branches[branch.branch_id])
+    _logger.info("branch %s suspended: %s", branch.branch_id, reason)
+
+
 def suspend_and_exhaust(run: RunContext, facts: DossierFacts) -> str:
     """Suspend active branches with ≥ 2 trailing identical failures; exhaust the ones
     out of branch step budget. Returns a note for the phase outcome."""
@@ -256,6 +322,11 @@ def suspend_and_exhaust(run: RunContext, facts: DossierFacts) -> str:
                 why=f"{streak} identical failures",
             )
             notes.append(f"{bid} suspended ({streak} identical failures)")
+            continue
+        rejected = review_rejection_streak(branch, run.snap)
+        if len(rejected) >= REVIEW_REJECTION_LIMIT:
+            suspend_for_rejections(run, branch, rejected, facts)
+            notes.append(f"{bid} suspended ({len(rejected)} consecutive review rejections)")
             continue
         if branch_steps_remaining(branch, run.snap, run.cfg.branch_step_budget) <= 0:
             run.store.append(
@@ -301,12 +372,16 @@ def reactivate(run: RunContext, facts: DossierFacts) -> str:
 
 __all__ = [
     "REVIEWABLE_KINDS",
+    "REVIEW_REJECTION_LIMIT",
+    "REVIEW_REJECTION_REASON",
     "activate_queued",
     "critique_targets",
     "last_entered_seq",
     "reactivate",
     "retry_changes",
     "retry_gate",
+    "review_rejection_streak",
     "suspend",
     "suspend_and_exhaust",
+    "suspend_for_rejections",
 ]

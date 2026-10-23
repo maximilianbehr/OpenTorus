@@ -35,6 +35,11 @@ from opentorus.campaign.workers.base import (
     acquire_lease,
     bounded_loop,
     is_mock_provider,
+    review_block,
+    scratch_block,
+    sibling_block,
+    stated_abandon_reason,
+    worker_rules,
 )
 from opentorus.errors import OpenTorusError
 
@@ -72,7 +77,11 @@ def _prompt(ctx: WorkerContext) -> str:
         "If a step of the argument is an exact identity or inequality, submit it as a JSON "
         'certificate {"lhs": ..., "rhs": ..., "relation": "eq|le|lt|ge|gt|ne", '
         '"vars": {"x": "real"}} via proof_submit(backend="sympy", source=<json>). Only an '
-        "ACCEPTED submission is machine-checked; record anything else as an open gap."
+        "ACCEPTED submission is machine-checked; record anything else as an open gap.\n"
+        + "".join(
+            line + "\n" for line in [*review_block(ctx), *sibling_block(ctx), *scratch_block(ctx)]
+        )
+        + "\n".join(worker_rules())
     )
 
 
@@ -90,9 +99,11 @@ class SymbolicWorker:
         steps: int,
         decision_id: str | None,
         verifications: list[VerificationRef] | None = None,
+        abandon_reason: str = "",
     ) -> WorkerResult:
         return WorkerResult(
             status="failed",
+            abandon_reason=abandon_reason,
             error_category=category,
             message=counterargument,
             artifacts_created=artifacts,
@@ -109,6 +120,7 @@ class SymbolicWorker:
                 counterargument=counterargument,
                 artifact_ids=artifact_ids,
                 verifier_backends=["sympy"],
+                abandon_reason=abandon_reason,
             ),
         )
 
@@ -128,6 +140,7 @@ class SymbolicWorker:
         decision_id = lease.decision.decision_id
         certificate = certificate_from_objective(ctx.branch_objective)
         turns = 0
+        final: str | None = None
         new_ids: list[str] = []
         if certificate is not None:
             try:
@@ -163,9 +176,13 @@ class SymbolicWorker:
         else:
             before = {p.id for p in list_proofs(rt.ot_dir)}
             loop = bounded_loop(ctx, rt, lease=lease)
-            loop.run(_prompt(ctx))
+            final = loop.run(_prompt(ctx))
             turns = loop.steps_run
-            new_ids = sorted(p.id for p in list_proofs(rt.ot_dir) if p.id not in before)
+            new_ids = sorted(
+                p.id
+                for p in list_proofs(rt.ot_dir)
+                if p.id not in before and not rt.is_foreign(p.id)
+            )
         steps = max(1, turns)
         proofs = {p.id: p for p in list_proofs(rt.ot_dir) if p.id in new_ids}
         artifacts = [
@@ -204,6 +221,7 @@ class SymbolicWorker:
                 artifact_ids=[],
                 steps=steps,
                 decision_id=decision_id,
+                abandon_reason=stated_abandon_reason(rt.ot_dir, ctx.session_id, final),
             )
         inconclusive = all(p.inconclusive for p in proofs.values())
         outputs = "; ".join(f"{p.id}: {p.output.strip()[:120]}" for p in proofs.values())
@@ -220,6 +238,7 @@ class SymbolicWorker:
             steps=steps,
             decision_id=decision_id,
             verifications=verifications,
+            abandon_reason=stated_abandon_reason(rt.ot_dir, ctx.session_id, final),
         )
 
 

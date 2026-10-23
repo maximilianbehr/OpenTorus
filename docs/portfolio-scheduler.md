@@ -45,6 +45,34 @@ proposals ──> dedup ──> cap ──> activation ──> events
   `proposed` (queued) and are activated in REALLOCATE when a slot frees up.
 * Every accepted template branch gets a dossier `Approach` (`APPR-*`) recorded as an
   `artifact_created`.
+* **History.** The strategist prompt lists every branch the campaign already has, in
+  every state (active, suspended, exhausted, completed, rejected -- with the suspension
+  or rejection reason), and the recorded failure signatures, quoted line by line with
+  `| ` as data. Dedup compares each proposal against that whole history with the same
+  rule (same kind and relation, Jaccard >= 0.8): "a direction that was abandoned is as
+  taken as one being worked", and the prompt says "rewording is not different". On the
+  first portfolio the history is empty, so nothing changes there.
+* **Optional model duplicate check** (`campaign.model_duplicate_check`, default off;
+  real providers only, LLM proposals only). Each proposal that survived Jaccard gets one
+  bounded model turn offering one tool, `duplicate_verdict(duplicate_of, reason)`, with
+  the existing directions and the proposal framed as data. Exactly one call naming a
+  known branch id rejects the proposal `REPEATED_STRATEGY` (`duplicate_of` = that id);
+  exactly one call with `null` keeps it; anything else -- no call, a prose or JSON
+  answer, an unknown id, two calls, a provider error -- rejects it
+  `DUPLICATE_CHECK_FAILED` (fail closed). Jaccard stays the deterministic default.
+
+## Portfolio growth (REALLOCATE / SCHEDULE)
+
+When the active set runs dry -- no branch is `active` or `proposed` -- and budget
+remains, the engine asks the strategist for new branches (`portfolio.grow_portfolio`)
+before it lets the mode's "no branches" criterion complete the campaign. Growth is
+LLM-only: under the mock (or with no eligible provider) nothing is proposed and no
+branch event is written, so offline runs are unchanged. Proposals go through history
+dedup (and the model check when enabled), are capped so the number of non-rejected
+branches never exceeds `campaign.max_total_branches` (default 12; `0` disables growth;
+campaigns recorded before this existed resume with 0), and fill the free active slots;
+the strategist's turns are charged as `budget_consumed` (`ref=strategist`). A growth
+round whose proposals are all duplicates adds nothing, and the campaign completes.
 
 ## Scheduler (SCHEDULE)
 

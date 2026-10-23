@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from opentorus.campaign.failures import build_failure_signature
+from opentorus.campaign.failures import build_failure_signature, describe_failure
 from opentorus.campaign.models import (
     ArtifactRef,
     CostTotals,
@@ -37,6 +37,11 @@ from opentorus.campaign.workers.base import (
     experiment_deliverable,
     experiment_timeout_gate,
     is_mock_provider,
+    review_block,
+    scratch_block,
+    sibling_block,
+    stated_abandon_reason,
+    worker_rules,
 )
 from opentorus.campaign.workers.falsifier import (
     branch_experiments,
@@ -78,6 +83,17 @@ def _prompt(ctx: WorkerContext, template: str) -> str:
     ]
     if ctx.assumption_context:
         lines.append("Assumptions: " + "; ".join(ctx.assumption_context))
+    if ctx.failure_signatures:
+        lines.append(
+            "Do not repeat these failed experiments unchanged: "
+            + "; ".join(
+                f"{f.tool_or_solver}: {describe_failure(f)}" for f in ctx.failure_signatures
+            )
+        )
+    lines.extend(review_block(ctx))
+    lines.extend(sibling_block(ctx))
+    lines.extend(scratch_block(ctx))
+    lines.extend(worker_rules())
     return "\n".join(lines)
 
 
@@ -113,6 +129,7 @@ class NumericalWorker:
             artifacts.append(created)
             notes.append(f"branch-level workspace claim {claim_id} created for evidence")
         turns = 0
+        final: str | None = None
         exp_ids: list[str]
         if is_mock_provider(lease.provider):
             prior = branch_experiments(ctx, rt)
@@ -157,7 +174,9 @@ class NumericalWorker:
                 exp_ids = [created_exp.id]
         else:
             before = {e.id for e in list_experiments(rt.ot_dir)}
-            gate, hint = experiment_deliverable(rt.ot_dir, template=template, before=before)
+            gate, hint = experiment_deliverable(
+                rt.ot_dir, template=template, before=before, is_foreign=rt.is_foreign
+            )
             timeout_coercions: list[str] = []
             loop = bounded_loop(
                 ctx,
@@ -169,7 +188,7 @@ class NumericalWorker:
                 session_gate=gate,
                 session_recovery_hint=hint,
             )
-            loop.run(_prompt(ctx, template))
+            final = loop.run(_prompt(ctx, template))
             turns = loop.steps_run
             if timeout_coercions:
                 notes.append(
@@ -177,7 +196,11 @@ class NumericalWorker:
                     f"{rt.config.campaign.max_experiment_seconds}s (asked: "
                     f"{', '.join(timeout_coercions)})"
                 )
-            exp_ids = sorted(e.id for e in list_experiments(rt.ot_dir) if e.id not in before)
+            exp_ids = sorted(
+                e.id
+                for e in list_experiments(rt.ot_dir)
+                if e.id not in before and not rt.is_foreign(e.id)
+            )
         recorded: list[str] = []
         scaffold_only = False
         for exp_id in exp_ids:
@@ -235,8 +258,10 @@ class NumericalWorker:
             if scaffold_only
             else f"no experiment with parseable output produced in {max(1, turns)} model turn(s)"
         )
+        abandon = stated_abandon_reason(rt.ot_dir, ctx.session_id, final)
         return WorkerResult(
             status="failed",
+            abandon_reason=abandon,
             error_category="model_no_progress",
             message=counterargument,
             artifacts_created=artifacts,
@@ -251,6 +276,7 @@ class NumericalWorker:
                 error_category="model_no_progress",
                 counterargument=counterargument,
                 artifact_ids=list(exp_ids),
+                abandon_reason=abandon,
             ),
             target_claim_id=claim_id,
         )

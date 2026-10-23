@@ -394,7 +394,7 @@ campaign:
   initial_branches: 4
   # Branches scheduled concurrently; the rest wait as "proposed"
   max_active_branches: 3
-  # v1 executes work items sequentially; a larger value is capped to 1 with a diagnostic
+  # Work items run concurrently on distinct branches (threads); 1 = sequential, deterministic
   max_parallel_workers: 1
   # Total model turns across all workers; 0 = not configured / unlimited
   max_steps: 50
@@ -417,6 +417,12 @@ campaign:
   persist_every_event: true
   # Opt-in: `opentorus research` also records an exploration campaign
   record_research: false
+  # Portfolio growth: when no branch is left to run, a real-provider strategist proposes
+  # new ones (de-duplicated against every branch ever proposed, abandoned ones included)
+  # until this many non-rejected branches exist; 0 = never grow past the initial portfolio
+  max_total_branches: 12
+  # Opt-in model duplicate check on new proposals (real providers only; fails closed)
+  model_duplicate_check: false
   # Multipliers for the scheduler's documented scoring factors (1.0 = neutral)
   scheduler_weights:
     novelty: 1.0
