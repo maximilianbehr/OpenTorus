@@ -147,6 +147,12 @@ ALLOWED_EXCEPTIONS: dict[tuple[str, str], str] = {
     ("repl", "cli"): "REPL reuses CLI helpers",
     # The TUI is a skin over the REPL dispatch core.
     ("tui", "repl"): "TUI wraps the REPL dispatch",
+    # The credential-name list has one source: tools.childenv (stdlib-only leaf module),
+    # which strips it from every child environment. privacy's scrubber reuses it.
+    ("privacy", "tools.childenv"): "single source of credential env names",
+    # An approval's granularity depends on the call's effect class; tools.effects is a
+    # stdlib-only leaf module (lazy import), not the tool implementations.
+    ("approvals", "tools.effects"): "approval granularity by effect class",
 }
 
 

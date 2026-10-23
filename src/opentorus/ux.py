@@ -191,8 +191,45 @@ class StreamPrinter:
         self._indicator = indicator
         self._buffer = ""
         self._in_fence = False
+        self._in_citations = False
 
     def _emit(self, line: str) -> None:
+        # The <memory_citations> block is bookkeeping the loop strips from the answer;
+        # streamed text reaches the screen first, so it is suppressed here too.
+        if not self._in_fence:
+            visible = self._drop_citations(line)
+            if visible is None:
+                return
+            line = visible
+        self._emit_visible(line)
+
+    def _drop_citations(self, line: str) -> str | None:
+        open_tag, close_tag = "<memory_citations>", "</memory_citations>"
+        kept = ""
+        rest = line
+        touched = False
+        while True:
+            if self._in_citations:
+                end = rest.find(close_tag)
+                if end == -1:
+                    return kept if kept.strip() else None
+                rest = rest[end + len(close_tag) :]
+                self._in_citations = False
+                touched = True
+                continue
+            start = rest.find(open_tag)
+            if start == -1:
+                kept += rest
+                break
+            kept += rest[:start]
+            rest = rest[start + len(open_tag) :]
+            self._in_citations = True
+            touched = True
+        if touched and not kept.strip():
+            return None
+        return kept
+
+    def _emit_visible(self, line: str) -> None:
         if line.lstrip().startswith("```"):
             self._in_fence = not self._in_fence
             self._console.print(line, markup=False, highlight=False)
