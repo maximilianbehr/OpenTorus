@@ -38,6 +38,7 @@ from opentorus.campaign.workers.base import (
     experiment_deliverable,
     experiment_timeout_gate,
     is_mock_provider,
+    review_block,
     stated_abandon_reason,
 )
 from opentorus.campaign.workers.falsifier import (
@@ -87,6 +88,7 @@ def _prompt(ctx: WorkerContext, template: str) -> str:
                 f"{f.tool_or_solver}: {describe_failure(f)}" for f in ctx.failure_signatures
             )
         )
+    lines.extend(review_block(ctx))
     lines.append(ABANDON_RULE)
     return "\n".join(lines)
 

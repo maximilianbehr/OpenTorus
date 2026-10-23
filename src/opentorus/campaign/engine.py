@@ -674,10 +674,16 @@ class CampaignEngine:
             result = worker.run(ctx, self._executor.runtime(run))
         except Exception as exc:  # noqa: BLE001 - a review failure must not block the round
             return PhaseOutcome(CampaignPhase.VERIFY, f"critic failed: {exc}")
+        owners = {r.artifact_id: r.branch_id for r in run.snap.artifact_refs if r.branch_id}
         for review in result.reviews:
+            # Which branches produced what the review covered: their next brief quotes
+            # the findings, and two rejections in a row suspend them (REALLOCATE).
+            branch_ids = sorted(
+                {*review.branch_ids, *(owners[c] for c in review.covers if c in owners)}
+            )
             run.store.append(
                 ev.EventType.review_recorded,
-                review,
+                review.model_copy(update={"branch_ids": branch_ids}),
                 role=WorkerRole.critic,
                 refs=[review.review_id, review.target_id],
             )

@@ -316,6 +316,8 @@ class BranchRecord(_Persisted):
     consecutive_failures: int = 0
     target_claim_id: str | None = None
     strategy_key: str | None = None
+    # Seq of the latest ``branch_reactivated``: review-rejection streaks restart there.
+    reactivated_seq: int | None = None
 
 
 class ScoreBreakdown(_Persisted):
@@ -492,6 +494,9 @@ class WorkerContext(BaseModel):
     # The branch's strategy template key (``proof_sketch``, ``counterexample_search``, …)
     # — the ``strategy_class`` of any failure signature the worker records.
     strategy_key: str | None = None
+    # The latest review of this branch's submissions: a header line naming the review
+    # and its verdict, then the reviewer's findings (rendered quoted, as data).
+    review_findings: tuple[str, ...] = ()
 
     @field_serializer("allowed_tools")
     def _sorted_tools(self, value: frozenset[str]) -> list[str]:
@@ -617,6 +622,18 @@ class ReviewRef(_Persisted):
     kind: str = "review"
     verdict: str = ""
     seq: int | None = None
+    # The artifact ids the review covered (a referee report covers the round's claims
+    # and proof attempts, a claim review its one claim), the branches that produced
+    # them (filled by the engine from the snapshot's artifact refs), and the reviewer's
+    # findings as short lines — quoted, as data, into those branches' next briefs.
+    covers: list[str] = Field(default_factory=list)
+    branch_ids: list[str] = Field(default_factory=list)
+    findings: list[str] = Field(default_factory=list)
+
+
+# Review verdicts that reject the submission: a plausible argument with a gap is a
+# rejection ("revise"), not a pass with remarks.
+REJECTING_VERDICTS: frozenset[str] = frozenset({"revise", "block"})
 
 
 class VerificationRef(_Persisted):
@@ -727,6 +744,7 @@ __all__ = [
     "ObligationProposal",
     "ObligationStatus",
     "PhaseEntry",
+    "REJECTING_VERDICTS",
     "ReactivationCondition",
     "ReviewRef",
     "RootRelation",

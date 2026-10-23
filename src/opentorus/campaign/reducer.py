@@ -232,6 +232,7 @@ def _apply_branch_reactivated(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseM
     branch.suspension_reason = None
     branch.reactivation_conditions = []
     branch.consecutive_failures = 0
+    branch.reactivated_seq = e.seq
 
 
 def _apply_branch_updated(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:

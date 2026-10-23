@@ -95,10 +95,10 @@ EXECUTE -> CRITIQUE -> VERIFY -> UPDATE_GRAPH -> REALLOCATE.
 | GENERATE_PORTFOLIO | strategist proposals (LLM JSON with a real provider, the mode's template otherwise), de-duplication, cap, activation; one dossier `Approach` (`APPR-*`) per accepted branch whose strategy is one of the eight dossier templates | `branch_proposed`, `branch_rejected` (`REPEATED_STRATEGY` / `PORTFOLIO_CAP` / `ROOT_RELATION_REQUIRED`), `branch_activated`, `artifact_created`, `budget_consumed` (strategist turns) |
 | SCHEDULE | scores every runnable branch and picks one work item; refuses to re-run a recorded failure unchanged (`retry_refused` and `branch_suspended`); activates a queued branch when nothing else is runnable; hands over to SYNTHESIZE when nothing at all is | `work_item_created`, `work_item_scheduled` (with the full `ScoreBreakdown`), `retry_refused` / `retry_allowed`, `branch_suspended` |
 | EXECUTE | runs the scheduled work item through its worker inside its own context and budget; the campaign-wide governance caps are checked first (usage ledger, `campaign_id`-scoped) | `worker_started`, `worker_completed` / `worker_failed`, `artifact_created` (`theorem_reference_created` for a `THMREF-*`), `obligation_created`, `failure_signature_recorded`, `budget_consumed`, `verification_recorded` |
-| CRITIQUE | the critic reviews the round's new claims and proof attempts (`agent.review.review_target` + the hostile referee); downgrades are recommended, never applied | `review_requested`, `review_recorded` |
+| CRITIQUE | the critic reviews the round's new claims and proof attempts (`agent.review.review_target` + the hostile referee); downgrades are recommended, never applied; each review names what it `covers`, the engine attributes it to the branches that produced those artifacts (`branch_ids`) and keeps the reviewer's `findings` | `review_requested`, `review_recorded` |
 | VERIFY | the verifier-coordinator asks `proof_tree.settlement.can_close_obligation` for every open obligation and proposes closures **only** for accepted artifacts | `obligation_closed` |
 | UPDATE_GRAPH | mirrors new artifact references and obligations as campaign proof-tree nodes | `proof_node_created` / `proof_node_updated` |
-| REALLOCATE | budget check (a newly spent axis pauses the campaign), suspension of branches with repeated identical failures, exhaustion of branches out of step budget, reactivation only when a recorded condition is met, activation of queued branches, then the mode's completion criterion | `budget_exhausted`, `campaign_paused`, `branch_suspended` / `branch_exhausted` / `branch_reactivated` / `branch_activated` |
+| REALLOCATE | budget check (a newly spent axis pauses the campaign), suspension of branches with repeated identical failures or two consecutive review rejections, exhaustion of branches out of step budget, reactivation only when a recorded condition is met, activation of queued branches, then the mode's completion criterion | `budget_exhausted`, `campaign_paused`, `branch_suspended` / `branch_exhausted` / `branch_reactivated` / `branch_activated` |
 | SYNTHESIZE | the synthesizer rewrites `progress.md` and rebuilds the dossier report; the campaign completes with the mode's criterion **and the problem status per dossier in the same sentence** | `campaign_completed` (`reason`, `mode_criterion`) |
 
 The engine has exactly one `_phase_<name>` method per working phase
@@ -266,6 +266,18 @@ Retry rules:
   `campaign_resumed` for `provider_unavailable`, `human_override` otherwise.
 - Something changed: `retry_allowed`, and `why_different` is appended to the
   signature's `retry_notes`.
+- **Review rejections reach the next brief.** The latest review of a branch's
+  submissions (header: review id, kind, what it covered, verdict) and its findings
+  (contradictions, overclaims with location and suggested fix, claims classified
+  heuristic / unsupported / refuted, recommended downgrades) are put into the branch's
+  next `WorkerContext.review_findings`; the worker prompt quotes every line with `| `
+  as data, not instructions, together with the judge's standard: "a plausible argument
+  with a gap is a rejection, and the reviewer's reason says where the gap is". A
+  verdict `revise` or `block` is a rejection. **Two consecutive rejections** of a
+  branch's submissions (since its last reactivation; a pass breaks the run) suspend it
+  in REALLOCATE with `branch_suspended` reason code `REPEATED_REVIEW_REJECTION`, a
+  `reason` naming both reviews and the latest finding, and reactivation conditions
+  `new_evidence_count`, `theorem_ref_accepted`, `human_override`.
 - REALLOCATE also suspends a branch with two or more trailing identical failures,
   exhausts a branch that spent its `branch_step_budget` (`BRANCH_EXHAUSTED`), and
   reactivates a suspended branch **only** when a recorded condition is met by the

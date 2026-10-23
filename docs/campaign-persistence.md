@@ -79,7 +79,7 @@ Assignment types:
 | `branch_proposed` | `BranchRecord` | GENERATE_PORTFOLIO (also for later duplicates, kept as `rejected`) |
 | `branch_rejected` | `branch_id`, `reason_code` (`REPEATED_STRATEGY`, `PORTFOLIO_CAP`), `duplicate_of` | de-duplication and the cap |
 | `branch_activated` | `branch_id`, priority, slot | activation of a proposed branch |
-| `branch_suspended` | `branch_id`, `reason_code`, `reactivation_conditions` | a refused retry; repeated identical failures |
+| `branch_suspended` | `branch_id`, `reason_code`, `reactivation_conditions`, `reason` | a refused retry; repeated identical failures; two consecutive review rejections (`REPEATED_REVIEW_REJECTION`) |
 | `branch_reactivated` | `branch_id`, `condition_met`, observed | a recorded condition was met |
 | `work_item_created` | `WorkItem` (id, branch, role, task class, objective, session id, budget) | SCHEDULE |
 | `work_item_scheduled` | `work_item_id`, the full `ScoreBreakdown`, `claimed_by` | SCHEDULE |
@@ -91,7 +91,7 @@ Assignment types:
 | `proof_node_updated` | `node_id`, changes | UPDATE_GRAPH |
 | `theorem_reference_created` | `theorem_reference_id`, paper, review status | a worker created a THMREF |
 | `review_requested` | `target_id`, kind | CRITIQUE |
-| `review_recorded` | `ReviewRef` (review id, target, verdict) | CRITIQUE |
+| `review_recorded` | `ReviewRef` (review id, target, verdict, `covers`, `branch_ids`, `findings`) | CRITIQUE |
 | `verification_requested` | `artifact_id`, backend | a worker submitted to a verifier |
 | `verification_recorded` | `VerificationRef` (artifact, backend, accepted, inconclusive) | the verifier ledger answered |
 | `budget_consumed` | scope (`campaign` / `branch` / `work_item` / `model_invocation` / `tool_execution` / `experiment`), ref, steps, tokens, cost, wall seconds | after every work item and strategist call |

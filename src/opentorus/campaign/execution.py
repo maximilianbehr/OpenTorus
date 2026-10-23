@@ -41,6 +41,7 @@ from opentorus.campaign.lifecycle import RunContext
 from opentorus.campaign.models import (
     ArtifactRef,
     BranchRecord,
+    CampaignSnapshot,
     CostTotals,
     ErrorCategory,
     NormalizedProblem,
@@ -153,6 +154,21 @@ def failed_result_for_exception(exc: BaseException, ec: ExecuteContext) -> Worke
         failure_signature=signature,
         usage=CostTotals(steps=1),
     )
+
+
+def latest_review_findings(snap: CampaignSnapshot, branch_id: str) -> tuple[str, ...]:
+    """The newest review of ``branch_id``'s submissions as brief lines: a header naming
+    the review and its verdict, then its findings (``()`` when none was recorded)."""
+    from opentorus.campaign.models import REJECTING_VERDICTS
+
+    mine = [r for r in snap.reviews if branch_id in r.branch_ids]
+    if not mine:
+        return ()
+    latest = max(mine, key=lambda r: (r.seq or 0, r.review_id))
+    covered = f" of {', '.join(latest.covers)}" if latest.covers else ""
+    outcome = "REJECTED" if latest.verdict in REJECTING_VERDICTS else "passed"
+    header = f"{latest.review_id} ({latest.kind}){covered}: verdict {latest.verdict} ({outcome})"
+    return (header, *latest.findings)
 
 
 class WorkerExecutor:
@@ -311,6 +327,7 @@ class WorkerExecutor:
             target_claim_id=branch.target_claim_id if branch else None,
             review_targets=tuple(review_targets),
             strategy_key=branch.strategy_key if branch else None,
+            review_findings=latest_review_findings(snap, branch.branch_id) if branch else (),
         )
 
     # -- stale items ------------------------------------------------------------------
@@ -613,4 +630,4 @@ class WorkerExecutor:
             emit(ev.EventType.verification_recorded, vref, refs=[aid])
 
 
-__all__ = ["ExecuteContext", "UsageCollector", "WorkerExecutor"]
+__all__ = ["ExecuteContext", "UsageCollector", "WorkerExecutor", "latest_review_findings"]

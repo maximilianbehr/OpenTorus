@@ -30,6 +30,44 @@ from opentorus.campaign.models import (
 )
 from opentorus.campaign.workers.base import WorkerRuntime
 
+# Findings kept per review (each line capped): enough to say where the gap is, small
+# enough that a brief stays a brief.
+MAX_FINDINGS = 8
+MAX_FINDING_CHARS = 300
+
+
+def _line(text: str) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= MAX_FINDING_CHARS else text[: MAX_FINDING_CHARS - 3] + "..."
+
+
+def claim_review_findings(review: object) -> list[str]:
+    """``severity category: rationale`` lines of an ``agent.review`` review (non-info)."""
+    out: list[str] = []
+    for f in getattr(review, "findings", []) or []:
+        if getattr(f, "severity", "info") == "info":
+            continue
+        action = f" -- {f.suggested_action}" if getattr(f, "suggested_action", "") else ""
+        out.append(_line(f"{f.severity} {f.category}: {f.rationale}{action}"))
+    return out[:MAX_FINDINGS]
+
+
+def referee_findings(report: object) -> list[str]:
+    """Where the referee says the round's work does not stand: contradictions,
+    overclaims (with their location and the suggested fix), claims it classified as
+    heuristic / unsupported / refuted, and recommended downgrades."""
+    out: list[str] = []
+    for c in getattr(report, "contradictions", []) or []:
+        out.append(_line(f"contradiction: {c}"))
+    for o in getattr(report, "overclaims", []) or []:
+        out.append(_line(f"overclaim ({o.kind}) at {o.location}: '{o.phrase}' -- {o.suggestion}"))
+    for a in getattr(report, "assessments", []) or []:
+        if a.classification in ("heuristic", "unsupported", "refuted"):
+            out.append(_line(f"{a.claim_id} {a.claim_type} is {a.classification}: {a.rationale}"))
+    for d in getattr(report, "downgrades_recommended", []) or []:
+        out.append(_line(f"downgrade recommended: {d}"))
+    return out[:MAX_FINDINGS]
+
 
 class CriticWorker:
     role = WorkerRole.critic
@@ -54,7 +92,12 @@ class CriticWorker:
                     continue
                 reviews.append(
                     ReviewRef(
-                        review_id=review.id, target_id=tid, kind="review", verdict=review.verdict
+                        review_id=review.id,
+                        target_id=tid,
+                        kind="review",
+                        verdict=review.verdict,
+                        covers=[tid],
+                        findings=claim_review_findings(review),
                     )
                 )
                 notes.append(f"{tid}: {review.id} verdict {review.verdict}")
@@ -68,7 +111,12 @@ class CriticWorker:
             else:
                 reviews.append(
                     ReviewRef(
-                        review_id=report.id, target_id=pid, kind="referee", verdict=report.verdict
+                        review_id=report.id,
+                        target_id=pid,
+                        kind="referee",
+                        verdict=report.verdict,
+                        covers=sorted(dossier_targets),
+                        findings=referee_findings(report),
                     )
                 )
                 notes.append(
@@ -82,4 +130,4 @@ class CriticWorker:
         return WorkerResult(status="completed", reviews=reviews, notes=notes, usage=CostTotals())
 
 
-__all__ = ["CriticWorker"]
+__all__ = ["CriticWorker", "claim_review_findings", "referee_findings"]

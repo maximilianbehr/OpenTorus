@@ -174,6 +174,8 @@ class BranchSuspendedPayload(_Payload):
     branch_id: str
     reason_code: str
     reactivation_conditions: list[ReactivationCondition] = Field(default_factory=list)
+    # Human-readable why (e.g. the two review ids that rejected the branch in a row).
+    reason: str = ""
 
 
 class BranchReactivatedPayload(_Payload):
