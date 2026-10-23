@@ -134,7 +134,9 @@ class OpenAIProvider(BaseProvider):
                 try:
                     if streaming:
                         return self._read_stream(caller, kwargs, on_text, on_thinking)
-                    return _parse_completion(caller.chat.completions.create(**kwargs))
+                    return _parse_completion(
+                        caller.chat.completions.create(**kwargs), self.config.model.max_tokens
+                    )
                 except (ProviderError, RetryableFailure):
                     raise
                 except Exception as exc:  # noqa: BLE001 - translate, never leak the SDK's type
@@ -227,25 +229,42 @@ class OpenAIProvider(BaseProvider):
             ]
             or None,
         )
-        response = parse_openai_message(message)
+        truncated = _is_truncated(finish, usage, self.config.model.max_tokens)
+        response = parse_openai_message(message, truncated=truncated)
         if usage is not None and thinking and not usage.thinking_tokens:
             usage.thinking_tokens = apportion_thinking(
                 usage.completion_tokens, "".join(thinking), "".join(content)
             )
         response.usage = usage
         response.model = model
-        response.truncated = finish == "length"
+        response.truncated = truncated
         return response
 
 
-def _parse_completion(completion: object) -> ProviderResponse:
+def _is_truncated(finish: object, usage: TokenUsage | None, max_tokens: int | None) -> bool:
+    """Did the reply stop at the output-token ceiling?
+
+    ``finish_reason == "length"`` says so — but not always: vLLM (observed with a
+    Qwen tool parser) reports ``"tool_calls"`` for a tool call cut off at
+    ``max_tokens``, with the arguments either cut mid-string or silently shortened. So
+    a reply whose completion tokens reached the configured cap counts as cut off too.
+    """
+    if finish == "length":
+        return True
+    if max_tokens and usage is not None and usage.completion_tokens >= int(max_tokens):
+        return True
+    return False
+
+
+def _parse_completion(completion: object, max_tokens: int | None = None) -> ProviderResponse:
     choice = completion.choices[0]  # type: ignore[attr-defined]
-    response = parse_openai_message(choice.message)
-    response.usage = _openai_usage(completion)
+    usage = _openai_usage(completion)
+    truncated = _is_truncated(getattr(choice, "finish_reason", None), usage, max_tokens)
+    response = parse_openai_message(choice.message, truncated=truncated)
+    response.usage = usage
     # The model id the API reports (a routed alias may resolve to a dated snapshot).
     response.model = getattr(completion, "model", None) or None
-    # finish_reason "length" means the output hit the token ceiling (truncated).
-    response.truncated = getattr(choice, "finish_reason", None) == "length"
+    response.truncated = truncated
     return response
 
 
@@ -541,7 +560,14 @@ def _openai_usage(completion: object) -> TokenUsage | None:
     )
 
 
-def parse_openai_message(message: object) -> ProviderResponse:
+def parse_openai_message(message: object, *, truncated: bool = False) -> ProviderResponse:
+    """Parse a chat message; ``truncated`` = it stopped at the output-token limit.
+
+    A cut-off reply routinely carries a tool call whose JSON arguments are cut off too.
+    That is not a malformed call to correct but an incomplete reply: its calls are
+    dropped unexecuted by the loop anyway, so unparseable arguments are kept as ``{}``
+    here instead of raising the tool-parse error (which would hide the truncation).
+    """
     tool_calls = getattr(message, "tool_calls", None) or []
     if tool_calls:
         parsed: list[ToolCallRequest] = []
@@ -550,6 +576,14 @@ def parse_openai_message(message: object) -> ProviderResponse:
             try:
                 args = json.loads(raw_args)
             except json.JSONDecodeError as exc:
+                if truncated:
+                    args = {}
+                    parsed.append(
+                        ToolCallRequest(
+                            tool_name=call.function.name, tool_args=args, tool_call_id=call.id
+                        )
+                    )
+                    continue
                 # Surface as a recoverable tool-parse error so the loop retries with a
                 # correction hint instead of silently calling the tool with no args.
                 raise ProviderError(
@@ -561,12 +595,20 @@ def parse_openai_message(message: object) -> ProviderResponse:
         first = parsed[0]
         return ProviderResponse(
             kind="tool_call",
+            # A tool-call turn may carry text before its calls; keep it (it is what a
+            # truncated reply preserves).
+            content=strip_channel_markers(content_of(message)) if truncated else "",
             tool_name=first.tool_name,
             tool_args=first.tool_args,
             tool_call_id=first.tool_call_id,
             tool_calls=parsed,
+            truncated=truncated,
         )
-    return ProviderResponse(kind="message", content=strip_channel_markers(content_of(message)))
+    return ProviderResponse(
+        kind="message",
+        content=strip_channel_markers(content_of(message)),
+        truncated=truncated,
+    )
 
 
 # Gemma 4 emits its thinking as a "channel": ``<|channel>thought ... <channel|>`` before the

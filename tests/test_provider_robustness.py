@@ -331,6 +331,34 @@ def test_openai_stream_length_finish_marks_truncated(monkeypatch, sleeps) -> Non
     assert provider.generate(_MSGS).truncated is True
 
 
+def test_reply_at_the_token_cap_counts_as_truncated_whatever_finish_reason_says(
+    monkeypatch, sleeps
+) -> None:  # noqa: ANN001
+    """vLLM reports finish_reason "tool_calls" for a tool call cut off at max_tokens."""
+    cut = types.SimpleNamespace(
+        id="c1", function=types.SimpleNamespace(name="write_file", arguments='{"path": "p.md"')
+    )
+    completion = types.SimpleNamespace(
+        model="m",
+        usage=types.SimpleNamespace(
+            prompt_tokens=50, completion_tokens=120, completion_tokens_details=None
+        ),
+        choices=[
+            types.SimpleNamespace(
+                finish_reason="tool_calls",
+                message=types.SimpleNamespace(content=None, tool_calls=[cut]),
+            )
+        ],
+    )
+    provider, _, _ = _openai(monkeypatch, [completion])
+    provider.config.model.max_tokens = 120
+    response = provider.generate(_MSGS)
+    assert response.truncated is True and response.kind == "tool_call"
+    provider.config.model.max_tokens = 4000  # well under the cap: an ordinary parse error
+    with pytest.raises(ProviderError, match="Failed to parse JSON"):
+        provider.generate(_MSGS)
+
+
 def test_openai_stream_without_finish_reason_is_an_error(monkeypatch, sleeps) -> None:  # noqa: ANN001
     provider, requests, _ = _openai(monkeypatch, [lambda: iter([_chunk("half")])], stream=True)
     with pytest.raises(ProviderError, match="without a finish_reason"):

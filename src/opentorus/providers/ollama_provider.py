@@ -193,7 +193,7 @@ class OllamaProvider(BaseProvider):
                     return self._read_stream(response, on_text, on_thinking, state)
                 data = json.loads(response.read().decode("utf-8"))
                 msg = data.get("message", {})
-                result = parse_ollama_message(msg)
+                result = parse_ollama_message(msg, truncated=data.get("done_reason") == "length")
                 usage = _ollama_usage(data)
                 if usage is not None:
                     thinking = msg.get("thinking") or msg.get("reasoning") or ""
@@ -342,7 +342,7 @@ class OllamaProvider(BaseProvider):
         last_message: dict = {"role": role, "content": accumulated}
         if tool_calls:
             last_message["tool_calls"] = tool_calls
-        result = parse_ollama_message(last_message)
+        result = parse_ollama_message(last_message, truncated=done_reason == "length")
         if usage is not None and accumulated_thinking:
             other = accumulated + json.dumps(tool_calls or [])
             usage.thinking_tokens = apportion_thinking(
@@ -419,7 +419,7 @@ def clean_harmony_tool_name(raw: object) -> str | None:
     return name
 
 
-def parse_ollama_message(message: dict) -> ProviderResponse:
+def parse_ollama_message(message: dict, *, truncated: bool = False) -> ProviderResponse:
     tool_calls = message.get("tool_calls") or []
     if tool_calls:
         parsed: list[ToolCallRequest] = []
@@ -435,6 +435,17 @@ def parse_ollama_message(message: dict) -> ProviderResponse:
                 try:
                     args = json.loads(args)
                 except json.JSONDecodeError as exc:
+                    if truncated:
+                        # Cut off at num_predict: an incomplete call the loop drops anyway.
+                        args = {}
+                        parsed.append(
+                            ToolCallRequest(
+                                tool_name=name,
+                                tool_args=args,
+                                tool_call_id=tc.get("id") or uuid.uuid4().hex,
+                            )
+                        )
+                        continue
                     # Recoverable tool-parse error → the loop retries with a hint
                     # rather than calling the tool with empty arguments.
                     raise ProviderError(
@@ -455,7 +466,8 @@ def parse_ollama_message(message: dict) -> ProviderResponse:
                 tool_args=first.tool_args,
                 tool_call_id=first.tool_call_id,
                 tool_calls=parsed,
+                truncated=truncated,
             )
         # Every "tool call" was harmony framing → treat as a normal message so the
         # commentary/analysis text is preserved instead of emitting a bogus call.
-    return ProviderResponse(kind="message", content=message.get("content", ""))
+    return ProviderResponse(kind="message", content=message.get("content", ""), truncated=truncated)

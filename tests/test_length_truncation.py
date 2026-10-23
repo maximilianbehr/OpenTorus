@@ -141,3 +141,24 @@ def test_ollama_done_reason_length_marks_truncated(monkeypatch) -> None:
 
     monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
     assert OllamaProvider(config).generate([]).truncated is True
+
+
+def test_cut_off_tool_call_json_is_a_truncation_not_a_parse_error() -> None:
+    from types import SimpleNamespace
+
+    from opentorus.providers.ollama_provider import parse_ollama_message
+    from opentorus.providers.openai_provider import parse_openai_message
+
+    call = SimpleNamespace(
+        id="c1", function=SimpleNamespace(name="write_file", arguments='{"path": "poem.md", "con')
+    )
+    message = SimpleNamespace(content="Writing it now", tool_calls=[call])
+    response = parse_openai_message(message, truncated=True)
+    assert response.truncated and response.kind == "tool_call"
+    assert response.content == "Writing it now"
+    assert [c.tool_name for c in response.iter_tool_calls()] == ["write_file"]
+    ollama = parse_ollama_message(
+        {"content": "", "tool_calls": [{"function": {"name": "write_file", "arguments": '{"pa'}}]},
+        truncated=True,
+    )
+    assert ollama.truncated and ollama.tool_calls[0].tool_args == {}
