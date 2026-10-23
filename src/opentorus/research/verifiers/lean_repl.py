@@ -240,6 +240,19 @@ class LeanReplBackend(Lean4Backend):
     def _process(self) -> _ReplProcess:
         return _shared_process(self.command, self.header, self.confine, self.cwd)
 
+    def version_command(self) -> str:
+        """The Lean behind the REPL, asked without starting a REPL.
+
+        ``lake exe repl`` becomes ``lake env lean``; a command ending in the REPL
+        binary (``env -C <project> lake env <path>/repl``) gets ``lean`` in its place.
+        """
+        tokens = shlex.split(self.command)
+        if "exe" in tokens:
+            tokens = [*tokens[: tokens.index("exe")], "env", "lean"]
+        elif tokens:
+            tokens[-1] = "lean"
+        return shlex.join(tokens)
+
     def _run(self, source: str) -> tuple[ShellResult, bool]:
         """Send ``source`` to the resident REPL; same contract as the file backend."""
         repl = self._process()

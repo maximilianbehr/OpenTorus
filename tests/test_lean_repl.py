@@ -108,3 +108,11 @@ def test_registry_selects_repl_only_when_enabled(tmp_path: Path) -> None:
     assert not isinstance(get_verifier(config, "lean4"), LeanReplBackend)
     config.tools.verifiers.lean_repl = True
     assert isinstance(get_verifier(config, "lean4"), LeanReplBackend)
+
+
+def test_version_is_asked_without_starting_a_repl() -> None:
+    from opentorus.research.verifiers.lean_repl import LeanReplBackend
+
+    assert LeanReplBackend("lake exe repl").version_command() == "lake env lean"
+    wrapped = LeanReplBackend("env -C /p lake env /opt/repl/.lake/build/bin/repl")
+    assert wrapped.version_command() == "env -C /p lake env lean"

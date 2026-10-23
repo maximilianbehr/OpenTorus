@@ -184,6 +184,9 @@ def fake_coq_command(tmp_path: Path) -> str:
 
 REPL_SCRIPT = r"""
 import json, os, subprocess, sys, tempfile, time
+if "--version" in sys.argv[1:]:  # like real tools: answer and exit, start nothing
+    print("Lean (version 0.0.0-fake-repl)")
+    sys.exit(0)
 FAKE_LEAN = sys.argv[1]
 log = os.environ.get("FAKE_REPL_LOG")
 if log:

@@ -64,13 +64,17 @@ class _CommandBackend:
         binary = self._binary()
         return bool(binary) and shutil.which(binary) is not None
 
+    def version_command(self) -> str:
+        """The command whose ``--version`` names the checker (overridden by the REPL)."""
+        return self.command
+
     def version(self) -> str | None:
         if not self.is_available():
             return None
         # Ask the whole configured command, not only its first word: with a wrapper
         # such as ``env -C <project> lake env lean`` the first word is ``env`` and its
         # version says nothing about the checker that judged the proof.
-        result = run_shell(f"{self.command} --version", timeout=self.timeout)
+        result = run_shell(f"{self.version_command()} --version", timeout=self.timeout)
         if result.exit_code == 0:
             return result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
         return None
