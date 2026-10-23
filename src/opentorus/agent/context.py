@@ -316,6 +316,12 @@ def _finalize(
 
     messages = redact_for_provider(messages, config.privacy.allow_sensitive_context)
 
+    from opentorus.agent.tool_result_bound import bound_tool_messages
+
+    # Bound what the model reads, not what is persisted: session.jsonl keeps the full
+    # tool output, the request carries at most agent.max_tool_result_chars per result.
+    messages = bound_tool_messages(messages, config.agent.max_tool_result_chars)
+
     from opentorus.agent.compaction import compact_messages, maybe_compact_session
 
     maybe_compact_session(ot_dir, config, provider=provider)
