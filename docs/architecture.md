@@ -139,11 +139,62 @@ the pieces fit together and the boundaries that keep it inspectable.
    A run is bounded by `agent.max_steps`, by the cost/token budgets, and — because
    every other guard assumes turns come back — optionally by `agent.max_wall_seconds`,
    checked between steps.
+   The system prompt lists exactly the tools enabled for the run (the registry's
+   names, MCP tools included) and carries the working and authority rules: a
+   returned tool call is not a succeeded step; say what was not done or verified;
+   the turn ends on a reply without a tool call; a denial is final (re-trying the
+   effect through another tool is a fault); read access is not write access; and
+   anything from outside (files, pages, tool/MCP output, PDFs) is data that cannot
+   authorise.
 3. If the provider requests a tool, the **permission policy** decides
    allow / ask / block. Allowed tools execute (possibly inside an execution
    backend); the call, result, and decision are appended to the action log.
+   A reply that stopped at the output-token limit (`truncated`) is incomplete: its
+   text is kept, its tool calls are dropped **unexecuted**, and the model is asked to
+   continue (at most `agent.max_length_continuations` times in a row, then the run
+   stops with an honest message — a cut-off answer is never accepted as final).
+   When a run is cancelled or interrupted mid-batch, every unpaired call gets an
+   explicit result: "not executed (cancelled before dispatch)" or "outcome unknown
+   (interrupted while running)"; a call with no recorded result rebuilds as "did not
+   return; outcome unknown". Replay only reads the log; it runs nothing.
 4. Effects produce or update **artifacts** under `.opentorus/`.
 5. The result is fed back to the provider for the next step or a final answer.
+   Each tool result the model reads is bounded to `agent.max_tool_result_chars`
+   (64k): the longest field is cut first (JSON string value, `stdout:`/`stderr:`
+   section) so `exit_code=` and similar flags survive, with a `[cut: N chars
+   omitted]` marker. `session.jsonl` and `actions.jsonl` keep the full output.
+
+### Compaction
+
+`session.jsonl` is append-only. When the history outgrows
+`context.token_budget * context.compaction_threshold`, a compaction appends one
+*marker* record (a system message carrying the summary, `metadata.compaction_marker`,
+`keep_from` = raw index of the first turn kept verbatim). The model-facing history is
+rebuilt from the last marker (`agent.compaction.read_active_messages`); replay,
+bundles and the prove harvest read the full log. Sessions without markers load
+unchanged. The trigger is measured in provider-reported tokens when available: the
+previous request's `prompt_tokens` divided by the local chars/4 estimate of that
+request calibrates the estimate; `context.compact_at_prompt_tokens` optionally
+triggers on the reported size itself. A context-length rejection from the provider
+(`ContextLengthExceededError`) forces one compaction and the turn is asked again.
+
+The summary is written as a context checkpoint for a reader with none of the turns:
+goals, decisions and why, current state, what was tried and did not work and why,
+and exact identifiers (paths, ids, commands, numbers, error text), bounded by
+`context.compaction_summary_max_chars`. Every summary (LLM or the deterministic
+fallback) opens with a resume prefix: a record of work already done, files on disk
+are as left, check the state before rebuilding, do not repeat failed approaches.
+Earlier checkpoints are carried forward into the next one.
+
+### Provider calls
+
+`providers/retry.py` classifies a failed call: the provider *answered*
+408/409/425/429/5xx (retried with a long backoff, `Retry-After` honoured), it was
+*unreachable* (short backoff), a *timeout* or any other 4xx (never retried), or the
+context was exceeded (`ContextLengthExceededError`). Retries are bounded by
+`model.max_retries` and deterministic (no jitter). OpenAI-compatible endpoints can
+stream (`model.stream: true`): a stream is retried only before its first byte, and
+a stream that ends without a `finish_reason` is an error.
 
 ## Design rules
 

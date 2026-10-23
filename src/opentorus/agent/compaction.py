@@ -185,10 +185,10 @@ def _failed_attempts(messages: list[SessionMessage]) -> list[str]:
 
     "Failed attempts are first-class" is one of the project's invariants, and both the
     loop and the prove loop tell the user in so many words that a failing call and its
-    error "are preserved in the session log". Compaction rewrites session.jsonl, so
-    without this the promise was false the moment a run got long enough to compact:
-    a dead end survived as the bare word ``proof_write`` in a list of tool names, and
-    the agent was free to walk into it again.
+    error "are preserved in the session log". The log now keeps them (compaction is
+    append-only), but the *model* only sees the summary of a compacted window, so
+    without this a dead end survived as the bare word ``proof_write`` in a list of
+    tool names, and the agent was free to walk into it again.
     """
     out: list[str] = []
     for message in messages:
