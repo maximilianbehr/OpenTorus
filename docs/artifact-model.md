@@ -176,6 +176,24 @@ The checker is `tools.verifiers.lean_command` (`lake env lean <file>`) or, with
 per-request deadline, kill on timeout, a single respawn on death — both inconclusive,
 never rejections). Only how Lean runs changes; the gate reading its output is the same.
 
+Setting up Lean with Mathlib (verified on Lean v4.36.0-rc1 / Rocq 9.2):
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+  | sh -s -- -y --default-toolchain none          # puts lake/lean in ~/.elan/bin
+lake +leanprover-community/mathlib4:lean-toolchain new ~/lean/mathlib-env math
+cd ~/lean/mathlib-env && lake exe cache get && lake build
+```
+
+`lake env lean` resolves the project from the current directory, so point the
+checker at the project explicitly: `lean_command: env -C ~/lean/mathlib-env lake env
+lean` (with `~/.elan/bin` on PATH). For the REPL, build leanprover-community/repl at
+the project's toolchain tag and use `lean_repl_command: env -C ~/lean/mathlib-env lake
+env ~/lean/repl/.lake/build/bin/repl`. On a 16 GB machine a cold `import Mathlib`
+takes 1.5–2.5 minutes per check with or without bwrap; the resident REPL pays that
+once and then checks in ~0.1 s. `pytest -m integration tests/test_real_provers.py`
+with `OPENTORUS_LEAN_PROJECT` set runs the gate against the real checkers.
+
 A gate refusal is recorded with a machine-readable `rejection` (`sorry`,
 `forbidden_token`, `nonstandard_axioms`, `no_theorem`, `no_report`, `elaboration`,
 `statement_mismatch`, `preamble_mismatch`, `type_mismatch`); `axioms`, `theorem` and

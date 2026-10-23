@@ -381,3 +381,13 @@ def test_confined_write_failure_is_inconclusive(monkeypatch: pytest.MonkeyPatch)
     result = backend.verify("theorem t : True := trivial")
     assert result.accepted is False
     assert result.inconclusive is True  # infrastructure, not a verdict on the proof
+
+
+def test_version_comes_from_the_checker_not_the_wrapper(tmp_path: Path) -> None:
+    """``env -C <project> lake env lean`` must record Lean's version, not env's."""
+    if shutil.which("env") is None:
+        pytest.skip("env not available")
+    fake = tmp_path / "fakelean"
+    fake.write_text("#!/bin/sh\necho 'Lean (version 9.9.9-fake)'\n", encoding="utf-8")
+    fake.chmod(0o755)
+    assert Lean4Backend(f"env -C {tmp_path} {fake}").version() == "Lean (version 9.9.9-fake)"
