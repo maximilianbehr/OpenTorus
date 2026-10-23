@@ -132,6 +132,8 @@ class RoutingDecisionRecord(BaseModel):
     work_item_id: str | None = None
     session_id: str | None = None
     outcome: Literal["selected", "no_eligible_provider"] = "selected"
+    # The reasoning effort the leased provider sends (task_effort or the profile's own).
+    reasoning_effort: str | None = None
 
 
 class RoutingObservation(BaseModel):
@@ -526,6 +528,10 @@ class ProviderPool:
             "work_item_id"
         )
         profile = profiles.get(selected.name) if selected is not None else None
+        if profile is not None:
+            effort = self.effort_for(tc, profile)
+            if effort != profile.reasoning_effort:
+                profile = profile.model_copy(update={"reasoning_effort": effort})
         record = RoutingDecisionRecord(
             decision_id=self._next_decision_id(),
             task_class=tc,
@@ -544,6 +550,7 @@ class ProviderPool:
             work_item_id=work_item_id,
             session_id=tags.get("session_id"),
             outcome="selected" if selected is not None else "no_eligible_provider",
+            reasoning_effort=profile.reasoning_effort if profile is not None else None,
         )
         self._decisions[record.decision_id] = record
         if self.ot_dir is not None:
@@ -562,11 +569,29 @@ class ProviderPool:
             profile=profile,
         )
 
+    def effort_for(self, task_class: str, profile: ModelProfile) -> str | None:
+        """The reasoning effort for ``task_class`` on ``profile``.
+
+        ``governance.routing.task_effort`` is looked up like a route table (the class,
+        its legacy alias, then ``default``); without an entry the profile's own
+        ``reasoning_effort`` stands (``None`` = the server's default).
+        """
+        table = self.config.governance.routing.task_effort
+        lookup = task_class_lookup_names(task_class)
+        for key in [*lookup, TaskClass.default.value]:
+            if key in table:
+                return table[key]
+        return profile.reasoning_effort
+
     def _instance(self, name: str, profile: ModelProfile) -> BaseProvider:
-        provider = self._instances.get(name)
+        # One instance per (profile, effort): the effort is part of every request the
+        # provider builds, so two task classes with different efforts on the same
+        # profile must not share a provider object.
+        key = name if profile.reasoning_effort is None else f"{name}#{profile.reasoning_effort}"
+        provider = self._instances.get(key)
         if provider is None:
             provider = self._factory(profile_config(self.config, profile))
-            self._instances[name] = provider
+            self._instances[key] = provider
         return provider
 
     def note_actual_model(self, decision_id: str, model: str | None) -> None:

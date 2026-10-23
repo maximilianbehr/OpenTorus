@@ -72,14 +72,24 @@ from opentorus.agent.control.turn_runner import (
     _shell_command_likely_edits,
 )
 from opentorus.agent.control.workflow import CompositePolicySet, WorkflowPolicySet
-from opentorus.agent.prompts import TOOL_PARSE_RECOVERY
+from opentorus.agent.prompts import LENGTH_CONTINUATION, TOOL_PARSE_RECOVERY
 from opentorus.agent.session import SessionMessage, append_message
 from opentorus.config import Config, OperatingStyle
 from opentorus.errors import OpenTorusError, ProviderError, is_recoverable_tool_parse_error
 from opentorus.permissions.policy import PermissionDecision
-from opentorus.providers.base import BaseProvider
+from opentorus.providers.base import BaseProvider, ProviderResponse
+from opentorus.providers.retry import ContextLengthExceededError
 from opentorus.tools.base import Tool
 from opentorus.tools.registry import ToolRegistry
+
+# Results recorded for the calls of a batch that a cancel/interrupt cut short. The two
+# cases are kept apart on purpose: a call that never started certainly had no effect; a
+# call interrupted mid-run may have had any part of its effect.
+TOOL_NOT_EXECUTED = "[not executed — cancelled before dispatch; this call did not run]"
+TOOL_OUTCOME_UNKNOWN = (
+    "[outcome unknown — interrupted while running; the call may have had some or all of "
+    "its effect. Check the workspace state before repeating it.]"
+)
 
 # A confirmation callback receives the decision, a human-readable description
 # of the pending action, and an optional session scope (e.g. "external" for all
@@ -246,6 +256,11 @@ class AgentLoop:
         self.model_tool_calls = 0
         self.bootstrap_used = False
         self.hit_max_steps = False
+        # Provider-reported size of the last request, and the ratio of that to the local
+        # chars/4 estimate of the same request: the compaction trigger uses both, so it
+        # measures the history in the tokens the provider actually counts.
+        self._last_prompt_tokens: int | None = None
+        self._token_scale: float | None = None
 
     # --- delegating surface (compatibility) -----------------------------------------------
 
@@ -633,7 +648,12 @@ class AgentLoop:
         result_text = "Reached the maximum number of steps without a final answer."
         stop_decision: PolicyDecision | None = None
         tool_parse_retries = 0
+        # The provider said the request does not fit its context window: compact the
+        # session once (forced) and ask again; a second overflow in the run is raised.
+        context_overflow_compacted = False
         deliverable_retries = 0
+        # Consecutive replies cut off at the output-token limit (reset by a complete one).
+        length_continuations = 0
         recovery_hint: str | None = None
         run_started = time.monotonic()
         # ``max_steps = inf`` means truly unbounded: run until the deliverable is
@@ -678,6 +698,8 @@ class AgentLoop:
                 goal=task,
                 provider=self.provider,
                 history_session_id=self.session_id if self.isolate_history else None,
+                reported_prompt_tokens=self._last_prompt_tokens,
+                token_scale=self._token_scale,
             )
             recovery_hint = None
             tool_choice: str | dict | None = None
@@ -693,6 +715,12 @@ class AgentLoop:
                 # (no-op for a local/mock provider, whose payload does not leave the
                 # machine). Then the provider turn, then the usage ledger.
                 turn = self._runner.request(messages, tool_choice=tool_choice)
+                self._calibrate_tokens(messages, turn.response)
+            except ContextLengthExceededError:
+                if not context_overflow_compacted and self._compact_after_overflow():
+                    context_overflow_compacted = True
+                    continue
+                raise
             except ProviderError as exc:
                 if tool_parse_retries < _MAX_TOOL_PARSE_RETRIES and is_recoverable_tool_parse_error(
                     exc
@@ -709,6 +737,20 @@ class AgentLoop:
                 break
             response = turn.response
             assert response is not None  # request() returns a response or a stop
+
+            if response.truncated:
+                # The reply stopped at the output-token limit: it is incomplete. Keep
+                # its text, drop its tool calls WITHOUT executing them (a cut-off call
+                # can carry cut-off arguments — half a file, half a command), and ask
+                # for the rest. A cut-off message is never accepted as the final answer.
+                limit_stop = self._handle_truncated(response, length_continuations)
+                if limit_stop is not None:
+                    result_text = self._stop_run(limit_stop)
+                    stop_decision = limit_stop
+                    break
+                length_continuations += 1
+                continue
+            length_continuations = 0
 
             if response.kind == "message":
                 # Stall backstop: a model that keeps answering in chat (no tool call)
@@ -815,12 +857,21 @@ class AgentLoop:
             )
 
             cancelled: PolicyDecision | None = None
-            for nm, ar, cid in resolved:
+            for index, (nm, ar, cid) in enumerate(resolved):
                 cancelled = self._runner.check_cancel()
                 if cancelled is not None:
+                    # Every call from here on was never dispatched: say so explicitly,
+                    # so the persisted turn pairs every call with an honest result.
+                    self._record_unrun(resolved[index:], interrupted=None)
                     break
                 self._status("tool", nm)
-                content = self._run_tool(nm, ar, cid)
+                try:
+                    content = self._run_tool(nm, ar, cid)
+                except BaseException:
+                    # Ctrl-C (or any abort) while this tool was running: whether its
+                    # effect happened is unknown; the calls after it never ran.
+                    self._record_unrun(resolved[index:], interrupted=cid)
+                    raise
                 self._append(
                     SessionMessage(
                         role="tool",
@@ -865,6 +916,119 @@ class AgentLoop:
             task=task,
         )
         return result_text
+
+    def _compact_after_overflow(self) -> bool:
+        """Force one session compaction after a context-length rejection."""
+        from opentorus.agent.compaction import maybe_compact_session
+
+        _logger.info("The request exceeded the model's context window; compacting once.")
+        try:
+            return maybe_compact_session(
+                self.ot_dir,
+                self.config,
+                provider=self.provider,
+                reported_prompt_tokens=self._last_prompt_tokens,
+                token_scale=self._token_scale,
+                force=True,
+            )
+        except OpenTorusError as exc:
+            _logger.debug("Forced compaction failed: %s", exc)
+            return False
+
+    def _calibrate_tokens(
+        self, messages: list[SessionMessage], response: ProviderResponse | None
+    ) -> None:
+        """Remember the provider's prompt-token count and its ratio to our estimate."""
+        usage = getattr(response, "usage", None) if response is not None else None
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0) if usage is not None else 0
+        if prompt <= 0:
+            return
+        import json
+
+        from opentorus.agent.compaction import estimate_tokens, total_tokens
+
+        try:
+            specs = json.dumps(self.registry.specs(), default=str)
+        except (TypeError, ValueError):
+            specs = ""
+        estimate = total_tokens(messages) + (estimate_tokens(specs) if specs else 0)
+        self._last_prompt_tokens = prompt
+        self._token_scale = prompt / estimate if estimate > 0 else None
+
+    def _record_unrun(self, calls: list[tuple[str, dict, str]], *, interrupted: str | None) -> None:
+        """Persist an explicit result for each call of a batch that did not complete.
+
+        ``interrupted`` is the id of the call that was running when the run was
+        aborted (its outcome is unknown); every other call listed was cancelled
+        before dispatch and did not run. Nothing is executed here, and a later
+        rebuild/replay of the session reads these results instead of guessing.
+        """
+        for name, _args, call_id in calls:
+            running = call_id == interrupted
+            self._append(
+                SessionMessage(
+                    role="tool",
+                    content=TOOL_OUTCOME_UNKNOWN if running else TOOL_NOT_EXECUTED,
+                    metadata={
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "ok": False,
+                        "unrun": "interrupted_while_running" if running else "not_dispatched",
+                    },
+                )
+            )
+
+    def _handle_truncated(
+        self, response: ProviderResponse, continuations: int
+    ) -> PolicyDecision | None:
+        """Record a length-truncated reply; return a stop once continuations run out.
+
+        The partial text is persisted as an assistant turn (with a placeholder when it
+        is empty, so the history keeps alternating roles) and marked ``truncated``; the
+        names of the dropped tool calls are kept in its metadata for the audit trail,
+        but never as ``tool_calls`` — no result will follow them. Unless the bounded
+        number of continuations is spent, a continuation request is appended as the
+        next user turn and ``None`` is returned so the loop asks again.
+        """
+        dropped = [c.tool_name or "" for c in response.iter_tool_calls()]
+        text = response.content or ""
+        if not text.strip():
+            text = "(reply cut off at the output-token limit before any text)"
+        self._append(
+            SessionMessage(
+                role="assistant",
+                content=text,
+                metadata={"truncated": True, "dropped_tool_calls": dropped},
+            )
+        )
+        cap = max(0, int(getattr(self.config.agent, "max_length_continuations", 3)))
+        if dropped:
+            _logger.info(
+                "Reply hit the output-token limit; %d tool call(s) dropped unexecuted: %s",
+                len(dropped),
+                ", ".join(dropped),
+            )
+        if continuations < cap:
+            self._append(
+                SessionMessage(
+                    role="user",
+                    content=LENGTH_CONTINUATION,
+                    metadata={"synthetic": "length_continuation"},
+                )
+            )
+            return None
+        return PolicyDecision(
+            action=PolicyAction.STOP,
+            reason_code=ReasonCode.OUTPUT_TRUNCATED,
+            message=(
+                "[stopped] The model's reply was cut off at the output-token limit"
+                + (f" and {cap} continuation request(s) did not complete it" if cap else "")
+                + ". Its incomplete tool calls were not executed and the cut-off text was "
+                "not accepted as an answer. Raise model.max_tokens (model.num_predict for "
+                "Ollama), or ask for a smaller step."
+            ),
+            metadata={"dropped_tool_calls": dropped, "continuations": continuations},
+        )
 
     def _wall_clock_decision(self, run_started: float) -> PolicyDecision | None:
         limit = self.config.agent.max_wall_seconds

@@ -48,6 +48,15 @@ model:
   # /api/show). OpenTorus is useless without tool calling, so a model that cannot is
   # refused with a clear message. Set false to skip the check.
   verify_tool_calling: true
+  # Reasoning effort per request: off | low | medium | high | max (null = server
+  # default). governance.routing.task_effort overrides it per task class.
+  reasoning_effort: null
+  # How an OpenAI-compatible endpoint is told the effort: auto | chat_template_kwargs |
+  # reasoning_effort | both | none (auto: both for a custom base_url, else
+  # reasoning_effort).
+  reasoning_api: auto
+  # OpenAI-compatible only: stream responses (retried only before the first byte).
+  stream: false
 
 # --- Model profiles (per-task routing) ------------------------------------------
 models:
@@ -102,6 +111,12 @@ agent:
   # for blocking findings (contradictions, unsupported result claims). Only active
   # while prove_until_gaps_closed.
   prove_referee_reopens_gaps: true
+  # A reply cut off at the output-token limit keeps its text, its tool calls are
+  # dropped unexecuted, and the model is asked to continue at most this many times.
+  max_length_continuations: 3
+  # Bound on each tool result fed back to the model (chars; 0 = off). The longest
+  # field is cut first; session.jsonl keeps the full output.
+  max_tool_result_chars: 64000
   # Campaign gate (opt-in): hold the clean completion of a prove run until at least
   # one experiment or one proof_submit is recorded. Forces the attempt, never the
   # outcome — a run that starts nothing is ended honestly by the no-progress window.
@@ -167,12 +182,18 @@ context:
   # compaction nearly every turn during proof work. Lower it for small local models.
   token_budget: 24000
   compaction_enabled: true
-  # Persistently compact session.jsonl when history exceeds this fraction of token_budget
+  # Compact the session history (an appended marker; session.jsonl is never rewritten)
+  # when it exceeds this fraction of token_budget, measured in provider-reported tokens
+  # when known
   compaction_threshold: 0.85
   # Summarize compacted turns with the chat provider when available
   compaction_llm: true
   # Verbatim recent history kept after a session compaction (fraction of token_budget)
   compaction_keep_ratio: 0.5
+  # Upper bound on one compaction summary, in characters (0 = unbounded)
+  compaction_summary_max_chars: 12000
+  # Also compact once the provider reports a prompt of at least this many tokens
+  compact_at_prompt_tokens: null
   # Hybrid BM25 + provider/local embeddings (OpenAI/Ollama by default when configured)
   embeddings_enabled: true
   embeddings_backend: auto
@@ -336,6 +357,12 @@ governance:
     #   proof_development: [strong, default]
     #   narration: [fast]
     task_routes: {}
+    # Task class -> reasoning effort (off/low/medium/high/max), applied to the leased
+    # profile even with routing disabled. Example:
+    # task_effort:
+    #   proof_development: high
+    #   narration: off
+    task_effort: {}
 
 # --- Campaign engine (opentorus campaign) --------------------------------------
 campaign:

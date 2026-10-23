@@ -101,6 +101,10 @@ def record_turn(
         )
     except OpenTorusError:
         pass
+    if response.truncated:
+        # Narration is free text with no tool calls; keep it, but never pass a cut-off
+        # reply off as complete.
+        return (response.content or "").rstrip() + "\n\n[cut off at the output-token limit]"
     return response.content
 
 

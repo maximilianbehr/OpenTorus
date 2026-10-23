@@ -237,6 +237,42 @@ campaign's critic leases `strong` then `local`, `opentorus research` narrates on
 `opentorus doctor --capabilities` shows the resolved candidates per class and
 whether each has a fallback.
 
+## Reasoning effort per task class
+
+`model.reasoning_effort` (`off` / `low` / `medium` / `high` / `max`; unset = the
+server's default) is sent with every request of a profile, and
+`governance.routing.task_effort` overrides it per task class -- looked up like a
+route (the class, its legacy alias, then `default`), and applied by the pool to the
+leased profile whether or not `routing.enabled` is set:
+
+```yaml
+governance:
+  routing:
+    task_effort:
+      proof_development: high
+      formalization: max
+      narration: off
+      default: medium
+```
+
+The routing ledger records the effort each decision leased (`reasoning_effort`), and
+the pool keeps one provider instance per (profile, effort).
+
+How the effort reaches the wire:
+
+| provider | field |
+|---|---|
+| OpenAI-compatible, custom `base_url` (vLLM, llama.cpp, ...) | `chat_template_kwargs: {enable_thinking: <effort != off>}` (via `extra_body`) **and** `reasoning_effort` (`off` sends only the template switch) |
+| OpenAI (`base_url` unset) | `reasoning_effort` (`off` -> `minimal`, `max` -> `high`) |
+| Ollama | `think: true/false`; gpt-oss takes a level (`low`/`medium`/`high`) |
+
+`model.reasoning_api` (`auto` / `chat_template_kwargs` / `reasoning_effort` / `both` /
+`none`) overrides the choice for an endpoint. A field the endpoint rejects is dropped
+and remembered for the process; an endpoint that names its supported levels (vLLM:
+"Unexpected reasoning effort high. Supported types are xhigh (default), medium, and
+low") gets the nearest supported level (ties go up), also remembered. An Ollama model
+without thinking support has `think` dropped once.
+
 ## Limitation: `config set` cannot write mappings
 
 `opentorus config set` writes scalar leaves. `models.profiles` and

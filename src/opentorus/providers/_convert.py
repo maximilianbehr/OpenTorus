@@ -185,9 +185,15 @@ def _prepend_text(content: str | list[dict], text: str) -> str | list[dict]:
     return joined.strip()
 
 
-_INTERRUPTED_TOOL_RESULT = (
-    "[no result recorded — the previous run was interrupted before this tool returned]"
+# What a rebuilt request says for a call whose result never made it into the session
+# (a run killed outright, or a session written before explicit cancel results). The
+# loop records its own explicit "not executed" / "outcome unknown" results when it can;
+# this is the last-resort wording, and it must not pretend to know either way.
+DANGLING_TOOL_RESULT = (
+    "[did not return; outcome unknown — no result recorded for this call (the run was "
+    "interrupted, or the result was lost). Check the workspace state before repeating it.]"
 )
+_INTERRUPTED_TOOL_RESULT = DANGLING_TOOL_RESULT
 
 
 def _repair_openai_tool_pairing(out: list[dict]) -> list[dict]:

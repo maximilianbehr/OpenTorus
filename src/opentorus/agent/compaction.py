@@ -7,8 +7,15 @@ key responses, and is persisted under ``.opentorus/compaction/`` as an audit
 artifact. Leading system messages (system prompt, context, selected artifacts)
 are always kept verbatim.
 
-When ``compaction_threshold`` is exceeded, ``maybe_compact_session`` also rewrites
-``.opentorus/session.jsonl`` so on-disk history stays bounded across long runs.
+When ``compaction_threshold`` is exceeded, ``maybe_compact_session`` appends a
+compaction *marker* to ``.opentorus/session.jsonl`` (never rewriting it); the history
+the model sees is rebuilt from the last marker (``read_active_messages``), while the
+file itself stays the complete audit log. The trigger uses the provider-reported
+prompt tokens when they are known, the chars/4 estimate otherwise.
+
+Every summary opens with a resume prefix: it is a record of work already done in the
+same workspace, files on disk are as they were left, check before rebuilding, and do
+not repeat what the summary says failed.
 """
 
 from __future__ import annotations
@@ -20,9 +27,9 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from opentorus.agent.session import SessionMessage, read_messages, session_path
+from opentorus.agent.session import SessionMessage, append_message, read_messages
 from opentorus.config import Config
-from opentorus.jsonl import append_jsonl, next_sequential_id, read_jsonl, rewrite_jsonl
+from opentorus.jsonl import append_jsonl, next_sequential_id, read_jsonl
 
 if TYPE_CHECKING:
     from opentorus.providers.base import BaseProvider
@@ -42,13 +49,51 @@ _COMPACTION_SUMMARY_PREFIX = (
 _FAILURE_DETAIL_CHARS = 220
 _MAX_FAILURES_KEPT = 12
 
+# The checkpoint prompt, after the harness reference (prompts/templates/compact/prompt.md):
+# the summary REPLACES the turns it covers, so it is written for a reader who has none of
+# them — and the part most often left out (what failed, and why) is the part that saves
+# the most time.
 _LLM_SUMMARY_SYSTEM = """\
-You compact conversation history for a research engineering agent.
-Preserve: user goals, decisions, artifact IDs (PAPER-*, CLAIM-*, PROBLEM-*),
-tools used, key results, open gaps, and failures.
-Omit: repeated tool noise, long raw outputs, and sensitive content markers.
-Write concise bullet points under 400 words. Do not invent facts.\
+You are writing a CONTEXT CHECKPOINT for a research engineering agent. The conversation \
+turns below are about to be replaced by what you write; another model — possibly you, with \
+none of this in memory — will pick the work up from it.
+
+Write for that reader. Include:
+- The user's goals and constraints, in their words where the wording matters.
+- What has been established, and what is still only a guess (evidence is not proof; keep \
+claim/evidence statuses exactly as recorded).
+- The decisions taken and the reason for each, so they are not re-litigated.
+- What was tried and did NOT work, and why it did not. This is the part that saves the \
+most time and the part most often left out.
+- The current state: which files were written or changed, which experiments ran, what is \
+in progress.
+- What remains, as concrete next steps rather than as a topic.
+- Every identifier the next reader cannot rediscover, copied EXACTLY: file paths, artifact \
+ids (PAPER-*, CLAIM-*, EXP-*, PROBLEM-*), commands, measured numbers, parameter values, and \
+the exact text of error messages that matter.
+
+Be specific over complete: "explored several approaches" throws the work away; naming \
+each approach and what killed it keeps it. Omit repeated tool noise and long raw outputs. \
+Do not invent facts; if something is unknown, say so. Plain text or bullet points.\
 """
+
+# Placed in front of every compaction summary (LLM or heuristic), after the harness
+# reference (prompts/templates/compact/summary_prefix.md): the next model must read the
+# summary as a record of work already done in the SAME workspace — not as a proposal,
+# and not as a fresh start.
+_RESUME_PREFIX = (
+    "This summary is a record of what was already done earlier in this same piece of "
+    "work, not a proposal. Everything outside the conversation is exactly as it was "
+    "left: files written are on disk, artifacts under .opentorus/ are recorded, and "
+    "anything started is where it was put. Check the current state before you rebuild "
+    "something that may already exist, and do not repeat an approach the summary says "
+    "was tried and failed."
+)
+
+# How much of one message the summarizer sees. Exact identifiers and error text live in
+# these bodies; cutting them at 600 characters lost exactly what the summary must keep.
+_TRANSCRIPT_MESSAGE_CHARS = 2000
+_TRANSCRIPT_TOOL_CHARS = 1500
 
 
 def estimate_tokens(text: str) -> int:
@@ -80,16 +125,46 @@ def _is_compaction_summary(message: SessionMessage) -> bool:
     )
 
 
+def summary_body(message: SessionMessage) -> str:
+    """The summary text of a compaction message, without its headers."""
+    body = message.metadata.get("summary")
+    if isinstance(body, str) and body.strip():
+        return body.strip()
+    text = message.content
+    if text.startswith(_COMPACTION_SUMMARY_PREFIX):
+        text = text[len(_COMPACTION_SUMMARY_PREFIX) :]
+    text = text.strip()
+    if text.startswith(_RESUME_PREFIX):
+        text = text[len(_RESUME_PREFIX) :]
+    return text.strip()
+
+
+def _bounded_body(body: str, config: Config) -> str:
+    limit = int(getattr(config.context, "compaction_summary_max_chars", 12_000) or 0)
+    body = body.strip()
+    if limit > 0 and len(body) > limit:
+        body = body[:limit].rstrip() + f"\n[cut: {len(body) - limit} chars omitted]"
+    return body
+
+
+def summary_text(body: str) -> str:
+    """The full summary message: detection prefix, resume prefix, then the body."""
+    return f"{_COMPACTION_SUMMARY_PREFIX}\n{_RESUME_PREFIX}\n\n{body.strip()}"
+
+
 def _format_turns_for_llm(messages: list[SessionMessage]) -> str:
     lines: list[str] = []
     for message in messages:
         if _is_compaction_summary(message):
-            lines.append(f"[compacted earlier]\n{message.content[:800]}")
+            # An earlier checkpoint is carried forward whole: it is the only record left
+            # of the turns it replaced.
+            lines.append(f"[earlier checkpoint]\n{summary_body(message)}")
             continue
         role = message.role.upper()
         text = " ".join(message.content.split())
-        if len(text) > 600:
-            text = text[:597] + "…"
+        cap = _TRANSCRIPT_TOOL_CHARS if message.role == "tool" else _TRANSCRIPT_MESSAGE_CHARS
+        if len(text) > cap:
+            text = text[: cap - 1] + "…"
         if message.metadata.get("tool_calls"):
             names = [
                 tc.get("name", "?")
@@ -110,10 +185,10 @@ def _failed_attempts(messages: list[SessionMessage]) -> list[str]:
 
     "Failed attempts are first-class" is one of the project's invariants, and both the
     loop and the prove loop tell the user in so many words that a failing call and its
-    error "are preserved in the session log". Compaction rewrites session.jsonl, so
-    without this the promise was false the moment a run got long enough to compact:
-    a dead end survived as the bare word ``proof_write`` in a list of tool names, and
-    the agent was free to walk into it again.
+    error "are preserved in the session log". The log now keeps them (compaction is
+    append-only), but the *model* only sees the summary of a compacted window, so
+    without this a dead end survived as the bare word ``proof_write`` in a list of
+    tool names, and the agent was free to walk into it again.
     """
     out: list[str] = []
     for message in messages:
@@ -127,7 +202,11 @@ def _failed_attempts(messages: list[SessionMessage]) -> list[str]:
 
 
 def _summarize_turns(messages: list[SessionMessage]) -> str:
-    goals = [m.content for m in messages if m.role == "user" and m.content.strip()]
+    goals = [
+        m.content
+        for m in messages
+        if m.role == "user" and m.content.strip() and not m.metadata.get("synthetic")
+    ]
     tools: list[str] = []
     for m in messages:
         for tc in m.metadata.get("tool_calls", []):
@@ -142,13 +221,23 @@ def _summarize_turns(messages: list[SessionMessage]) -> str:
         if m.role == "assistant" and not m.metadata.get("tool_calls") and m.content.strip()
     ]
 
-    lines = [_COMPACTION_SUMMARY_PREFIX]
+    lines: list[str] = []
+    earlier = [summary_body(m) for m in messages if _is_compaction_summary(m)]
+    if earlier:
+        lines.append("- Earlier checkpoint (carried forward):\n" + earlier[-1])
     if goals:
         lines.append("- Goals: " + "; ".join(g[:120] for g in goals))
     if tools:
         lines.append("- Tools used: " + ", ".join(dict.fromkeys(tools)))
     if responses:
-        lines.append("- Key responses: " + " | ".join(r[:160] for r in responses[-3:]))
+        lines.append("- Key responses: " + " | ".join(r[:400] for r in responses[-3:]))
+    unrun = [
+        f"{m.metadata.get('name', 'tool')} ({str(m.metadata['unrun']).replace('_', ' ')})"
+        for m in messages
+        if m.role == "tool" and m.metadata.get("unrun")
+    ]
+    if unrun:
+        lines.append("- Calls that did not complete: " + ", ".join(dict.fromkeys(unrun)))
     failures = _failed_attempts(messages)
     if failures:
         lines.append(
@@ -177,7 +266,7 @@ def _llm_summarize(
         SessionMessage(role="system", content=_LLM_SUMMARY_SYSTEM),
         SessionMessage(
             role="user",
-            content="Summarize this conversation history:\n\n" + transcript,
+            content="Write the context checkpoint for these turns:\n\n" + transcript,
         ),
     ]
     try:
@@ -187,10 +276,15 @@ def _llm_summarize(
         return None
     if response.kind != "message" or not response.content.strip():
         return None
-    return f"{_COMPACTION_SUMMARY_PREFIX}\n{response.content.strip()}"
+    if response.truncated:
+        # A summary cut off at the output limit has lost its tail — usually the
+        # "what remains" part. Fall back to the deterministic summary instead.
+        logger.debug("LLM compaction summary was truncated; using the heuristic summary.")
+        return None
+    return response.content.strip()
 
 
-def _record(ot_dir: Path, summarized: int, summary: str) -> None:
+def _record(ot_dir: Path, summarized: int, summary: str) -> str:
     compaction_dir(ot_dir).mkdir(parents=True, exist_ok=True)
     path = _history_path(ot_dir)
     record = CompactionRecord(
@@ -199,15 +293,16 @@ def _record(ot_dir: Path, summarized: int, summary: str) -> None:
         summary=summary,
     )
     append_jsonl(path, record)
+    return record.id
 
 
 def _split_recent(
-    messages: list[SessionMessage], keep_budget: int
+    messages: list[SessionMessage], keep_budget: int, scale: float = 1.0
 ) -> tuple[list[SessionMessage], list[SessionMessage]]:
     kept: list[SessionMessage] = []
-    used = 0
+    used = 0.0
     for message in reversed(messages):
-        cost = estimate_tokens(message.content)
+        cost = estimate_tokens(message.content) * scale
         if kept and used + cost > keep_budget:
             break
         kept.append(message)
@@ -217,52 +312,79 @@ def _split_recent(
     return older, kept
 
 
-def _compact_message_list(
-    ot_dir: Path,
-    messages: list[SessionMessage],
-    config: Config,
-    *,
-    provider: BaseProvider | None = None,
-    keep_budget: int | None = None,
-) -> list[SessionMessage] | None:
-    """Return compacted messages, or None when nothing could be removed."""
-    if keep_budget is None:
-        keep_budget = max(
-            200, int(config.context.token_budget * config.context.compaction_keep_ratio)
-        )
+def _summarize(
+    older: list[SessionMessage], config: Config, provider: BaseProvider | None
+) -> str | None:
+    """Summary body for ``older`` (LLM first, deterministic fallback), or None.
 
-    head: list[SessionMessage] = []
-    i = 0
-    while (
-        i < len(messages)
-        and messages[i].role == "system"
-        and not _is_compaction_summary(messages[i])
-    ):
-        head.append(messages[i])
-        i += 1
-    convo = messages[i:]
-    if not convo:
+    Earlier checkpoints inside ``older`` are carried into the new summary rather than
+    dropped: they are the only record left of the turns they replaced. ``None`` when
+    ``older`` holds nothing but earlier checkpoints — there is nothing new to fold in.
+    """
+    if not [m for m in older if not _is_compaction_summary(m)]:
         return None
+    body = _llm_summarize(provider, older, config) if provider is not None else None
+    if body is None:
+        body = _summarize_turns(older)
+    return _bounded_body(body, config)
 
-    budget = keep_budget
-    older, kept = _split_recent(convo, budget)
-    if not older:
-        return None
 
-    older = [m for m in older if not _is_compaction_summary(m)]
-    if not older:
-        return None
+# --- the session-level, append-only compaction ----------------------------------------------
+#
+# ``session.jsonl`` used to be REWRITTEN when it outgrew the budget: the summarized turns
+# were deleted from disk, so a long run's own audit log lost its beginning (and "failed
+# attempts are preserved" stopped being true the moment a run compacted). The log is now
+# append-only. A compaction appends one *marker* record — a system message carrying the
+# summary — and the model-facing history is rebuilt from the LAST marker: the marker,
+# then the turns it kept verbatim (``keep_from`` is the raw-file index of the first one),
+# then everything appended after it. A session without markers (every session written
+# before this change, including ones an old version rewrote) reads exactly as before.
 
-    summary = _llm_summarize(provider, older, config) if provider is not None else None
-    if summary is None:
-        summary = _summarize_turns(older)
-    _record(ot_dir, len(older), summary)
-    summary_message = SessionMessage(
-        role="system",
-        content=summary,
-        metadata={"compaction": True},
-    )
-    return head + [summary_message] + kept
+
+def is_compaction_marker(message: SessionMessage) -> bool:
+    return bool(message.metadata.get("compaction_marker"))
+
+
+def _active_indexed(messages: list[SessionMessage]) -> list[tuple[int, SessionMessage]]:
+    """The model-facing view of a raw session log, with each message's raw index."""
+    last = None
+    for index in range(len(messages) - 1, -1, -1):
+        if is_compaction_marker(messages[index]):
+            last = index
+            break
+    if last is None:
+        return list(enumerate(messages))
+    marker = messages[last]
+    try:
+        keep_from = int(marker.metadata.get("keep_from", last))
+    except (TypeError, ValueError):
+        keep_from = last
+    keep_from = min(max(0, keep_from), last)
+    kept = [
+        (i, messages[i]) for i in range(keep_from, last) if not is_compaction_marker(messages[i])
+    ]
+    tail = list(enumerate(messages))[last + 1 :]
+    return [(last, marker), *kept, *tail]
+
+
+def active_messages(messages: list[SessionMessage]) -> list[SessionMessage]:
+    """Rebuild the model-facing history from the last compaction marker (if any)."""
+    return [m for _, m in _active_indexed(messages)]
+
+
+def read_active_messages(ot_dir: Path) -> list[SessionMessage]:
+    """``session.jsonl`` as the model sees it: from the last compaction marker on.
+
+    ``read_messages`` stays the full, append-only audit log (replay, bundles, harvest).
+    """
+    return active_messages(read_messages(ot_dir))
+
+
+def _token_scale(scale: float | None) -> float:
+    """Clamp a provider-calibrated tokens-per-estimated-token factor to a sane range."""
+    if scale is None or scale <= 0:
+        return 1.0
+    return min(4.0, max(0.5, float(scale)))
 
 
 def maybe_compact_session(
@@ -270,24 +392,71 @@ def maybe_compact_session(
     config: Config,
     *,
     provider: BaseProvider | None = None,
+    reported_prompt_tokens: int | None = None,
+    token_scale: float | None = None,
+    force: bool = False,
 ) -> bool:
-    """Persistently compact ``session.jsonl`` when it exceeds ``compaction_threshold``."""
+    """Compact the session history by appending a marker once it is over budget.
+
+    The trigger is the history's size against ``token_budget * compaction_threshold``,
+    measured in *real* tokens when the provider reported them: ``token_scale`` is the
+    previous request's reported ``prompt_tokens`` divided by the local estimate of that
+    same request, so the chars/4 estimate is corrected by what the provider actually
+    counted (math and code run closer to 3 chars per token). ``context.
+    compact_at_prompt_tokens``, when set, also triggers on the reported prompt size
+    itself. ``force`` compacts regardless — the provider said the context is full.
+    Never rewrites ``session.jsonl``; returns True when a marker was appended.
+    """
     if not config.context.compaction_enabled:
         return False
-    messages = read_messages(ot_dir)
-    if not messages:
+    raw = read_messages(ot_dir)
+    if not raw:
         return False
+    indexed = _active_indexed(raw)
+    active = [m for _, m in indexed]
+    scale = _token_scale(token_scale)
     trigger = int(config.context.token_budget * config.context.compaction_threshold)
-    if total_tokens(messages) <= trigger:
+    hard_limit = getattr(config.context, "compact_at_prompt_tokens", None)
+    over_hard = bool(hard_limit) and (reported_prompt_tokens or 0) >= int(hard_limit or 0)
+    if not force and not over_hard and total_tokens(active) * scale <= trigger:
         return False
 
     keep_budget = max(200, int(config.context.token_budget * config.context.compaction_keep_ratio))
-    compacted = _compact_message_list(
-        ot_dir, messages, config, provider=provider, keep_budget=keep_budget
-    )
-    if compacted is None:
+    if force or over_hard:
+        # The provider said the context is (nearly) full: keep a smaller recent window —
+        # at most half of what is there now, whatever the configured budget says (an
+        # overflow means the configured budget did not fit this model).
+        current = int(total_tokens(active) * scale)
+        keep_budget = max(200, min(keep_budget // 2, current // 2))
+    older, kept = _split_recent(active, keep_budget, scale)
+    if not older:
         return False
-    rewrite_jsonl(session_path(ot_dir), compacted)
+    body = _summarize(older, config, provider)
+    if body is None:
+        return False
+    content = summary_text(body)
+    compaction_id = _record(ot_dir, len(older), content)
+    # Raw index of the first message kept verbatim (or "nothing kept": the marker's own
+    # index, which is the current end of the file).
+    keep_from = indexed[len(older)][0] if kept else len(raw)
+    if kept and is_compaction_marker(kept[0]):
+        keep_from = len(raw)
+    append_message(
+        ot_dir,
+        SessionMessage(
+            role="system",
+            content=content,
+            metadata={
+                "compaction": True,
+                "compaction_marker": True,
+                "compaction_id": compaction_id,
+                "keep_from": keep_from,
+                "summarized_messages": len(older),
+                "summary": body,
+                "trigger": "forced" if force else ("prompt_tokens" if over_hard else "budget"),
+            },
+        ),
+    )
     return True
 
 
@@ -297,11 +466,17 @@ def compact_messages(
     config: Config,
     *,
     provider: BaseProvider | None = None,
+    token_scale: float | None = None,
 ) -> list[SessionMessage]:
-    """Compact older turns into a summary when over the token budget."""
+    """Compact older turns of one assembled request into a summary when over budget.
+
+    This is the per-request safety net (nothing is persisted to ``session.jsonl``; the
+    summary is recorded under ``.opentorus/compaction/``).
+    """
     if not config.context.compaction_enabled:
         return messages
-    if total_tokens(messages) <= config.context.token_budget:
+    scale = _token_scale(token_scale)
+    if total_tokens(messages) * scale <= config.context.token_budget:
         return messages
 
     head: list[SessionMessage] = []
@@ -320,19 +495,17 @@ def compact_messages(
     # the budget, not an absolute floor that would suppress compaction at small budgets),
     # even if that means the head + summary slightly overflow.
     recent_floor = int(config.context.token_budget * config.context.compaction_keep_ratio)
-    budget = max(recent_floor, config.context.token_budget - total_tokens(head))
+    budget = max(recent_floor, int(config.context.token_budget - total_tokens(head) * scale))
 
-    older, kept = _split_recent(convo, budget)
+    older, kept = _split_recent(convo, budget, scale)
     if not older:
         return messages
-
-    older = [m for m in older if not _is_compaction_summary(m)]
-    if not older:
+    body = _summarize(older, config, provider)
+    if body is None:
         return messages
-
-    summary = _llm_summarize(provider, older, config) if provider is not None else None
-    if summary is None:
-        summary = _summarize_turns(older)
-    _record(ot_dir, len(older), summary)
-    summary_message = SessionMessage(role="system", content=summary, metadata={"compaction": True})
+    content = summary_text(body)
+    _record(ot_dir, len(older), content)
+    summary_message = SessionMessage(
+        role="system", content=content, metadata={"compaction": True, "summary": body}
+    )
     return head + [summary_message] + kept

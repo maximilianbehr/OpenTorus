@@ -101,8 +101,8 @@ def test_redacted_sensitive_not_leaked_into_summary(tmp_path: Path) -> None:
     assert "SECRET" not in joined
 
 
-def test_maybe_compact_session_rewrites_session_file(tmp_path: Path) -> None:
-    from opentorus.agent.compaction import maybe_compact_session
+def test_maybe_compact_session_appends_a_marker_instead_of_rewriting(tmp_path: Path) -> None:
+    from opentorus.agent.compaction import maybe_compact_session, read_active_messages
     from opentorus.agent.session import append_message, read_messages
 
     ot = _ws(tmp_path)
@@ -117,10 +117,15 @@ def test_maybe_compact_session_rewrites_session_file(tmp_path: Path) -> None:
 
     before = len(read_messages(ot))
     assert before == 24
+    original = read_messages(ot)
     assert maybe_compact_session(ot, config) is True
-    after = read_messages(ot)
+    raw = read_messages(ot)
+    # session.jsonl is append-only: every original line survives, plus one marker.
+    assert [m.content for m in raw[:before]] == [m.content for m in original]
+    assert len(raw) == before + 1 and raw[-1].metadata.get("compaction_marker")
+    after = read_active_messages(ot)
     assert len(after) < before
-    assert any(m.metadata.get("compaction") for m in after)
+    assert after[0].metadata.get("compaction")
     assert after[-1].content.startswith("answer 11")
 
 

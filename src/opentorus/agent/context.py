@@ -53,7 +53,11 @@ def session_messages(ot_dir: Path, session_id: str | None) -> list[SessionMessag
     "propose a portfolio as JSON" exchange as the latest history and answered with
     another portfolio (a real run: WI-0005, one turn, no experiment).
     """
-    history = read_messages(ot_dir)
+    # The model-facing history starts at the last compaction marker; the file itself
+    # is append-only and keeps everything (see agent.compaction.read_active_messages).
+    from opentorus.agent.compaction import active_messages
+
+    history = active_messages(read_messages(ot_dir))
     if session_id is None:
         return history
     return [m for m in history if m.metadata.get("session_id") == session_id]
@@ -197,6 +201,8 @@ def build_messages(
     goal: str | None = None,
     provider=None,
     history_session_id: str | None = None,
+    reported_prompt_tokens: int | None = None,
+    token_scale: float | None = None,
 ) -> list[SessionMessage]:
     """Assemble the message list for a provider call.
 
@@ -206,8 +212,14 @@ def build_messages(
     artifacts for the latest user message are injected as a context block.
     ``history_session_id`` restricts the history window (and the retrieval query)
     to one run's messages — an isolated worker; ``None`` keeps the workspace-wide
-    window the REPL and ``run`` rely on for continuity.
+    window the REPL and ``run`` rely on for continuity. ``reported_prompt_tokens`` and
+    ``token_scale`` carry the previous request's provider-reported size into the
+    compaction trigger (see ``maybe_compact_session``).
     """
+    compaction: dict = {
+        "reported_prompt_tokens": reported_prompt_tokens,
+        "token_scale": token_scale,
+    }
     from opentorus.agent.prompts import build_system_prompt, build_task_execution_prompt
 
     # Ordering matters for cost, not just for clarity. Everything below is re-sent on
@@ -218,7 +230,7 @@ def build_messages(
     # run (examples/matrix-spencer): 1,263,204 prompt tokens against 51,534 completion
     # tokens, with prompt_eval_count climbing 8k -> 30k in lockstep with latency, i.e.
     # no reuse at all. So: stable blocks first, volatile state last.
-    system_prompt = build_system_prompt(config.project.mode, config.agent.style)
+    system_prompt = build_system_prompt(config.project.mode, config.agent.style, tool_names)
     messages: list[SessionMessage] = [SessionMessage(role="system", content=system_prompt)]
     from opentorus.agent.prompts import TOOL_ROUTING_GUIDE
 
@@ -276,7 +288,7 @@ def build_messages(
         _extend_with_history(messages, ot_dir, config, include_history, history_session_id)
         if recovery_hint:
             messages.append(SessionMessage(role="user", content=recovery_hint))
-        return _finalize(ot_dir, config, messages, provider)
+        return _finalize(ot_dir, config, messages, provider, **compaction)
 
     _extend_with_history(messages, ot_dir, config, include_history, history_session_id)
 
@@ -301,7 +313,7 @@ def build_messages(
     # The recovery hint stays last: it tells the model what to do *now*.
     if recovery_hint:
         messages.append(SessionMessage(role="user", content=recovery_hint))
-    return _finalize(ot_dir, config, messages, provider)
+    return _finalize(ot_dir, config, messages, provider, **compaction)
 
 
 def _final_turn_start(messages: list[SessionMessage]) -> int:
@@ -343,12 +355,27 @@ def _finalize(
     config: Config,
     messages: list[SessionMessage],
     provider,  # noqa: ANN001 - BaseProvider (lazy import)
+    *,
+    reported_prompt_tokens: int | None = None,
+    token_scale: float | None = None,
 ) -> list[SessionMessage]:
     from opentorus.privacy import redact_for_provider
 
     messages = redact_for_provider(messages, config.privacy.allow_sensitive_context)
 
+    from opentorus.agent.tool_result_bound import bound_tool_messages
+
+    # Bound what the model reads, not what is persisted: session.jsonl keeps the full
+    # tool output, the request carries at most agent.max_tool_result_chars per result.
+    messages = bound_tool_messages(messages, config.agent.max_tool_result_chars)
+
     from opentorus.agent.compaction import compact_messages, maybe_compact_session
 
-    maybe_compact_session(ot_dir, config, provider=provider)
-    return compact_messages(ot_dir, messages, config, provider=provider)
+    maybe_compact_session(
+        ot_dir,
+        config,
+        provider=provider,
+        reported_prompt_tokens=reported_prompt_tokens,
+        token_scale=token_scale,
+    )
+    return compact_messages(ot_dir, messages, config, provider=provider, token_scale=token_scale)

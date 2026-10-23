@@ -28,6 +28,13 @@ OperatingStyle = Literal["cautious", "normal", "fast", "autonomous"]
 PermissionMode = Literal["safe", "ask", "trusted"]
 AgentMode = Literal["normal", "review"]
 EmbeddingsBackend = Literal["auto", "local", "openai", "ollama", "off"]
+# How hard a reasoning model thinks per call. "off" disables thinking where the server
+# can (vLLM chat_template_kwargs.enable_thinking=false, Ollama think=false).
+ReasoningEffort = Literal["off", "low", "medium", "high", "max"]
+# How an OpenAI-compatible endpoint is told the effort: vLLM-style chat-template kwargs
+# (enable_thinking), the OpenAI ``reasoning_effort`` field, both, or nothing. "auto":
+# both for a custom base_url (vLLM, llama.cpp, …), ``reasoning_effort`` for OpenAI.
+ReasoningApi = Literal["auto", "chat_template_kwargs", "reasoning_effort", "both", "none"]
 
 
 def _literal_off(value: object) -> object:
@@ -118,6 +125,15 @@ class ModelConfig(BaseModel):
     # also reads Ollama /api/show). OpenTorus is useless without tool calling, so a model
     # that cannot is refused with a clear message. Set false to skip the check.
     verify_tool_calling: bool = True
+    # Reasoning effort sent with every request (None = the server's default). A task
+    # class can override it via governance.routing.task_effort.
+    reasoning_effort: ReasoningEffort | None = None
+    _reasoning_effort_off = field_validator("reasoning_effort", mode="before")(_literal_off)
+    reasoning_api: ReasoningApi = "auto"
+    # OpenAI-compatible providers only: stream the response (SSE). Retries happen only
+    # before the first byte arrives; a stream that ends without a finish_reason is an
+    # error, never a silently short answer. Off by default.
+    stream: bool = False
 
 
 class ModelProfile(ModelConfig):
@@ -179,6 +195,16 @@ class AgentConfig(BaseModel):
     # overclaiming "done". Closes the escape where a model empties `gaps` by relabelling
     # unresolved steps as prose "Open Problems". Only active while prove_until_gaps_closed.
     prove_referee_reopens_gaps: bool = True
+    # A reply that stopped at the output-token limit is incomplete: its text is kept,
+    # its tool calls are dropped unexecuted, and the model is asked to continue. This
+    # bounds how many such continuations one run grants in a row before stopping with
+    # an honest "output limit reached" message (never accepting the cut-off text).
+    max_length_continuations: int = Field(default=3, ge=0)
+    # Every tool result handed back to the model is cut to at most this many
+    # characters (the longest string field first, so exit codes and flags survive),
+    # with an explicit "[cut: …]" marker. The full output is still logged as before.
+    # 0 disables the bound.
+    max_tool_result_chars: int = Field(default=64_000, ge=0)
 
     @field_validator(
         "max_steps", "prove_gap_fill_max_steps", "prove_gap_fill_no_progress_steps", mode="before"
@@ -243,12 +269,21 @@ class ContextConfig(BaseModel):
     # Well within modern model context windows; lower it for small local models.
     token_budget: int = 24000
     compaction_enabled: bool = True
-    # Persistently rewrite session.jsonl when history exceeds this fraction of token_budget.
+    # Compact the session history (an appended marker; session.jsonl is never rewritten)
+    # when it exceeds this fraction of token_budget. Measured in provider-reported tokens
+    # when the provider reports them (the estimate is calibrated by the last request's
+    # prompt_tokens), chars/4 otherwise.
     compaction_threshold: float = Field(default=0.85, ge=0.1, le=1.0)
     # Summarize compacted turns with the chat provider when available (falls back to heuristics).
     compaction_llm: bool = True
     # Fraction of token_budget to keep as recent verbatim turns after a session compaction.
     compaction_keep_ratio: float = Field(default=0.5, ge=0.1, le=0.95)
+    # Upper bound on one compaction summary (characters; 0 = unbounded). Large enough to
+    # keep exact paths, numbers, commands and error text, and what failed and why.
+    compaction_summary_max_chars: int = Field(default=12_000, ge=0)
+    # Optional absolute trigger: compact once the provider reports a request of at least
+    # this many prompt tokens (e.g. 200000 for a 262k-context vLLM model). None = off.
+    compact_at_prompt_tokens: int | None = Field(default=None, ge=1)
     # Hybrid retrieval (Milestone 46): BM25 + embeddings from the chat provider
     # (OpenAI/Ollama) or optional local sentence-transformers.
     embeddings_enabled: bool = True
@@ -492,6 +527,18 @@ class RoutingConfig(BaseModel):
     enabled: bool = False
     task_models: dict[str, str] = Field(default_factory=dict)
     task_routes: dict[str, list[str]] = Field(default_factory=dict)
+    # Task class -> reasoning effort (off/low/medium/high/max), e.g.
+    # {proof_development: high, narration: off, default: medium}. Applied to the leased
+    # profile by the provider pool whether or not ``enabled`` is set; a class without an
+    # entry (and no "default" entry) keeps the profile's own model.reasoning_effort.
+    task_effort: dict[str, ReasoningEffort] = Field(default_factory=dict)
+
+    @field_validator("task_effort", mode="before")
+    @classmethod
+    def _task_effort_off(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {k: _literal_off(v) for k, v in value.items()}
+        return value
 
 
 class GovernanceConfig(BaseModel):

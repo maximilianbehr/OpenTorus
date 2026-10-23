@@ -15,6 +15,7 @@ from types import ModuleType
 from opentorus.agent.session import SessionMessage
 from opentorus.config import Config
 from opentorus.errors import ProviderError
+from opentorus.providers._convert import DANGLING_TOOL_RESULT
 from opentorus.providers.base import (
     BaseProvider,
     ProviderResponse,
@@ -269,7 +270,7 @@ def _repair_anthropic_tool_pairing(convo: list[dict]) -> list[dict]:
                         {
                             "type": "tool_result",
                             "tool_use_id": tool_id,
-                            "content": "(no result recorded for this call)",
+                            "content": DANGLING_TOOL_RESULT,
                         }
                         for tool_id in missing
                     ],
