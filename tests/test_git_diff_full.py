@@ -94,3 +94,20 @@ def test_path_filter(tmp_path: Path) -> None:
     (repo / "sub" / "b.txt").write_text("b\n", encoding="utf-8")
     out = git_diff(repo, "sub").output
     assert "sub/b.txt" in out and "a.txt" not in out
+
+
+@pytest.mark.parametrize("commit", [True, False])
+def test_opentorus_state_is_counted_not_shown(tmp_path: Path, commit: bool) -> None:
+    """The workspace's own .opentorus/ state must not crowd out the agent's changes."""
+    repo = _repo(tmp_path, commit=commit)
+    state = repo / ".opentorus"
+    state.mkdir()
+    for i in range(30):
+        (state / f"ledger{i}.jsonl").write_text("x" * 2000 + "\n", encoding="utf-8")
+    (repo / "env_probe.py").write_text("print(1)\n", encoding="utf-8")
+    out = git_diff(repo).output
+    assert "env_probe.py" in out and "print(1)" in out
+    assert "ledger0.jsonl" not in out
+    assert "30 changed file(s) under .opentorus/" in out
+    # Still reachable on request.
+    assert "ledger0.jsonl" in git_diff(repo, ".opentorus").output

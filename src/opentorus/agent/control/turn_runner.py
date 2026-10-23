@@ -138,6 +138,8 @@ class TurnRunner:
         self.provider = provider
         self.registry = registry
         self.config = config
+        # The call id whose tool.run() has started (see execute_tool); None before dispatch.
+        self.dispatched_call_id: str | None = None
         self.session_id = session_id
         self.confirm = confirm
         self.on_text = on_text
@@ -566,6 +568,7 @@ class TurnRunner:
     def execute_tool(self, name: str, args: dict, call_id: str) -> ToolOutcome:
         """Run one tool call end to end; the returned ``content`` goes back to the model."""
         started = time.monotonic()
+        self.dispatched_call_id = None
         # The signature is computed up front so EVERY rejection path below can feed
         # the identical-failure tracker: a model hammering the same blocked call is
         # exactly as stuck as one hammering a failing tool (forensics of the
@@ -699,6 +702,9 @@ class TurnRunner:
         old_content = self._read_path(args["path"]) if is_file_edit else None
 
         call = ToolCall(id=call_id, name=name, args=args)
+        # From here on the call has been dispatched: an abort can no longer claim the
+        # call did not run (an abort during a confirmation prompt, above, still can).
+        self.dispatched_call_id = call_id
         try:
             result = tool.run(call)
         except Exception as exc:  # noqa: BLE001 — tool bugs must not abort the agent loop

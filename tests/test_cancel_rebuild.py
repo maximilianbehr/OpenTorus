@@ -33,7 +33,7 @@ def _setup(tmp_path: Path):
     ot = workspace_dir(tmp_path)
     config = default_config()
     config.permissions.mode = "trusted"
-    return ot, config, build_default_registry(tmp_path, config)
+    return ot, config, build_default_registry(tmp_path, ot, config)
 
 
 def _tool_results(ot: Path) -> dict[str, SessionMessage]:
@@ -76,14 +76,13 @@ def test_interrupt_while_running_records_outcome_unknown(tmp_path: Path) -> None
     loop = AgentLoop(
         tmp_path, ot, ScriptedProvider([_three_calls()]), registry, config, max_steps=5
     )
-    original = loop._runner.execute_tool
+    tool, _ = registry.resolve("memory_list")
+    assert tool is not None
 
-    def _execute(name, args, call_id):  # noqa: ANN001
-        if call_id == "c2":
-            raise KeyboardInterrupt
-        return original(name, args, call_id)
+    def _interrupted_run(call):  # noqa: ANN001
+        raise KeyboardInterrupt  # Ctrl-C while the tool itself is running
 
-    loop._runner.execute_tool = _execute  # type: ignore[method-assign]
+    tool.run = _interrupted_run  # type: ignore[method-assign]
     with pytest.raises(KeyboardInterrupt):
         loop.run("go")
     results = _tool_results(ot)
@@ -114,3 +113,33 @@ def test_dangling_call_rebuilds_as_outcome_unknown() -> None:
     tool = [m for m in wire if m.get("role") == "tool"]
     assert tool and tool[0]["content"] == DANGLING_TOOL_RESULT
     assert "outcome unknown" in DANGLING_TOOL_RESULT and "did not return" in DANGLING_TOOL_RESULT
+
+
+def test_abort_at_the_confirmation_prompt_records_not_executed(tmp_path: Path) -> None:
+    """An abort while the person is being asked happens before dispatch: nothing ran."""
+    ot, config, registry = _setup(tmp_path)
+    config.permissions.mode = "ask"
+    response = ProviderResponse(
+        kind="tool_call",
+        tool_calls=[
+            ToolCallRequest(tool_name="status", tool_args={}, tool_call_id="c1"),
+            ToolCallRequest(
+                tool_name="write_file",
+                tool_args={"path": "x.txt", "content": "hi"},
+                tool_call_id="c2",
+            ),
+        ],
+    )
+
+    def _abort(decision, description, scope):  # noqa: ANN001
+        raise KeyboardInterrupt
+
+    loop = AgentLoop(
+        tmp_path, ot, ScriptedProvider([response]), registry, config, max_steps=5, confirm=_abort
+    )
+    with pytest.raises(KeyboardInterrupt):
+        loop.run("go")
+    results = _tool_results(ot)
+    assert results["c2"].content == TOOL_NOT_EXECUTED
+    assert results["c2"].metadata["unrun"] == "not_dispatched"
+    assert not (tmp_path / "x.txt").exists()

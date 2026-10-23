@@ -874,8 +874,10 @@ class AgentLoop:
                     content = self._run_tool(nm, ar, cid)
                 except BaseException:
                     # Ctrl-C (or any abort) while this tool was running: whether its
-                    # effect happened is unknown; the calls after it never ran.
-                    self._record_unrun(resolved[index:], interrupted=cid)
+                    # effect happened is unknown; the calls after it never ran. An abort
+                    # before dispatch (e.g. at the confirmation prompt) did not run it.
+                    dispatched = getattr(self._runner, "dispatched_call_id", None) == cid
+                    self._record_unrun(resolved[index:], interrupted=cid if dispatched else None)
                     raise
                 self._append(
                     SessionMessage(

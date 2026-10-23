@@ -48,6 +48,9 @@ class GitResult(BaseModel):
     next_offset: int | None = None
 
 
+_STATE_DIR = ".opentorus"
+
+
 def _git_env() -> dict[str, str]:
     from opentorus.tools.childenv import scrubbed_env
 
@@ -229,9 +232,17 @@ def git_diff(
     """Everything that differs from ``HEAD``: staged, unstaged and untracked files."""
     if not _is_repo(cwd):
         return GitResult(is_repo=False, output="Not a git repository.")
-    spec = ["--", path] if path else []
+    # OpenTorus' own state under .opentorus/ is not the agent's work and would crowd the
+    # page; it is left out unless asked for by path, and its count is reported instead.
+    spec = ["--", path] if path else ["--", ".", f":(exclude){_STATE_DIR}"]
     status = _run_git(["status", "--porcelain=v2", "-z", "--untracked-files=all", *spec], cwd)
     entries = _parse_status(status.stdout if status and status.returncode == 0 else "")
+    hidden = 0
+    if not path:
+        state = _run_git(
+            ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--", _STATE_DIR], cwd
+        )
+        hidden = len(_parse_status(state.stdout if state and state.returncode == 0 else ""))
     head = _has_head(cwd)
     diff_flags = ["--no-ext-diff", "--no-textconv", "--no-color"]
 
@@ -263,10 +274,17 @@ def git_diff(
         elif entry.path in counts:
             entry.added, entry.removed = counts[entry.path]
 
+    state_note = (
+        f"({hidden} changed file(s) under {_STATE_DIR}/ — OpenTorus state — not shown; "
+        f"pass path='{_STATE_DIR}' to see them.)"
+        if hidden
+        else ""
+    )
     if not entries and not patches:
         where = f" under {path}" if path else ""
         base = "HEAD" if head else "the empty repository (no commit yet)"
-        return GitResult(is_repo=True, output=f"No changes{where} relative to {base}.")
+        message = f"No changes{where} relative to {base}."
+        return GitResult(is_repo=True, output=f"{message}\n{state_note}".strip())
 
     header_lines = [
         f"{len(entries)} changed file(s) relative to "
@@ -276,6 +294,8 @@ def git_diff(
     for entry in entries:
         name = f"{entry.orig} -> {entry.path}" if entry.orig else entry.path
         header_lines.append(f"  {entry.state:<9} {name}  (+{entry.added} -{entry.removed})")
+    if state_note:
+        header_lines.append(state_note)
     text = "\n".join(header_lines) + "\n\n" + "".join(patches).rstrip()
     page, truncated, next_offset = _page(text, offset, max_chars)
     return GitResult(is_repo=True, output=page, truncated=truncated, next_offset=next_offset)
