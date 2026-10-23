@@ -236,6 +236,17 @@ that decide whether a retry is the same attempt -- `strategy_class`,
 occurrence counts. A repeat of a known key reuses the signature and bumps
 `occurrences`.
 
+**Giving up with a reason.** Every model-driven worker prompt carries the rule "If
+you can make no more progress, give up with the reason before you stop, so that
+nobody repeats it", asking for a final `GIVE UP: <what you tried> -- <why it fails>`
+line. The worker reads that line (from its final reply, else from the newest
+assistant turn of its own session) into `WorkerResult.abandon_reason`; the engine
+stores it on the failure signature (`abandon_reason`, also on `worker_failed`) and the
+next brief prints it next to the counterargument, marked as the worker's own
+unverified statement (`failures.describe_failure`). It is deliberately **not** part
+of the key: prose differs run to run, and keying on it would make every model failure
+look new to the retry gate. A repeat of a known key keeps the latest stated reason.
+
 Error categories: `tool_unavailable`, `verifier_rejected`, `verifier_inconclusive`,
 `no_witness_found`, `citation_invalid`, `permission_blocked`, `budget`, `timeout`,
 `model_no_progress`, `other`.

@@ -218,6 +218,8 @@ class WorkerFailedPayload(_Payload):
     # What the worker did before failing (experiments run, coercions, capped timeouts):
     # the diagnosis a failed item needs most, and it used to be dropped on this path.
     notes: list[str] = Field(default_factory=list)
+    # The worker's own "what I tried and why it fails" when it gave up (unverified text).
+    abandon_reason: str = ""
 
 
 class ProofNodeUpdatedPayload(_Payload):

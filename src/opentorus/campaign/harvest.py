@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import cast
 
+from opentorus.campaign.failures import describe_failure
 from opentorus.campaign.models import FailureSignature
 
 _TYPE_MAP: dict[str, str] = {
@@ -149,7 +150,7 @@ def _mirror_failures(
                 ot_dir,
                 problem_id,
                 attempted_method=f"{sig.strategy_class} ({sig.tool_or_solver})".strip(),
-                summary=sig.counterargument,
+                summary=describe_failure(sig) if sig.abandon_reason else sig.counterargument,
                 reason_failed=str(sig.error_category),
                 artifacts=[sig.signature_id, *sig.artifact_ids],
                 tags=["campaign", campaign_id],

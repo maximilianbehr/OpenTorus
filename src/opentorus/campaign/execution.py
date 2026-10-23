@@ -452,6 +452,7 @@ class WorkerExecutor:
                         ),
                         "branch_id": branch.branch_id,
                         "work_item_id": item.work_item_id,
+                        "abandon_reason": result.abandon_reason or sig.abandon_reason,
                     }
                 )
                 emit(ev.EventType.failure_signature_recorded, sig)
@@ -464,6 +465,7 @@ class WorkerExecutor:
                     message=result.message or "; ".join(result.notes),
                     failure_signature_id=sig_id,
                     notes=list(result.notes),
+                    abandon_reason=result.abandon_reason,
                 ),
             )
             if result.error_category == "tool_unavailable" and self.workers.get(item.role) is None:

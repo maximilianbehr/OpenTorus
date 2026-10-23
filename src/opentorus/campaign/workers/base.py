@@ -16,6 +16,7 @@ sink, its cancellation flag, and a tool gate that enforces ``allowed_tools``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +70,69 @@ class Worker(Protocol):
     role: WorkerRole
 
     def run(self, ctx: WorkerContext, rt: WorkerRuntime) -> WorkerResult: ...
+
+
+# --------------------------------------------------------------------------------------
+# giving up with a reason
+# --------------------------------------------------------------------------------------
+
+# The rule every model-driven campaign worker's prompt carries. A worker that stops
+# without saying why leaves the next brief nothing but a category, and the next attempt
+# on the branch (or a sibling branch) walks into the same dead end.
+ABANDON_RULE = (
+    "If you can make no more progress, give up with the reason before you stop, so that "
+    "nobody repeats it: end your final message with one line "
+    "'GIVE UP: <what you tried> -- <why it fails>'."
+)
+MAX_ABANDON_REASON_CHARS = 800
+_GIVE_UP = re.compile(
+    r"^[ \t>*_#-]*(?:give[ -]?up|giving[ -]up|abandon(?:ed|ing)?)[ \t*_]*[:\u2013\u2014-][ \t]*",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def abandon_reason_from(text: str | None) -> str:
+    """The worker's stated reason for giving up: the text after the last ``GIVE UP:``
+    line of its final message (whitespace-normalised, capped), or ``""`` when it gave
+    none. Only an explicit marker counts — a loop's own stop message ("Reached the
+    maximum number of steps ...") is not a reason and must not pose as one."""
+    if not text:
+        return ""
+    matches = list(_GIVE_UP.finditer(text))
+    if not matches:
+        return ""
+    reason = " ".join(text[matches[-1].end() :].split()).strip(" *_")
+    if len(reason) > MAX_ABANDON_REASON_CHARS:
+        reason = reason[: MAX_ABANDON_REASON_CHARS - 3].rstrip() + "..."
+    return reason
+
+
+def stated_abandon_reason(ot_dir: Path, session_id: str, final: str | None) -> str:
+    """The reason a model-driven worker gave for giving up in this work item's session.
+
+    ``final`` is what ``AgentLoop.run`` returned; when the loop ended on one of its own
+    stop messages (a no-progress window, the step cap) the model's ``GIVE UP:`` line is
+    in an earlier assistant turn, so the work item's own session messages are searched
+    newest first. ``final is None`` means no loop ran (the offline path): no reason.
+    """
+    if final is None:
+        return ""
+    reason = abandon_reason_from(final)
+    if reason or not session_id:
+        return reason
+    from opentorus.agent.session import read_messages
+
+    try:
+        messages = read_messages(ot_dir)
+    except OSError:
+        return ""
+    for msg in reversed(messages):
+        if msg.role != "assistant" or msg.metadata.get("session_id") != session_id:
+            continue
+        reason = abandon_reason_from(msg.content)
+        if reason:
+            return reason
+    return ""
 
 
 def usage_tags(ctx: WorkerContext) -> dict[str, str]:
@@ -368,11 +432,14 @@ def diff_artifacts(
 
 
 __all__ = [
+    "ABANDON_RULE",
+    "MAX_ABANDON_REASON_CHARS",
     "ROLE_ALLOWED_TOOLS",
     "ArtifactIndex",
     "RegistryFactory",
     "Worker",
     "WorkerRuntime",
+    "abandon_reason_from",
     "acquire_lease",
     "allowed_tools_gate",
     "bounded_loop",
@@ -381,5 +448,6 @@ __all__ = [
     "is_mock_provider",
     "restricted_registry",
     "snapshot_artifacts",
+    "stated_abandon_reason",
     "usage_tags",
 ]

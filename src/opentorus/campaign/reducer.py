@@ -587,6 +587,9 @@ def _apply_failure_signature_recorded(
                 existing.retry_notes.append(note)
         if sig.verifier_backends:
             existing.verifier_backends = list(sig.verifier_backends)
+        if sig.abandon_reason:
+            # The latest stated reason wins: it is the one the next brief should quote.
+            existing.abandon_reason = sig.abandon_reason
         sig = existing
     else:
         sig.first_seq = sig.first_seq or e.seq

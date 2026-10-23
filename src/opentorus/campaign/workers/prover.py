@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from opentorus.campaign.failures import build_failure_signature
+from opentorus.campaign.failures import build_failure_signature, describe_failure
 from opentorus.campaign.models import (
     ArtifactRef,
     ClosureMode,
@@ -45,10 +45,12 @@ from opentorus.campaign.models import (
     WorkerRole,
 )
 from opentorus.campaign.workers.base import (
+    ABANDON_RULE,
     WorkerRuntime,
     acquire_lease,
     bounded_loop,
     formal_backends,
+    stated_abandon_reason,
 )
 from opentorus.errors import OpenTorusError
 
@@ -113,12 +115,13 @@ def branch_instructions(ctx: WorkerContext) -> str:
         for sig in ctx.failure_signatures:
             lines.append(
                 f"  - {sig.signature_id or 'FSIG'} [{sig.error_category}] "
-                f"{sig.strategy_class}: {sig.counterargument or '(no counterargument)'} "
+                f"{sig.strategy_class}: {describe_failure(sig)} "
                 f"(seen {sig.occurrences}x)"
             )
     if ctx.open_obligations:
         lines.append("Open obligations on this branch:")
         lines.extend(f"  - {ob.obligation_id}: {ob.statement}" for ob in ctx.open_obligations[:12])
+    lines.append(ABANDON_RULE)
     return "\n".join(lines)
 
 
@@ -301,7 +304,7 @@ class ProverWorker:
                     GAP_FILL_HINT if primary else EXPLORATION_GAP_FILL_HINT
                 ),
             )
-        loop.run(prompt)
+        final = loop.run(prompt)
         after = {p.id: p for p in store.list_proof_attempts(rt.ot_dir, pid)}
         changed = sorted(
             p_id for p_id, p in after.items() if p_id not in before or before[p_id] != p.updated_at
@@ -323,6 +326,7 @@ class ProverWorker:
             else []
         )
         if not own:
+            abandon = stated_abandon_reason(rt.ot_dir, ctx.session_id, final)
             return WorkerResult(
                 status="failed",
                 error_category="model_no_progress",
@@ -333,6 +337,7 @@ class ProverWorker:
                     f"{turns} turn(s), {loop.tool_calls_this_run} tool call(s), no proof_write",
                     *coercion_notes,
                 ],
+                abandon_reason=abandon,
                 failure_signature=build_failure_signature(
                     role=self.role,
                     strategy_class=strategy,
@@ -350,6 +355,7 @@ class ProverWorker:
                         )
                     ),
                     verifier_backends=formal_backends(rt.config),
+                    abandon_reason=abandon,
                 ),
             )
         newest_id = max(own, key=lambda i: (after[i].updated_at, i))

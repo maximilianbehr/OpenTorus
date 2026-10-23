@@ -418,6 +418,10 @@ class FailureSignature(_Persisted):
     # ``verification_backend_changed`` reactivation condition has something to compare
     # against without re-reading an old config.
     verifier_backends: list[str] = Field(default_factory=list)
+    # What the worker itself said it tried and why it fails when it gave up (model
+    # text, unverified). Deliberately *not* part of ``key``: prose differs run to run,
+    # and keying on it would make every model-driven failure look new to the retry gate.
+    abandon_reason: str = ""
 
 
 class Obligation(_Persisted):
@@ -523,6 +527,10 @@ class WorkerResult(_Persisted):
     # engine turns them into ``review_recorded`` / ``verification_recorded`` events.
     reviews: list[ReviewRef] = Field(default_factory=list)
     verifications: list[VerificationRef] = Field(default_factory=list)
+    # When the worker gave up: what it tried and why it fails, in its own words (the
+    # ``GIVE UP:`` line of a model-driven worker's final message). Recorded on the
+    # failure signature so the next brief names the dead end instead of repeating it.
+    abandon_reason: str = ""
 
 
 class WorkItem(_Persisted):
