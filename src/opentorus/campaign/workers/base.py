@@ -188,6 +188,46 @@ def worker_rules() -> list[str]:
     ]
 
 
+def scratch_block(ctx: WorkerContext) -> list[str]:
+    """Where this branch keeps scratch files (``[]`` outside a branch work item)."""
+    if not ctx.work_dir:
+        return []
+    return [
+        f"Your branch's scratch directory: {ctx.work_dir}/ -- put notes, scripts and "
+        "intermediate output there (write_file paths are relative to the workspace root). "
+        f"Other branches' scratch directories under {ctx.work_root}/ are readable, not "
+        "writable."
+    ]
+
+
+def scratch_write_gate(
+    root: Path, ctx: WorkerContext, registry: ToolRegistry
+) -> Callable[[str, dict], str | None] | None:
+    """Refuse a write tool's ``path`` inside a *sibling* branch's scratch directory."""
+    if not ctx.work_dir or not ctx.work_root:
+        return None
+    base = root.resolve()
+    own = (base / ctx.work_dir).resolve()
+    others = (base / ctx.work_root).resolve()
+
+    def gate(name: str, args: dict) -> str | None:
+        tool = registry.get(name)
+        if tool is None or tool.permission != "write":
+            return None
+        raw = args.get("path")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        target = (base / raw).resolve()
+        if target.is_relative_to(others) and not target.is_relative_to(own):
+            return (
+                f"Blocked {name}: {raw} is another branch's scratch directory (readable, not "
+                f"writable); write under {ctx.work_dir}/ instead."
+            )
+        return None
+
+    return gate
+
+
 def sibling_block(ctx: WorkerContext) -> list[str]:
     """Other branches' board findings, framed as unverified data (``[]`` if none)."""
     from opentorus.campaign.board import render_sibling_findings
@@ -345,10 +385,15 @@ def bounded_loop(
             restricted.register(BoardPostTool(rt.board))
         allowed = allowed | {BOARD_POST_TOOL}
     isolation = allowed_tools_gate(allowed)
+    scratch = scratch_write_gate(rt.root, ctx, restricted)
 
     def _gate(name: str, args: dict) -> str | None:
         if isolation is not None:
             blocked = isolation(name, args)
+            if blocked:
+                return blocked
+        if scratch is not None:
+            blocked = scratch(name, args)
             if blocked:
                 return blocked
         if tool_gate is not None:
@@ -535,6 +580,8 @@ __all__ = [
     "is_mock_provider",
     "quote_lines",
     "restricted_registry",
+    "scratch_block",
+    "scratch_write_gate",
     "sibling_block",
     "review_block",
     "snapshot_artifacts",

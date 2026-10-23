@@ -50,6 +50,7 @@ from opentorus.campaign.workers.base import (
     bounded_loop,
     formal_backends,
     review_block,
+    scratch_block,
     sibling_block,
     stated_abandon_reason,
     worker_rules,
@@ -125,6 +126,7 @@ def branch_instructions(ctx: WorkerContext) -> str:
         lines.extend(f"  - {ob.obligation_id}: {ob.statement}" for ob in ctx.open_obligations[:12])
     lines.extend(review_block(ctx))
     lines.extend(sibling_block(ctx))
+    lines.extend(scratch_block(ctx))
     lines.extend(worker_rules())
     return "\n".join(lines)
 

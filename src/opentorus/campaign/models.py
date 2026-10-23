@@ -527,6 +527,10 @@ class WorkerContext(BaseModel):
     review_findings: tuple[str, ...] = ()
     # The newest board findings of *other* branches (bounded; unverified data).
     sibling_findings: tuple[Finding, ...] = ()
+    # The branch's scratch directory and the parent of every branch's one, relative to
+    # the workspace root (posix). Writes go to ``work_dir``; siblings' dirs are read-only.
+    work_dir: str = ""
+    work_root: str = ""
 
     @field_serializer("allowed_tools")
     def _sorted_tools(self, value: frozenset[str]) -> list[str]:

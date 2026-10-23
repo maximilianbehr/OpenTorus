@@ -8,6 +8,9 @@ Layout (all under the dossier, so a dossier export/pack carries its campaigns)::
         snapshot.json     reducer output, atomically rewritten, never ahead of the log
         progress.md       human-readable progress (orchestration state only)
         branches/         one card per branch for humans; nothing reads them back
+    .opentorus/problems/PROBLEM-0001/work/CAMPAIGN-0001/BRANCH-0002/
+                          the branch's scratch directory (its workers write here; every
+                          other branch may read it)
 
 Campaign ids are workspace-unique, so :func:`find_campaign` can locate one without
 being told the problem.
@@ -26,6 +29,7 @@ SNAPSHOT_FILENAME = "snapshot.json"
 RECORD_FILENAME = "campaign.yaml"
 PROGRESS_FILENAME = "progress.md"
 BRANCHES_DIRNAME = "branches"
+WORK_DIRNAME = "work"
 
 _PROBLEM_DIR = re.compile(r"^PROBLEM-\d+$")
 _CAMPAIGN_DIR = re.compile(r"^CAMPAIGN-\d+$")
@@ -59,6 +63,23 @@ def progress_path(ot_dir: Path, problem_id: str, campaign_id: str) -> Path:
 
 def branches_dir(ot_dir: Path, problem_id: str, campaign_id: str) -> Path:
     return campaign_dir(ot_dir, problem_id, campaign_id) / BRANCHES_DIRNAME
+
+
+def work_root(ot_dir: Path, problem_id: str, campaign_id: str) -> Path:
+    """Parent of every branch's scratch directory: ``PROBLEM-*/work/CAMPAIGN-*``.
+
+    Deliberately *outside* ``campaigns/`` (tool-managed: ``write_file`` refuses it, so a
+    worker could never write its own scratch files there) but inside the dossier, which
+    the file tools may read and write.
+    """
+    from opentorus.research.dossier.store import dossier_dir
+
+    return dossier_dir(ot_dir, problem_id) / WORK_DIRNAME / campaign_id
+
+
+def work_dir(ot_dir: Path, problem_id: str, campaign_id: str, branch_id: str) -> Path:
+    """The scratch directory of one branch (created when its first work item runs)."""
+    return work_root(ot_dir, problem_id, campaign_id) / branch_id
 
 
 def list_campaigns(ot_dir: Path, *, problem_id: str | None = None) -> list[tuple[str, str]]:
@@ -123,6 +144,7 @@ __all__ = [
     "PROGRESS_FILENAME",
     "RECORD_FILENAME",
     "SNAPSHOT_FILENAME",
+    "WORK_DIRNAME",
     "branches_dir",
     "campaign_dir",
     "campaign_yaml_path",
@@ -132,4 +154,6 @@ __all__ = [
     "list_campaigns",
     "progress_path",
     "snapshot_path",
+    "work_dir",
+    "work_root",
 ]

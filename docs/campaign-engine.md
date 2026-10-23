@@ -263,6 +263,16 @@ each other **unverified notes** on the campaign's board (`opentorus.campaign.boa
 
 `opentorus campaign board CAMPAIGN-0001 [--json]` lists the board.
 
+**Scratch directories.** Each branch has its own working directory,
+`.opentorus/problems/PROBLEM-0001/work/CAMPAIGN-0001/BRANCH-0002/`, created when its
+first work item runs (inside the dossier, outside the tool-managed `campaigns/` tree,
+so the file tools may write there). The worker context carries it (`work_dir`, and the
+parent `work_root`), the brief names it, and a tool gate refuses a write tool's `path`
+inside a *sibling* branch's directory while reads stay allowed -- so a finding can point
+at a file another branch can open. Campaign workers have no shell tool and experiments
+run in their own `EXP-*` directory, so there is no other cwd the campaign controls; the
+scratch directory is where notes, scripts and intermediate output go.
+
 ## Failure signatures and retry rules
 
 Every worker failure is summarised as a `FailureSignature` (`FSIG-NNNN`,

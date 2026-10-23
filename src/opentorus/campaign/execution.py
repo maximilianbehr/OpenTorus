@@ -340,7 +340,25 @@ class WorkerExecutor:
             strategy_key=branch.strategy_key if branch else None,
             review_findings=latest_review_findings(snap, branch.branch_id) if branch else (),
             sibling_findings=sibling_findings(snap, branch.branch_id) if branch else (),
+            work_dir=self._relative(self.work_dir(run, branch.branch_id)) if branch else "",
+            work_root=self._relative(self.work_root(run)) if branch else "",
         )
+
+    def work_root(self, run: RunContext) -> Path:
+        from opentorus.campaign import paths
+
+        return paths.work_root(self.ot_dir, run.pid, run.cid)
+
+    def work_dir(self, run: RunContext, branch_id: str) -> Path:
+        from opentorus.campaign import paths
+
+        return paths.work_dir(self.ot_dir, run.pid, run.cid, branch_id)
+
+    def _relative(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(self.root.resolve()).as_posix()
+        except ValueError:
+            return path.as_posix()
 
     # -- stale items ------------------------------------------------------------------
 
@@ -376,6 +394,8 @@ class WorkerExecutor:
 
     def run_worker(self, run: RunContext, worker: Worker, ec: ExecuteContext) -> None:
         started = self.clock.now()
+        # The branch's own scratch directory; siblings may read it, only it writes there.
+        self.work_dir(run, ec.branch.branch_id).mkdir(parents=True, exist_ok=True)
         rt = self.runtime(run, item_started=started, board=ec.posted_findings)
         self.collector.reset()
         before = snapshot_artifacts(self.ot_dir, run.pid)

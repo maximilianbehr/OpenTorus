@@ -36,6 +36,7 @@ from opentorus.campaign.workers.base import (
     bounded_loop,
     is_mock_provider,
     review_block,
+    scratch_block,
     sibling_block,
     stated_abandon_reason,
     worker_rules,
@@ -77,7 +78,9 @@ def _prompt(ctx: WorkerContext) -> str:
         'certificate {"lhs": ..., "rhs": ..., "relation": "eq|le|lt|ge|gt|ne", '
         '"vars": {"x": "real"}} via proof_submit(backend="sympy", source=<json>). Only an '
         "ACCEPTED submission is machine-checked; record anything else as an open gap.\n"
-        + "".join(line + "\n" for line in [*review_block(ctx), *sibling_block(ctx)])
+        + "".join(
+            line + "\n" for line in [*review_block(ctx), *sibling_block(ctx), *scratch_block(ctx)]
+        )
         + "\n".join(worker_rules())
     )
 
