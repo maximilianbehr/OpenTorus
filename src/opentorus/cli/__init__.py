@@ -7,6 +7,7 @@ shared root :data:`app`.
 
 # Submodule imports run for their registration side effects (sub-apps + commands).
 from opentorus.cli import (  # noqa: F401
+    approvals,
     campaign,
     campaign_dashboard,
     campaign_tree,

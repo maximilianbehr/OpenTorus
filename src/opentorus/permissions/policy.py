@@ -23,12 +23,18 @@ from opentorus.config import OperatingStyle, PermissionMode
 
 RiskLevel = Literal["low", "medium", "high", "blocked"]
 
+# Bumped whenever the policy's decisions change meaning. Recorded on every
+# decision (and so in the action log), and an approval queued under one version
+# never authorizes a call evaluated under another.
+POLICY_VERSION = "2026.10-1"
+
 
 class PermissionDecision(BaseModel):
     allowed: bool
     reason: str
     requires_confirmation: bool
     risk_level: RiskLevel
+    policy_version: str = POLICY_VERSION
 
 
 # Always-blocked command patterns (matched case-insensitively, whitespace-robust).

@@ -58,7 +58,18 @@ def _engine():  # noqa: ANN202 - the engine type is imported lazily
     root = _require_workspace_root()
     base = _require_workspace_dir()
     config = _load_workspace_config(base)
-    return CampaignEngine(root, base, config, notice=lambda text: console.print(escape(text)))
+    from opentorus.approvals import make_queue_confirm
+
+    # Workers never have a terminal to ask on: confirmations go to the on-disk
+    # approval queue (`opentorus approvals list|approve|deny`).
+    confirm = make_queue_confirm(base, wait_seconds=config.permissions.approval_wait_seconds)
+    return CampaignEngine(
+        root,
+        base,
+        config,
+        notice=lambda text: console.print(escape(text)),
+        confirm=confirm,
+    )
 
 
 @campaign_app.command("start")

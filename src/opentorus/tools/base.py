@@ -23,6 +23,8 @@ from opentorus.permissions.policy import RiskLevel
 # - "command": gated by ``evaluate_command`` using the call's ``command`` argument;
 # - "external": opaque external (e.g. MCP) tool, gated by ``evaluate_external_tool``.
 PermissionKind = Literal["read", "write", "command", "external"]
+# observation | reversible | compensatable | irreversible (opentorus.tools.effects).
+Effect = Literal["observation", "reversible", "compensatable", "irreversible"]
 
 
 def _utcnow() -> datetime:
@@ -60,6 +62,14 @@ class Tool(ABC):
     input_schema: dict
     risk_level: RiskLevel = "low"
     permission: PermissionKind = "read"
+    # What the call does to the world (see opentorus.tools.effects). ``None`` means
+    # "use the built-in table, else derive from ``permission``".
+    effect: Effect | None = None
+
+    def effect_class(self) -> Effect:
+        from opentorus.tools.effects import effect_of
+
+        return effect_of(self)
 
     @abstractmethod
     def run(self, call: ToolCall) -> ToolResult:  # pragma: no cover - interface
