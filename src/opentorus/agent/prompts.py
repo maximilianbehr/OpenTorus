@@ -91,6 +91,19 @@ Retry with a simpler call: use write_file for any multi-line code, then run_shel
 one short command. Tool arguments must be compact valid JSON only.
 """
 
+# Sent after a reply that stopped at the output-token limit (finish reason "length"):
+# its text is kept, its tool calls were dropped unexecuted, and the model is asked for
+# the rest. Wording follows the harness reference (chat-agent LENGTH_CONTINUATION).
+LENGTH_CONTINUATION = """\
+Your previous response was truncated at the output-token limit and is incomplete. \
+No tool calls attached to that incomplete response were executed; they were discarded. \
+Continue and complete the response without repeating the partial answer already kept. \
+If a tool is still needed, generate its complete tool call again, including all arguments. \
+Do not repeat tools that already completed earlier in this conversation. If only reasoning \
+was produced, give the answer or the complete tool calls now. Keep each tool call small \
+(write long content to a file in several smaller steps if needed).
+"""
+
 CHAT_ONLY_RECOVERY = """\
 This is a planned task that requires tool use to produce a deliverable.
 You replied with text only (or an empty message). Call a tool now — for example \

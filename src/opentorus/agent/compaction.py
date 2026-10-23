@@ -187,6 +187,11 @@ def _llm_summarize(
         return None
     if response.kind != "message" or not response.content.strip():
         return None
+    if response.truncated:
+        # A summary cut off at the output limit has lost its tail — usually the
+        # "what remains" part. Fall back to the deterministic summary instead.
+        logger.debug("LLM compaction summary was truncated; using the heuristic summary.")
+        return None
     return f"{_COMPACTION_SUMMARY_PREFIX}\n{response.content.strip()}"
 
 

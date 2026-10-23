@@ -142,6 +142,8 @@ class OllamaProvider(BaseProvider):
                     )
                 result.usage = usage
                 result.model = data.get("model") or None
+                # done_reason "length": generation hit num_predict — the reply is cut off.
+                result.truncated = data.get("done_reason") == "length"
                 return result
         except TimeoutError as exc:
             raise ProviderError(
@@ -199,6 +201,7 @@ class OllamaProvider(BaseProvider):
         tool_calls: list | None = None
         usage: TokenUsage | None = None
         reported_model: str | None = None
+        done_reason: str | None = None
         # ``timeout_seconds`` reaches urlopen as a *socket* timeout, so it bounds the
         # wait for the next chunk, not the response. A model that degenerates into an
         # endless repetition keeps chunks arriving, so nothing ever fires — and with
@@ -229,6 +232,8 @@ class OllamaProvider(BaseProvider):
             chunk = json.loads(raw_line.decode("utf-8"))
             if chunk.get("model"):
                 reported_model = str(chunk["model"])
+            if chunk.get("done_reason"):
+                done_reason = str(chunk["done_reason"])
             # The final ``done`` chunk carries the exact token counts.
             chunk_usage = _ollama_usage(chunk)
             if chunk_usage is not None:
@@ -267,6 +272,7 @@ class OllamaProvider(BaseProvider):
             )
         result.usage = usage
         result.model = reported_model
+        result.truncated = done_reason == "length"
         return result
 
 

@@ -72,12 +72,12 @@ from opentorus.agent.control.turn_runner import (
     _shell_command_likely_edits,
 )
 from opentorus.agent.control.workflow import CompositePolicySet, WorkflowPolicySet
-from opentorus.agent.prompts import TOOL_PARSE_RECOVERY
+from opentorus.agent.prompts import LENGTH_CONTINUATION, TOOL_PARSE_RECOVERY
 from opentorus.agent.session import SessionMessage, append_message
 from opentorus.config import Config, OperatingStyle
 from opentorus.errors import OpenTorusError, ProviderError, is_recoverable_tool_parse_error
 from opentorus.permissions.policy import PermissionDecision
-from opentorus.providers.base import BaseProvider
+from opentorus.providers.base import BaseProvider, ProviderResponse
 from opentorus.tools.base import Tool
 from opentorus.tools.registry import ToolRegistry
 
@@ -634,6 +634,8 @@ class AgentLoop:
         stop_decision: PolicyDecision | None = None
         tool_parse_retries = 0
         deliverable_retries = 0
+        # Consecutive replies cut off at the output-token limit (reset by a complete one).
+        length_continuations = 0
         recovery_hint: str | None = None
         run_started = time.monotonic()
         # ``max_steps = inf`` means truly unbounded: run until the deliverable is
@@ -709,6 +711,20 @@ class AgentLoop:
                 break
             response = turn.response
             assert response is not None  # request() returns a response or a stop
+
+            if response.truncated:
+                # The reply stopped at the output-token limit: it is incomplete. Keep
+                # its text, drop its tool calls WITHOUT executing them (a cut-off call
+                # can carry cut-off arguments — half a file, half a command), and ask
+                # for the rest. A cut-off message is never accepted as the final answer.
+                limit_stop = self._handle_truncated(response, length_continuations)
+                if limit_stop is not None:
+                    result_text = self._stop_run(limit_stop)
+                    stop_decision = limit_stop
+                    break
+                length_continuations += 1
+                continue
+            length_continuations = 0
 
             if response.kind == "message":
                 # Stall backstop: a model that keeps answering in chat (no tool call)
@@ -858,6 +874,58 @@ class AgentLoop:
             task=task,
         )
         return result_text
+
+    def _handle_truncated(
+        self, response: ProviderResponse, continuations: int
+    ) -> PolicyDecision | None:
+        """Record a length-truncated reply; return a stop once continuations run out.
+
+        The partial text is persisted as an assistant turn (with a placeholder when it
+        is empty, so the history keeps alternating roles) and marked ``truncated``; the
+        names of the dropped tool calls are kept in its metadata for the audit trail,
+        but never as ``tool_calls`` — no result will follow them. Unless the bounded
+        number of continuations is spent, a continuation request is appended as the
+        next user turn and ``None`` is returned so the loop asks again.
+        """
+        dropped = [c.tool_name or "" for c in response.iter_tool_calls()]
+        text = response.content or ""
+        if not text.strip():
+            text = "(reply cut off at the output-token limit before any text)"
+        self._append(
+            SessionMessage(
+                role="assistant",
+                content=text,
+                metadata={"truncated": True, "dropped_tool_calls": dropped},
+            )
+        )
+        cap = max(0, int(getattr(self.config.agent, "max_length_continuations", 3)))
+        if dropped:
+            _logger.info(
+                "Reply hit the output-token limit; %d tool call(s) dropped unexecuted: %s",
+                len(dropped),
+                ", ".join(dropped),
+            )
+        if continuations < cap:
+            self._append(
+                SessionMessage(
+                    role="user",
+                    content=LENGTH_CONTINUATION,
+                    metadata={"synthetic": "length_continuation"},
+                )
+            )
+            return None
+        return PolicyDecision(
+            action=PolicyAction.STOP,
+            reason_code=ReasonCode.OUTPUT_TRUNCATED,
+            message=(
+                "[stopped] The model's reply was cut off at the output-token limit"
+                + (f" and {cap} continuation request(s) did not complete it" if cap else "")
+                + ". Its incomplete tool calls were not executed and the cut-off text was "
+                "not accepted as an answer. Raise model.max_tokens (model.num_predict for "
+                "Ollama), or ask for a smaller step."
+            ),
+            metadata={"dropped_tool_calls": dropped, "continuations": continuations},
+        )
 
     def _wall_clock_decision(self, run_started: float) -> PolicyDecision | None:
         limit = self.config.agent.max_wall_seconds

@@ -179,6 +179,16 @@ class AgentConfig(BaseModel):
     # overclaiming "done". Closes the escape where a model empties `gaps` by relabelling
     # unresolved steps as prose "Open Problems". Only active while prove_until_gaps_closed.
     prove_referee_reopens_gaps: bool = True
+    # A reply that stopped at the output-token limit is incomplete: its text is kept,
+    # its tool calls are dropped unexecuted, and the model is asked to continue. This
+    # bounds how many such continuations one run grants in a row before stopping with
+    # an honest "output limit reached" message (never accepting the cut-off text).
+    max_length_continuations: int = Field(default=3, ge=0)
+    # Every tool result handed back to the model is cut to at most this many
+    # characters (the longest string field first, so exit codes and flags survive),
+    # with an explicit "[cut: …]" marker. The full output is still logged as before.
+    # 0 disables the bound.
+    max_tool_result_chars: int = Field(default=64_000, ge=0)
 
     @field_validator(
         "max_steps", "prove_gap_fill_max_steps", "prove_gap_fill_no_progress_steps", mode="before"

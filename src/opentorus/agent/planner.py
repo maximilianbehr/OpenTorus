@@ -188,7 +188,7 @@ def plan_with_provider(
     )
     try:
         response = provider.respond([SessionMessage(role="user", content=prompt)])
-        if response.kind == "message" and response.content:
+        if response.kind == "message" and response.content and not response.truncated:
             specs = _parse_llm_plan(response.content, goal)
             if specs:
                 return specs
