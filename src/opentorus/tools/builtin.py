@@ -563,7 +563,7 @@ def build_default_registry(
     if config is not None and config.tools.mcp:
         from opentorus.tools.mcp import register_mcp_tools
 
-        register_mcp_tools(registry, config)
+        register_mcp_tools(registry, config, ot_dir)
     if config is not None:
         from opentorus.tools.research import register_research_tools
 
