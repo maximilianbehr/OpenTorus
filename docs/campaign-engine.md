@@ -359,6 +359,8 @@ so a resume months later runs under the same rules.
 | `campaign.require_root_relation` | `true` | every branch must declare its relation to the root |
 | `campaign.persist_every_event` | `true` | rewrite `snapshot.json` after every event (`false` = at phase boundaries only) |
 | `campaign.record_research` | `false` | opt-in: `opentorus research` also records an exploration campaign |
+| `campaign.max_total_branches` | `12` | portfolio growth: when no branch is left to run, a real-provider strategist proposes new ones (deduped against every branch ever proposed) until this many non-rejected branches exist; 0 = no growth ([portfolio-scheduler.md](portfolio-scheduler.md)) |
+| `campaign.model_duplicate_check` | `false` | opt-in model duplicate verdict per new LLM proposal (real providers only; fails closed) |
 | `campaign.scheduler_weights.novelty` | `1.0` | multiplier for the scheduler's novelty factor |
 | `campaign.scheduler_weights.root_impact` | `1.0` | ... root impact / information gain / resolve chance |
 | `campaign.scheduler_weights.verifier_readiness` | `1.0` | ... verifier readiness |

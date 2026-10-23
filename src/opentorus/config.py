@@ -546,6 +546,14 @@ class CampaignConfig(BaseModel):
     persist_every_event: bool = True
     # Opt-in: ``opentorus research`` also records an exploration campaign.
     record_research: bool = False
+    # Portfolio growth: when the active set runs dry, a real-provider strategist is asked
+    # for new branches (de-duplicated against every branch ever proposed) until this many
+    # non-rejected branches exist; 0 = never grow past the initial portfolio.
+    max_total_branches: int = 12
+    # Opt-in: one model verdict per surviving proposal ("duplicate of BRANCH-x" or
+    # null); anything else refuses the proposal. Real providers only; Jaccard stays
+    # the deterministic check either way.
+    model_duplicate_check: bool = False
     scheduler_weights: SchedulerWeights = Field(default_factory=SchedulerWeights)
 
 

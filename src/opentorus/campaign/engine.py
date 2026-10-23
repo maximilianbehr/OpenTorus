@@ -494,9 +494,26 @@ class CampaignEngine:
     def _phase_generate_portfolio(self, run: RunContext) -> PhaseOutcome:
         """Propose, de-duplicate, cap and activate branches; one Approach per accepted one."""
 
+        self._collector.reset()
+        proposal = generate_portfolio(self._executor.runtime(run), self._portfolio_context(run))
+        self._record_strategist_usage(run)
+        record_portfolio(run, proposal, self.ot_dir)
+        active = sum(1 for b in run.snap.branches.values() if b.status is BranchStatus.active)
+        outcome = (
+            f"{len(proposal.proposals)} proposal(s) ({proposal.source}), "
+            f"{len(proposal.accepted)} accepted, {len(proposal.rejected)} rejected, "
+            f"{active} active"
+        )
+        if proposal.notes:
+            outcome += "; " + "; ".join(proposal.notes)
+        return PhaseOutcome(CampaignPhase.SCHEDULE, outcome)
+
+    def _portfolio_context(self, run: RunContext) -> PortfolioContext:
+        """What the strategist knows: the problem, coverage, and the campaign's whole
+        branch history with its failures (empty on the first portfolio)."""
         snap = run.snap
         problem = snap.normalized_problem or NormalizedProblem(problem_id=run.pid, statement="")
-        pctx = PortfolioContext(
+        return PortfolioContext(
             campaign_id=run.cid,
             mode=run.record.mode,
             problem=problem,
@@ -505,10 +522,15 @@ class CampaignEngine:
             initial_branches=run.cfg.initial_branches,
             max_active_branches=run.cfg.max_active_branches,
             branch_counter=int(snap.counters.get(ids.BRANCH_PREFIX, 0)),
-            existing_branches=tuple(snap.branches.values()),
+            existing_branches=tuple(snap.branches[b] for b in sorted(snap.branches)),
+            failure_signatures=tuple(
+                snap.failure_signatures[s] for s in sorted(snap.failure_signatures)
+            ),
+            max_total_branches=run.cfg.max_total_branches,
+            model_duplicate_check=run.cfg.model_duplicate_check,
         )
-        self._collector.reset()
-        proposal = generate_portfolio(self._executor.runtime(run), pctx)
+
+    def _record_strategist_usage(self, run: RunContext) -> None:
         if self._collector.turns:
             run.store.append(
                 ev.EventType.budget_consumed,
@@ -521,16 +543,42 @@ class CampaignEngine:
                 ),
                 role=WorkerRole.strategist,
             )
+
+    def _grow_portfolio(self, run: RunContext) -> int:
+        """Ask the strategist for new branches once the active set has run dry; the
+        number of branches accepted (0 = nothing new; no event is written then except
+        the strategist's usage). Bounded by ``max_total_branches`` and the budget."""
+        from opentorus.campaign.phases import runnable_branches
+        from opentorus.campaign.portfolio import grow_portfolio
+        from opentorus.campaign.scheduler import campaign_steps_remaining
+
+        snap = run.snap
+        if run.cfg.max_total_branches <= 0 or runnable_branches(snap):
+            return 0
+        if CampaignBudgetPolicy(run.cfg, snap.budget).is_exhausted():
+            return 0
+        if campaign_steps_remaining(snap) <= 0:
+            return 0
+        self._collector.reset()
+        proposal = grow_portfolio(self._executor.runtime(run), self._portfolio_context(run))
+        self._record_strategist_usage(run)
+        if not proposal.proposals:
+            _logger.info("portfolio growth for %s: %s", run.cid, "; ".join(proposal.notes))
+            return 0
         record_portfolio(run, proposal, self.ot_dir)
-        active = sum(1 for b in run.snap.branches.values() if b.status is BranchStatus.active)
-        outcome = (
-            f"{len(proposal.proposals)} proposal(s) ({proposal.source}), "
-            f"{len(proposal.accepted)} accepted, {len(proposal.rejected)} rejected, "
-            f"{active} active"
+        accepted = [
+            b.branch_id
+            for b in proposal.accepted
+            if run.snap.branches[b.branch_id].status is not BranchStatus.rejected
+        ]
+        _logger.info(
+            "portfolio grown for %s: %d proposal(s), %d accepted (%s)",
+            run.cid,
+            len(proposal.proposals),
+            len(accepted),
+            "; ".join(proposal.notes),
         )
-        if proposal.notes:
-            outcome += "; " + "; ".join(proposal.notes)
-        return PhaseOutcome(CampaignPhase.SCHEDULE, outcome)
+        return len(accepted)
 
     def _phase_schedule(self, run: RunContext) -> PhaseOutcome:
         """Pick the next work item — refusing an unchanged repeat of a recorded failure —
@@ -538,6 +586,7 @@ class CampaignEngine:
         facts = self._facts(run)
         excluded: set[str] = set()
         refused = 0
+        grown = False
         while True:
             snap = run.snap
             plan = select_next(
@@ -551,6 +600,10 @@ class CampaignEngine:
             if plan is None:
                 if activate_queued(run):
                     continue
+                if not grown:
+                    grown = True
+                    if self._grow_portfolio(run):
+                        continue
                 note = f"; {refused} retry refused" if refused else ""
                 return PhaseOutcome(CampaignPhase.SYNTHESIZE, f"no runnable work item{note}")
             if not retry_gate(run, plan, facts, self.config):
@@ -758,6 +811,11 @@ class CampaignEngine:
         if activated:
             notes.append(f"{activated} queued branch(es) activated")
         verdict = run.profile.completion(run.snap, self._facts(run))
+        if verdict.complete and verdict.criterion == "no_branches":
+            grown = self._grow_portfolio(run)
+            if grown:
+                notes.append(f"portfolio grown by {grown} branch(es)")
+                verdict = run.profile.completion(run.snap, self._facts(run))
         reason = verdict.reason + ("; " + "; ".join(notes) if notes else "")
         if verdict.complete:
             parked = sorted(

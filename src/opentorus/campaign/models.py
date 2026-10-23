@@ -231,6 +231,10 @@ class CampaignConfigSnapshot(_Persisted):
     require_literature_mapping: bool = True
     require_root_relation: bool = True
     persist_every_event: bool = True
+    # 0 for records written before portfolio growth existed: an old campaign resumes
+    # under the rules it was started with (no growth).
+    max_total_branches: int = 0
+    model_duplicate_check: bool = False
     scheduler_weights: SchedulerWeights = Field(default_factory=SchedulerWeights)
     governance_token_budget: int | None = None
     governance_cost_budget_usd: float | None = None
@@ -450,6 +454,30 @@ class Obligation(_Persisted):
     gap_marker: str | None = None
 
 
+FindingKind = Literal["lemma", "partial", "counterexample", "dead_end", "note"]
+FINDING_KINDS: tuple[str, ...] = ("lemma", "partial", "counterexample", "dead_end", "note")
+# A finding longer than this is refused, never truncated.
+MAX_FINDING_BYTES = 1500
+MAX_FINDING_PATHS = 8
+
+
+class Finding(_Persisted):
+    """One unverified note on the cross-branch board (see :mod:`campaign.board`).
+
+    Written by a worker's model, shared with sibling branches as data: never an
+    artifact reference, never evidence, never a closure of anything.
+    """
+
+    finding_id: str = ""
+    kind: FindingKind = "note"
+    text: str
+    paths: list[str] = Field(default_factory=list)
+    branch_id: str | None = None
+    work_item_id: str | None = None
+    role: WorkerRole | None = None
+    seq: int | None = None
+
+
 class WorkerContext(BaseModel):
     """The *only* thing a worker sees — frozen, ids and refs, no transcripts.
 
@@ -497,6 +525,8 @@ class WorkerContext(BaseModel):
     # The latest review of this branch's submissions: a header line naming the review
     # and its verdict, then the reviewer's findings (rendered quoted, as data).
     review_findings: tuple[str, ...] = ()
+    # The newest board findings of *other* branches (bounded; unverified data).
+    sibling_findings: tuple[Finding, ...] = ()
 
     @field_serializer("allowed_tools")
     def _sorted_tools(self, value: frozenset[str]) -> list[str]:
@@ -536,6 +566,8 @@ class WorkerResult(_Persisted):
     # ``GIVE UP:`` line of a model-driven worker's final message). Recorded on the
     # failure signature so the next brief names the dead end instead of repeating it.
     abandon_reason: str = ""
+    # Unverified notes for the sibling branches (the ``board_post`` tool adds to these).
+    findings: list[Finding] = Field(default_factory=list)
 
 
 class WorkItem(_Persisted):
@@ -707,6 +739,8 @@ class CampaignSnapshot(_Persisted):
     campaign_nodes: dict[str, CampaignNodeState] = Field(default_factory=dict)
     reviews: list[ReviewRef] = Field(default_factory=list)
     verifications: list[VerificationRef] = Field(default_factory=list)
+    # The cross-branch board: unverified notes, never evidence (see campaign.board).
+    findings: list[Finding] = Field(default_factory=list)
     diagnostics: list[Diagnostic] = Field(default_factory=list)
     counters: dict[str, int] = Field(default_factory=dict)
     phase_history: list[PhaseEntry] = Field(default_factory=list)
@@ -738,7 +772,12 @@ __all__ = [
     "Diagnostic",
     "DiagnosticKind",
     "ErrorCategory",
+    "FINDING_KINDS",
     "FailureSignature",
+    "Finding",
+    "FindingKind",
+    "MAX_FINDING_BYTES",
+    "MAX_FINDING_PATHS",
     "NormalizedProblem",
     "Obligation",
     "ObligationProposal",
