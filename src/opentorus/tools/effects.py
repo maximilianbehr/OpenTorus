@@ -57,6 +57,9 @@ BUILTIN_EFFECTS: dict[str, Effect] = {
     "paper_ingest_inbox": "compensatable",
     "paper_extract_problems": "compensatable",
     "memory_add": "compensatable",
+    # proof_submit runs a confined checker and appends a PROOF-* record.
+    "proof_submit": "compensatable",
+    "skill_load": "observation",
     "claim_new": "compensatable",
     "evidence_add": "compensatable",
     "exp_new": "compensatable",

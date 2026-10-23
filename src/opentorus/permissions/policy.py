@@ -62,6 +62,11 @@ _DANGEROUS_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bmkfs\.",
         r"\bdiskutil\s+eraseDisk\b",
         r":\(\)\s*\{.*\};:",  # classic fork bomb
+        # Human decisions must never be taken by the agent through the shell: accepting a
+        # frozen formal statement (it defines what "formally verified" means) or deciding
+        # a queued approval would let the model approve itself.
+        r"\bopentorus\b.*\bstatement\s+accept\b",
+        r"\bopentorus\b.*\bapprovals?\s+(?:approve|deny)\b",
     )
 )
 
