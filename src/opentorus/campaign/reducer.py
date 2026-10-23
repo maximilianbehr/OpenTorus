@@ -40,6 +40,7 @@ from opentorus.campaign.models import (
     CurrentWorker,
     Diagnostic,
     FailureSignature,
+    Finding,
     NormalizedProblem,
     Obligation,
     ObligationStatus,
@@ -648,6 +649,17 @@ def _apply_parallelism_capped(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseM
     )
 
 
+def _apply_finding_posted(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
+    assert isinstance(p, Finding)
+    finding = p.model_copy(deep=True)
+    finding.seq = e.seq
+    finding.branch_id = finding.branch_id or e.branch_id
+    finding.work_item_id = finding.work_item_id or e.work_item_id
+    finding.role = finding.role or e.role
+    s.findings.append(finding)
+    _bump_counter(s, "FIND", finding.finding_id)
+
+
 def _apply_problem_normalized(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseModel) -> None:
     assert isinstance(p, NormalizedProblem)
     s.normalized_problem = p.model_copy(deep=True)
@@ -698,6 +710,7 @@ _HANDLERS: dict[str, Handler] = {
     ev.EventType.diagnostic_recorded: _apply_diagnostic_recorded,
     ev.EventType.parallelism_capped: _apply_parallelism_capped,
     ev.EventType.problem_normalized: _apply_problem_normalized,
+    ev.EventType.finding_posted: _apply_finding_posted,
 }
 
 

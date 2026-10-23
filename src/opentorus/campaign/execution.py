@@ -34,6 +34,7 @@ from pydantic import BaseModel
 from opentorus.agent.control.events import RunEvent, RunEventSink, TurnCompleted
 from opentorus.campaign import events as ev
 from opentorus.campaign import ids
+from opentorus.campaign.board import sibling_findings
 from opentorus.campaign.budget import CampaignBudgetPolicy
 from opentorus.campaign.clock import Clock
 from opentorus.campaign.failures import find_signature, signature_key
@@ -44,6 +45,7 @@ from opentorus.campaign.models import (
     CampaignSnapshot,
     CostTotals,
     ErrorCategory,
+    Finding,
     NormalizedProblem,
     Obligation,
     ObligationStatus,
@@ -115,6 +117,8 @@ class ExecuteContext:
     result: WorkerResult = field(default_factory=WorkerResult)
     new_refs: list[ArtifactRef] = field(default_factory=list)
     wall_seconds: float = 0.0
+    # What the worker's model posted with ``board_post`` during the run.
+    posted_findings: list[Finding] = field(default_factory=list)
 
 
 def failed_result_for_exception(exc: BaseException, ec: ExecuteContext) -> WorkerResult:
@@ -201,7 +205,13 @@ class WorkerExecutor:
 
     # -- services -------------------------------------------------------------------
 
-    def runtime(self, run: RunContext, *, item_started: datetime | None = None) -> WorkerRuntime:
+    def runtime(
+        self,
+        run: RunContext,
+        *,
+        item_started: datetime | None = None,
+        board: list[Finding] | None = None,
+    ) -> WorkerRuntime:
         cfg = run.cfg
 
         def _should_stop() -> bool:
@@ -227,6 +237,7 @@ class WorkerExecutor:
             confirm=self._confirm,  # type: ignore[arg-type]
             registry_factory=self._registry_factory,
             should_stop=_should_stop,
+            board=board,
         )
 
     # -- worker context -------------------------------------------------------------
@@ -328,6 +339,7 @@ class WorkerExecutor:
             review_targets=tuple(review_targets),
             strategy_key=branch.strategy_key if branch else None,
             review_findings=latest_review_findings(snap, branch.branch_id) if branch else (),
+            sibling_findings=sibling_findings(snap, branch.branch_id) if branch else (),
         )
 
     # -- stale items ------------------------------------------------------------------
@@ -364,7 +376,7 @@ class WorkerExecutor:
 
     def run_worker(self, run: RunContext, worker: Worker, ec: ExecuteContext) -> None:
         started = self.clock.now()
-        rt = self.runtime(run, item_started=started)
+        rt = self.runtime(run, item_started=started, board=ec.posted_findings)
         self.collector.reset()
         before = snapshot_artifacts(self.ot_dir, run.pid)
         try:
@@ -567,6 +579,7 @@ class WorkerExecutor:
                 )
         for review in result.reviews:
             emit(ev.EventType.review_recorded, review, refs=[review.review_id])
+        self._record_findings(run, emit, ec)
         if result.status == "branch_done":
             run.store.append(
                 ev.EventType.branch_completed,
@@ -577,6 +590,35 @@ class WorkerExecutor:
                 branch_id=branch.branch_id,
             )
             run.store.write_branch_card(run.snap.branches[branch.branch_id])
+
+    def _record_findings(
+        self, run: RunContext, emit: Callable[..., None], ec: ExecuteContext
+    ) -> None:
+        """``finding_posted`` for every valid board note of the work item (posted through
+        ``board_post`` or returned in ``WorkerResult.findings``); a note that fails
+        validation is refused with a diagnostic, never truncated or silently dropped."""
+        from opentorus.campaign.board import FINDING_PREFIX, validate_finding
+        from opentorus.campaign.models import Diagnostic
+
+        for finding in [*ec.result.findings, *ec.posted_findings]:
+            why = validate_finding(finding.kind, finding.text, finding.paths)
+            if why is not None:
+                emit(
+                    ev.EventType.diagnostic_recorded,
+                    Diagnostic(kind="invalid_payload", message=f"finding refused: {why}"),
+                )
+                continue
+            emit(
+                ev.EventType.finding_posted,
+                finding.model_copy(
+                    update={
+                        "finding_id": ids.mint(run.snap.counters, FINDING_PREFIX),
+                        "branch_id": ec.branch.branch_id,
+                        "work_item_id": ec.item.work_item_id,
+                        "role": ec.item.role,
+                    }
+                ),
+            )
 
     def _theorem_reference_payload(self, ref_id: str) -> ev.TheoremReferenceCreatedPayload:
         """The typed payload for a THMREF ref, read from the theorem ledger (a reference

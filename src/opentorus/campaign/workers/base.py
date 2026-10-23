@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Protocol
 from opentorus.campaign.clock import Clock, SystemClock
 from opentorus.campaign.models import (
     ArtifactRef,
+    Finding,
     WorkerContext,
     WorkerResult,
     WorkerRole,
@@ -54,6 +55,9 @@ class WorkerRuntime:
     confirm: ConfirmCallback | None = None
     registry_factory: RegistryFactory | None = None
     should_stop: Callable[[], bool] | None = None
+    # The work item's board sink: when set (a branch work item), model-driven loops under
+    # a real provider get the ``board_post`` tool, which appends validated notes here.
+    board: list[Finding] | None = None
 
     def registry(self, problem_id: str | None) -> ToolRegistry:
         if self.registry_factory is not None:
@@ -182,6 +186,13 @@ def worker_rules() -> list[str]:
         f"- {NO_ENDLESS_RESTART_RULE}",
         f"- {ABANDON_RULE}",
     ]
+
+
+def sibling_block(ctx: WorkerContext) -> list[str]:
+    """Other branches' board findings, framed as unverified data (``[]`` if none)."""
+    from opentorus.campaign.board import render_sibling_findings
+
+    return render_sibling_findings(ctx.sibling_findings)
 
 
 def review_block(ctx: WorkerContext) -> list[str]:
@@ -321,7 +332,19 @@ def bounded_loop(
     """
     from opentorus.agent.loop import AgentLoop
 
-    isolation = allowed_tools_gate(ctx.allowed_tools)
+    restricted = restricted_registry(
+        registry or rt.registry(ctx.root_problem.problem_id), ctx.allowed_tools
+    )
+    allowed = ctx.allowed_tools
+    # The board tool only for a branch work item under a real provider: the mock keys on
+    # the tool names it sees, and offline runs must stay byte-identical.
+    if rt.board is not None and ctx.allowed_tools and not is_mock_provider(lease.provider):
+        from opentorus.campaign.board import BOARD_POST_TOOL, BoardPostTool
+
+        if restricted.get(BOARD_POST_TOOL) is None:
+            restricted.register(BoardPostTool(rt.board))
+        allowed = allowed | {BOARD_POST_TOOL}
+    isolation = allowed_tools_gate(allowed)
 
     def _gate(name: str, args: dict) -> str | None:
         if isolation is not None:
@@ -341,9 +364,7 @@ def bounded_loop(
         rt.root,
         rt.ot_dir,
         lease.provider,
-        restricted_registry(
-            registry or rt.registry(ctx.root_problem.problem_id), ctx.allowed_tools
-        ),
+        restricted,
         rt.config,
         max_steps=ctx.budget.max_steps,
         session_id=ctx.session_id,
@@ -514,6 +535,7 @@ __all__ = [
     "is_mock_provider",
     "quote_lines",
     "restricted_registry",
+    "sibling_block",
     "review_block",
     "snapshot_artifacts",
     "stated_abandon_reason",

@@ -33,6 +33,7 @@ from opentorus.campaign.models import (
     Diagnostic,
     ErrorCategory,
     FailureSignature,
+    Finding,
     NormalizedProblem,
     Obligation,
     ReactivationCondition,
@@ -93,6 +94,7 @@ class EventType(StrEnum):
     problem_normalized = "problem_normalized"
     branch_updated = "branch_updated"
     retry_allowed = "retry_allowed"
+    finding_posted = "finding_posted"
 
 
 ASSIGNMENT_EVENT_TYPES: frozenset[str] = frozenset(
@@ -392,6 +394,7 @@ EVENT_PAYLOADS: dict[str, type[BaseModel]] = {
     EventType.problem_normalized: NormalizedProblem,
     EventType.branch_updated: BranchUpdatedPayload,
     EventType.retry_allowed: RetryAllowedPayload,
+    EventType.finding_posted: Finding,
 }
 
 

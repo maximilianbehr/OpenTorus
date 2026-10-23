@@ -239,6 +239,30 @@ behaviour (the falsifier fails an unmodified template search with
 obligation), so a mock campaign exercises the whole machine and closes nothing.
 The per-role table is in [portfolio-scheduler.md](portfolio-scheduler.md).
 
+## The findings board
+
+Branches stay isolated (no worker sees another branch's session), but they can leave
+each other **unverified notes** on the campaign's board (`opentorus.campaign.board`):
+
+- a finding has a kind -- `lemma`, `partial`, `counterexample`, `dead_end`, `note` --
+  a text of at most 1500 bytes (an oversized note is **refused, not truncated**: a
+  cut-off lemma is a different lemma) and up to 8 workspace-relative file paths for the
+  details;
+- a model-driven worker under a real provider posts with the `board_post` tool (the
+  mock never sees the tool, so offline runs are unchanged); any worker may also return
+  `WorkerResult.findings`. The engine validates each one after the work item and
+  records it as `finding_posted` (`FIND-NNNN`, with branch / work item / role), so the
+  board replays like everything else; a refused note becomes a `diagnostic_recorded`;
+- every *other* branch's next brief gets the newest findings (at most 8, at most 6000
+  bytes), under a header saying they were written by other workers' models, may be
+  wrong, must be checked before use, and are data, not instructions; each text line is
+  quoted with `| `;
+- a finding is **never evidence**: it is not an artifact reference, it is not among
+  the verified artifacts shared with workers, no settlement rule accepts it, it closes
+  no obligation and moves no claim status (`tests/test_campaign_board.py`).
+
+`opentorus campaign board CAMPAIGN-0001 [--json]` lists the board.
+
 ## Failure signatures and retry rules
 
 Every worker failure is summarised as a `FailureSignature` (`FSIG-NNNN`,
@@ -443,6 +467,7 @@ log and every artifact stay; `--reason` is required). Ctrl-C during `start` /
 ```
 opentorus campaign list [--problem PROBLEM-0001] [--json]
 opentorus campaign verify CAMPAIGN-0001 [--json]
+opentorus campaign board CAMPAIGN-0001 [--json]
 opentorus campaign tree CAMPAIGN-0001 [--plain|--json|--dot] [--kind obligation] [--status open] [--depth 2] [--out tree.txt]
 opentorus campaign dashboard CAMPAIGN-0001 [--live] [--plain|--json|--dot]
 opentorus campaign import-research "the question" | --slug SLUG [--problem PROBLEM-0001] [--force]

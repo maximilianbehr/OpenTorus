@@ -46,6 +46,7 @@ from opentorus.campaign.workers.base import (
     experiment_timeout_gate,
     is_mock_provider,
     review_block,
+    sibling_block,
     stated_abandon_reason,
     worker_rules,
 )
@@ -113,6 +114,7 @@ def _prompt(ctx: WorkerContext) -> str:
             )
         )
     lines.extend(review_block(ctx))
+    lines.extend(sibling_block(ctx))
     lines.extend(worker_rules())
     return "\n".join(lines)
 

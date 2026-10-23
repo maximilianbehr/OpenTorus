@@ -91,6 +91,7 @@ Assignment types:
 | `proof_node_updated` | `node_id`, changes | UPDATE_GRAPH |
 | `theorem_reference_created` | `theorem_reference_id`, paper, review status | a worker created a THMREF |
 | `review_requested` | `target_id`, kind | CRITIQUE |
+| `finding_posted` | `Finding` (`FIND-NNNN`, kind, text <= 1500 bytes, paths, branch, work item, role) | EXECUTE, after a work item: an unverified board note (never evidence) |
 | `review_recorded` | `ReviewRef` (review id, target, verdict, `covers`, `branch_ids`, `findings`) | CRITIQUE |
 | `verification_requested` | `artifact_id`, backend | a worker submitted to a verifier |
 | `verification_recorded` | `VerificationRef` (artifact, backend, accepted, inconclusive) | the verifier ledger answered |
