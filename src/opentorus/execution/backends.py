@@ -22,7 +22,9 @@ Defaults, stated exactly:
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -32,6 +34,8 @@ from pathlib import Path
 from opentorus.execution.base import WORKDIR_TARGET as _WORKDIR_TARGET
 from opentorus.execution.base import ExecutionRequest, Mount
 from opentorus.tools.shell import ShellResult, run_argv
+
+_logger = logging.getLogger("opentorus")
 
 # Labels stamped on every container OpenTorus starts, so a container whose owner
 # died without running its cleanup can still be identified and reaped later.
@@ -101,18 +105,116 @@ def _image_ref_apptainer(image: str) -> str:
     return f"docker://{image}"
 
 
+_BWRAP_OK: dict[str, bool] = {}
+
+
+def bwrap_usable() -> bool:
+    """Whether bubblewrap exists *and* can create a network namespace here.
+
+    Unprivileged user namespaces are disabled on some hosts, where ``bwrap`` is
+    installed but every invocation fails; probing once keeps that honest.
+    """
+    path = shutil.which("bwrap")
+    if path is None:
+        return False
+    if path not in _BWRAP_OK:
+        try:
+            probe = subprocess.run(
+                [path, "--unshare-net", "--die-with-parent", "--dev-bind", "/", "/", "true"],
+                capture_output=True,
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+            _BWRAP_OK[path] = probe.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _BWRAP_OK[path] = False
+    return _BWRAP_OK[path]
+
+
+def bwrap_prefix(workdir: Path | str) -> list[str]:
+    """``bwrap`` argv that removes the network and hides host sockets under /run.
+
+    The filesystem stays as it is (``--dev-bind / /``): confinement here is about
+    the network, not about files. A network namespace has only loopback, so the
+    local vLLM/Ollama servers and every remote host are out of reach; ``--tmpfs
+    /run`` hides filesystem sockets (docker, dbus) that a namespace does not cover.
+    """
+    work = os.path.abspath(str(workdir))
+    argv = [shutil.which("bwrap") or "bwrap", "--unshare-net", "--die-with-parent"]
+    argv += ["--dev-bind", "/", "/"]
+    if not (work == "/run" or work.startswith("/run/")):
+        argv += ["--tmpfs", "/run"]
+    argv += ["--chdir", work, "--"]
+    return argv
+
+
+_MEMORY_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?)i?b?\s*$", re.IGNORECASE)
+
+
+def parse_memory(value: str) -> int:
+    """``"2g"`` / ``"512m"`` / ``"1024"`` (bytes) -> bytes."""
+    match = _MEMORY_RE.match(value)
+    if not match:
+        raise ValueError(f"Unrecognised memory limit {value!r} (use e.g. 512m, 2g).")
+    number, unit = float(match.group(1)), match.group(2).lower()
+    scale = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}[unit]
+    return int(number * scale)
+
+
+def _limits_preexec(memory: int | None, cpu_seconds: int | None, cpus: int | None):  # noqa: ANN202
+    """A ``preexec_fn`` applying rlimits and CPU affinity in the child (POSIX)."""
+    if memory is None and cpu_seconds is None and cpus is None:
+        return None
+
+    def apply() -> None:
+        import resource
+
+        if memory is not None:
+            resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+        if cpu_seconds is not None:
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 5))
+        if cpus is not None and hasattr(os, "sched_setaffinity"):
+            allowed = sorted(os.sched_getaffinity(0))
+            os.sched_setaffinity(0, allowed[: max(1, cpus)])
+
+    return apply
+
+
 class LocalBackend:
     """Run on the host.
 
     The child sees only the clean, allowlisted environment (never credentials) and
     leads its own process group, so a timeout or cancel ends every descendant.
+
+    Confinement (``execution.local_confinement``):
+
+    * ``auto`` (default): a request with ``network=False`` runs inside ``bwrap
+      --unshare-net`` when bubblewrap works on this host; otherwise it runs
+      unconfined (the result's stderr says so).
+    * ``require``: such a request is **refused** when it cannot be confined.
+    * ``off``: never wrapped.
+
+    Resource limits apply in every mode on POSIX: ``memory`` -> ``RLIMIT_AS``,
+    ``cpus`` -> CPU affinity to that many cores plus ``RLIMIT_CPU`` of
+    ``timeout x cpus`` seconds.
     """
 
     name = "local"
     requires_image = False
 
-    def __init__(self, *, env_allowlist: list[str] | tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        env_allowlist: list[str] | tuple[str, ...] = (),
+        confinement: str = "auto",
+    ) -> None:
         self.env_allowlist = tuple(env_allowlist)
+        if confinement not in ("off", "auto", "require"):
+            raise ValueError(f"Unknown local confinement {confinement!r}.")
+        self.confinement = confinement
+        # How the last run was confined ("bwrap" / "none"), for provenance.
+        self.last_confinement: str | None = None
 
     def is_available(self) -> bool:
         return True
@@ -123,11 +225,60 @@ class LocalBackend:
     def build_argv(self, request: ExecutionRequest) -> list[str]:
         return shlex.split(request.command)
 
+    def _refuse(self, request: ExecutionRequest, why: str) -> ShellResult:
+        self.last_confinement = None
+        return ShellResult(
+            command=request.command,
+            stdout="",
+            stderr=f"Run not executed: {why}",
+            exit_code=126,
+        )
+
     def run(self, request: ExecutionRequest) -> ShellResult:
         # Windows: hand the command string to CreateProcess verbatim — POSIX
         # tokenization corrupts C:\-style paths (see run_shell).
-        argv: list[str] | str = request.command if os.name == "nt" else self.build_argv(request)
-        return run_argv(
+        if os.name == "nt":  # pragma: no cover - POSIX CI
+            if self.confinement == "require" and not request.network:
+                return self._refuse(request, "local confinement is not available on Windows.")
+            self.last_confinement = "none"
+            return run_argv(
+                request.command,
+                cwd=request.workdir,
+                timeout=request.limits.timeout,
+                label=request.command,
+                env=request.env or None,
+                env_policy="clean",
+                env_allowlist=self.env_allowlist,
+            )
+        argv = self.build_argv(request)
+        if not request.network and self.confinement != "off":
+            if bwrap_usable():
+                argv = [*bwrap_prefix(request.workdir), *argv]
+                self.last_confinement = "bwrap"
+            elif self.confinement == "require":
+                return self._refuse(
+                    request,
+                    "execution.local_confinement is 'require' and the run asks for no "
+                    "network, but bubblewrap (bwrap) is unavailable or cannot create a "
+                    "network namespace on this host.",
+                )
+            else:
+                self.last_confinement = "none"
+                _logger.info(
+                    "network=False requested but bubblewrap is unavailable; running %r "
+                    "without network confinement (set execution.local_confinement=require "
+                    "to refuse instead).",
+                    request.command,
+                )
+        else:
+            self.last_confinement = "none"
+        try:
+            memory = parse_memory(request.limits.memory) if request.limits.memory else None
+            cpus = max(1, int(float(request.limits.cpus))) if request.limits.cpus else None
+        except ValueError as exc:
+            return self._refuse(request, str(exc))
+        cpu_seconds = int(request.limits.timeout * cpus) + 1 if cpus else None
+        result = run_argv(
             argv,
             cwd=request.workdir,
             timeout=request.limits.timeout,
@@ -135,7 +286,9 @@ class LocalBackend:
             env=request.env or None,
             env_policy="clean",
             env_allowlist=self.env_allowlist,
+            preexec_fn=_limits_preexec(memory, cpu_seconds, cpus),
         )
+        return result
 
 
 class _OciBackend:

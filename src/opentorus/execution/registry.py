@@ -50,7 +50,10 @@ def _make_remote(name: str, config: Config) -> ExecutionBackend:
 def _local(config: Config | None) -> LocalBackend:
     if config is None:
         return LocalBackend()
-    return LocalBackend(env_allowlist=config.execution.env_allowlist)
+    return LocalBackend(
+        env_allowlist=config.execution.env_allowlist,
+        confinement=config.execution.local_confinement,
+    )
 
 
 def make_backend(name: str, config: Config | None = None) -> ExecutionBackend:
