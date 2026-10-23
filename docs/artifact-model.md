@@ -13,7 +13,14 @@ inspectable: you can always trace a conclusion back to its evidence.
   config.yaml            # configuration
   session.jsonl          # interactive/agent turns (SessionMessage)
   actions.jsonl          # ActionLogEntry: tool, args, permission decision, outcome
+  MEMORY.md              # consolidated memory index (`memory consolidate`), shown as data
   memory/                # structured memory (facts, decisions, hypotheses, …)
+    session_summaries.jsonl  # SessionSummary per session / finished campaign (stage one)
+    consolidations.jsonl     # ConsolidationRecord: published / rejected / unchanged
+    citations.jsonl          # CitationRecord: entry cited by a session (once per pair)
+    exposures.jsonl          # ExposureRecord: entry shown to a session (once per pair)
+    MEMORY.md.prev           # the MEMORY.md a publish replaced
+  skills/<name>/SKILL.md # project skills (front matter: name, description)
   claims.jsonl           # Claim
   evidence.jsonl         # EvidenceEntry (contradictions preserved)
   graph.jsonl            # GraphEdge (typed relations)
@@ -301,3 +308,32 @@ and selected profile, provider, configured and actual model, the per-candidate
 verdicts, `fallback_reason`, `outcome` (`selected` / `no_eligible_provider`),
 attribution -- plus append-only actual-model observations. Both are local, and
 the decision id joins them. See [model-routing.md](model-routing.md).
+
+## Consolidated memory and citations
+
+`MEMORY.md` is one `- ` line per remembered thing, rewritten only by
+`opentorus memory consolidate` (optionally at the end of `run` / `campaign` with
+`memory.auto_consolidate: true`; off by default). Each line is addressed by a
+content id `M-<8 hex>` (SHA-1 of its whitespace-normalised text), so a rewrite that
+keeps a line keeps its id. Stage one writes one `SessionSummary` (`SUM-NNNN`) per
+session id in `session.jsonl` and per finished campaign (`status` completed /
+stopped / failed); an empty or rejected summary is kept too, so the source is not
+re-read. Stage two writes one `ConsolidationRecord` (`CONSOL-NNNN`): `published`
+(the file was replaced atomically, the old one saved as `memory/MEMORY.md.prev`),
+`rejected` (bad line format, over `memory.max_bytes` / `memory.max_lines`, a
+secret, or an output that would erase every entry -- MEMORY.md is untouched and the
+summaries stay pending) or `unchanged`. `dropped_unused` lists entries that aged out;
+`dropped_unsupported` lists lines that stated a result as proved / verified without
+naming a claim whose current status is `verified` / `formally_verified` (or a
+`COUNTEREXAMPLE_VERIFIED` / `FORMAL_PROOF_VERIFIED` dossier claim) -- memory never
+upgrades evidence into proof.
+
+The agent cites what it used in a `<memory_citations>` block (`ID | why`) at the end
+of its final answer; the loop strips the block from the visible answer. Usage is
+recorded once per `(entry, session)`: `CitationRecord` for a cited id that was shown,
+`ExposureRecord` for every id shown. Retention follows: an entry cited by some session
+ages from its last citation, one shown but never cited from when it was first shown,
+and one never shown is kept. Typed-ledger entries are ranked the same way for the
+context (`memory.ledger_entries`), except that failed attempts are always eligible.
+See [memory.md](memory.md) and [skills.md](skills.md).
+

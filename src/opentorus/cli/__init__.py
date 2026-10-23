@@ -27,6 +27,7 @@ from opentorus.cli import (  # noqa: F401
     kb,
     lit,
     memory,
+    memory_consolidate,
     pack,
     paper,
     patch,

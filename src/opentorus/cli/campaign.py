@@ -145,6 +145,7 @@ def campaign_start(
         return
     typer.echo(record.id)
     _print_summary(engine, record.id)
+    _auto_consolidate(engine)
 
 
 def _newest_campaign(base, problem_id: str) -> str:  # noqa: ANN001
@@ -190,6 +191,14 @@ def campaign_resume(
     console.print(escape(result.message))
     if result.resumed:
         _print_summary(engine, result.record.id)
+        _auto_consolidate(engine)
+
+
+def _auto_consolidate(engine) -> None:  # noqa: ANN001
+    """Fold the finished campaign into MEMORY.md (no-op unless memory.auto_consolidate)."""
+    from opentorus.cli.memory_consolidate import auto_consolidate
+
+    auto_consolidate(engine.ot_dir)
 
 
 @campaign_app.command("status")

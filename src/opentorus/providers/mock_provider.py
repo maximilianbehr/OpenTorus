@@ -8,6 +8,7 @@ validation was performed.
 
 from __future__ import annotations
 
+import json
 import re
 
 from opentorus.agent.session import SessionMessage
@@ -48,6 +49,10 @@ class MockProvider(BaseProvider):
     ) -> ProviderResponse:
         if not messages:
             return ProviderResponse(kind="message", content="No input received.")
+
+        memory = _memory_reply(messages)
+        if memory is not None:
+            return ProviderResponse(kind="message", content=memory)
 
         last = messages[-1]
         if last.role == "tool":
@@ -99,3 +104,59 @@ def _last_user_text(messages: list[SessionMessage]) -> str:
         if message.role == "user":
             return message.content
     return ""
+
+
+# First-line markers of the two memory-consolidation requests (opentorus.memory_consolidation;
+# not imported here: providers stay below the research layer).
+_MEMORY_STAGE_ONE = "[opentorus:memory-stage-one]"
+_MEMORY_CONSOLIDATION = "[opentorus:memory-consolidation]"
+
+
+def _between(text: str, start: str, end: str) -> str:
+    at = text.find(start)
+    if at == -1:
+        return ""
+    rest = text[at + len(start) :]
+    stop = rest.find(end)
+    return rest if stop == -1 else rest[:stop]
+
+
+def _memory_reply(messages: list[SessionMessage]) -> str | None:
+    """Deterministic stand-ins for the memory consolidation calls.
+
+    Stage one keeps the person's requests (and a campaign's outcome line) verbatim as
+    "- " bullets; stage two appends each new record's bullets to the current entries,
+    tagged with the record's slug, without duplicates. No judgement, but the same input
+    always gives the same MEMORY.md, so the pipeline can be tested end to end offline.
+    """
+    system = messages[0].content if messages and messages[0].role == "system" else ""
+    user = _last_user_text(messages)
+    if system.startswith(_MEMORY_STAGE_ONE):
+        record = _between(user, "<record>\n", "\n</record>")
+        source = re.search(r"^- source: (\S+)", user, re.M)
+        bullets: list[str] = []
+        for line in record.splitlines():
+            if line.startswith("[user] "):
+                said = " ".join(line[len("[user] ") :].split())[:200]
+                bullets.append(f'- The person asked: "{said}"')
+            elif line.startswith("[outcome] "):
+                bullets.append("- " + " ".join(line[len("[outcome] ") :].split())[:300])
+        bullets = list(dict.fromkeys(bullets))[:5]
+        slug = source.group(1).split(":")[-1][:8].lower() if source and bullets else ""
+        return json.dumps({"session_summary": "\n".join(bullets), "session_slug": slug})
+    if system.startswith(_MEMORY_CONSOLIDATION):
+        current = _between(user, "<current_memory>\n", "</current_memory>")
+        lines = [line for line in current.splitlines() if line.startswith("- ")]
+        seen = {" ".join(line.split()) for line in lines}
+        pattern = r'<record [^>]*slug="([^"]*)"[^>]*>\n(.*?)\n</record>'
+        for match in re.finditer(pattern, user, re.S):
+            slug, body = match.group(1), match.group(2)
+            for line in body.splitlines():
+                if not line.startswith("- "):
+                    continue
+                entry = f"- ({slug}) {line[2:].strip()}" if slug else line.strip()
+                if " ".join(entry.split()) not in seen:
+                    seen.add(" ".join(entry.split()))
+                    lines.append(entry)
+        return "# Project memory\n\n" + "\n".join(lines)
+    return None

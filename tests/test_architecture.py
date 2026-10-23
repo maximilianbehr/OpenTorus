@@ -98,6 +98,9 @@ RULES: dict[str, tuple[str, ...]] = {
     "suggest": (*FRONT_ENDS, "campaign", "providers", "evals"),
     "doctor": (*FRONT_ENDS, "agent", "campaign", "evals"),
     "ux": (*FRONT_ENDS, "research", "campaign", "tools", "evals"),
+    # Post-run consolidation: drives a provider through the interface, reads sessions,
+    # campaign snapshots and the research ledgers; never a front end or vendor module.
+    "memory_consolidation": (*FRONT_ENDS, *PROVIDER_IMPLEMENTATIONS, "evals", "tools"),
     # Skills are read-only data files: config/yaml only, nothing that acts.
     "skills": (*_UPPER_LAYERS, "governance", "privacy"),
     "actions": _UPPER_LAYERS,

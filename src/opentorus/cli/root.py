@@ -257,6 +257,9 @@ def run(
                 console.print(f"\n[bold]Run summary:[/bold] {format_run_summary(outcome.summary)}")
             elif outcome.summary and outcome.idle_reason:
                 console.print(f"[dim]Session totals: {format_run_summary(outcome.summary)}[/dim]")
+            from opentorus.cli.memory_consolidate import auto_consolidate
+
+            auto_consolidate(ot_dir)  # no-op unless memory.auto_consolidate
             return
 
         transform = None
@@ -330,6 +333,9 @@ def run(
         tool_calls=loop.tool_calls_this_run,
     )
     console.print(f"\n[bold]Run summary:[/bold] {format_run_summary(summary)}")
+    from opentorus.cli.memory_consolidate import auto_consolidate
+
+    auto_consolidate(ot_dir)  # no-op unless memory.auto_consolidate
     if verification.status not in ("not_needed", "passed"):
         color = "green" if verification.status == "repaired" else "red"
         console.print(f"[{color}]Verification: {verification.detail}[/{color}]")
