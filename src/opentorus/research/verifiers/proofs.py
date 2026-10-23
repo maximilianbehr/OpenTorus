@@ -20,7 +20,8 @@ from opentorus.jsonl import append_jsonl, next_id, read_jsonl
 
 if TYPE_CHECKING:
     from opentorus.config import Config
-    from opentorus.research.verifiers.base import Verifier
+    from opentorus.research.verifiers.base import VerificationResult, Verifier
+    from opentorus.research.verifiers.statements import FormalStatement
 
 _SUFFIX = {
     "lean4": ".lean",
@@ -73,7 +74,48 @@ class ProofAttempt(BaseModel):
     # True when this record answers a resubmission of source already checked, rather
     # than a fresh backend run. Recorded so the artifact never overstates what ran.
     cached: bool = False
+    # Proof-assistant gate outcome (Lean/Coq): why the gate refused (see
+    # ``VerificationResult.rejection``), the axioms the theorem depends on, and the
+    # audited theorem name.
+    rejection: str | None = None
+    axioms: list[str] | None = None
+    theorem: str | None = None
+    # Statement fidelity: the FSTMT-* frozen statement this source was checked
+    # against (and its digest at the time). ``statement_bound`` is True only when the
+    # checker confirmed the verbatim statement *and* the elaborated type. A Lean/Coq
+    # proof that is not statement-bound never promotes a claim — it is support.
+    statement_id: str | None = None
+    statement_sha256: str | None = None
+    statement_bound: bool = False
+    confined: bool | None = None
+    # Structured checker feedback (``diagnostics.summarize``); raw output above.
+    diagnostics: dict | None = None
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+def can_promote(proof: ProofAttempt) -> tuple[bool, str]:
+    """Whether ``proof`` may promote its claim, and why not if it may not.
+
+    An accepted, conclusive attempt promotes — except that a proof-assistant result
+    (Lean/Coq) must also be *statement-bound*: checked against a human-accepted frozen
+    formal statement of that claim. Otherwise any accepted file could be cited for any
+    claim; the checker only says *some* theorem was proved.
+    """
+    from opentorus.research.verifiers.statements import PROOF_ASSISTANT_BACKENDS
+
+    if not proof.accepted:
+        return False, f"{proof.id}: {proof.backend} did not accept this attempt"
+    if proof.inconclusive:
+        return False, f"{proof.id}: {proof.backend} was inconclusive"
+    if proof.backend in PROOF_ASSISTANT_BACKENDS and not proof.statement_bound:
+        return False, (
+            f"{proof.id}: an accepted {proof.backend} proof that is not bound to a "
+            "human-accepted frozen formal statement (FSTMT-*) of the claim. It shows "
+            "that *some* theorem was proved, not that this claim was; it counts as "
+            "support. Freeze the statement (`opentorus proof statement add` + "
+            "`accept`) and resubmit against it"
+        )
+    return True, ""
 
 
 def _cached_resubmission(ot_dir: Path, prior: ProofAttempt, claim_id: str | None) -> ProofAttempt:
@@ -105,6 +147,57 @@ def _cached_resubmission(ot_dir: Path, prior: ProofAttempt, claim_id: str | None
     return echoed
 
 
+def _verify_against_statement(
+    ot_dir: Path, verifier: Verifier, source: str, statement: FormalStatement
+) -> VerificationResult:
+    """Check ``source`` against a frozen statement (verbatim + elaborated type).
+
+    The statement's pristine type is computed once per checker version and cached on
+    the FSTMT record. A verifier without the statement-fidelity protocol (a test stub,
+    an SMT backend) cannot bind: its result is returned as-is, unbound.
+    """
+    from opentorus.research.verifiers.backends import FrozenSpec
+    from opentorus.research.verifiers.base import VerificationResult
+    from opentorus.research.verifiers.statements import (
+        record_pristine_type,
+        statement_source,
+    )
+
+    verify_against = getattr(verifier, "verify_against", None)
+    compute_pristine = getattr(verifier, "pristine_type", None)
+    if verify_against is None or compute_pristine is None:
+        return verifier.verify(source)
+    name = getattr(verifier, "name", statement.backend)
+    if not verifier.is_available():
+        return VerificationResult(
+            backend=name,
+            accepted=False,
+            available=False,
+            output=f"Backend '{name}' is not installed; formal verification unavailable.",
+        )
+    frozen = statement_source(ot_dir, statement)
+    version = verifier.version()
+    pristine = statement.pristine_type
+    if pristine is None or statement.pristine_backend_version != version:
+        pristine, detail = compute_pristine(frozen)
+        if pristine is None:
+            return VerificationResult(
+                backend=name,
+                backend_version=version,
+                accepted=False,
+                inconclusive=True,
+                rejection="frozen_statement_invalid",
+                output=(
+                    f"[opentorus gate] the frozen statement {statement.id} could not be "
+                    f"elaborated, so nothing can be checked against it (inconclusive, "
+                    f"not a verdict on this proof):\n{detail}"
+                ),
+            )
+        record_pristine_type(ot_dir, statement.id, pristine, version)
+    spec = FrozenSpec(source=frozen, theorem=statement.theorem, pristine_type=pristine)
+    return verify_against(source, spec)
+
+
 def proofs_dir(ot_dir: Path) -> Path:
     return ot_dir / "proofs"
 
@@ -127,7 +220,10 @@ def get_proof(ot_dir: Path, proof_id: str) -> ProofAttempt | None:
 def accepted_proof_for_claim(
     ot_dir: Path, claim_id: str, problem_id: str | None = None
 ) -> ProofAttempt | None:
-    """Most recent accepted attempt for a claim *in its own namespace*, if any.
+    """Most recent *promoting* attempt for a claim in its own namespace, if any.
+
+    Promoting means :func:`can_promote`: accepted, conclusive and — for Lean/Coq —
+    bound to the claim's frozen formal statement.
 
     ``problem_id=None`` asks about a workspace claim and therefore ignores attempts
     recorded against a dossier claim of the same id, and vice versa. Matching on the
@@ -137,7 +233,7 @@ def accepted_proof_for_claim(
     matches = [
         p
         for p in list_proofs(ot_dir)
-        if p.claim_id == claim_id and p.accepted and p.problem_id == problem_id
+        if p.claim_id == claim_id and can_promote(p)[0] and p.problem_id == problem_id
     ]
     return matches[-1] if matches else None
 
@@ -172,6 +268,22 @@ def submit_proof(
         )
 
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    from opentorus.research.verifiers.statements import (
+        PROOF_ASSISTANT_BACKENDS,
+        active_statement,
+    )
+
+    statement = None
+    family = getattr(verifier, "name", backend)
+    if claim_id and (family in PROOF_ASSISTANT_BACKENDS or backend in PROOF_ASSISTANT_BACKENDS):
+        statement = active_statement(
+            ot_dir,
+            claim_id,
+            "coq" if "coq" in (family, backend) else "lean4",
+            problem_id=problem_id,
+            submitted_under=submitted_under,
+        )
+    statement_sha = statement.sha256 if statement is not None else None
     existing = list_proofs(ot_dir)
     # An identical source gets an identical verdict, so re-running the backend buys
     # nothing — and on Lean/Coq that is minutes per submission. Inconclusive results are
@@ -185,10 +297,14 @@ def submit_proof(
             and not prior.inconclusive
             and prior.available
             and prior.problem_id == problem_id
+            and prior.statement_sha256 == statement_sha
         ):
             return _cached_resubmission(ot_dir, prior, claim_id)
 
-    result = verifier.verify(source)
+    if statement is not None:
+        result = _verify_against_statement(ot_dir, verifier, source, statement)
+    else:
+        result = verifier.verify(source)
 
     existing = list_proofs(ot_dir)
     # The PROOF-NNNN prefix is shared with dossier proof attempts — mint across both
@@ -217,6 +333,14 @@ def submit_proof(
         source_path=rel_source,
         output=result.output,
         source_sha256=digest,
+        rejection=result.rejection,
+        axioms=result.axioms,
+        theorem=result.theorem,
+        statement_id=statement.id if statement is not None else None,
+        statement_sha256=statement_sha,
+        statement_bound=bool(result.statement_bound and statement is not None),
+        confined=result.confined,
+        diagnostics=result.diagnostics,
     )
     append_jsonl(proofs_path(ot_dir), attempt)
 
@@ -224,7 +348,20 @@ def submit_proof(
         from opentorus.research.graph import add_edge
 
         version = f" {result.backend_version}" if result.backend_version else ""
-        if result.general is False:
+        promotes, why_not = can_promote(attempt)
+        if not promotes and not attempt.inconclusive:
+            add_edge(
+                ot_dir,
+                proof_id,
+                claim_id,
+                "supports",
+                rationale=(
+                    f"Accepted by {result.backend}{version}, but not bound to a frozen "
+                    "formal statement of the claim: it proves some theorem, not "
+                    "necessarily this claim."
+                ),
+            )
+        elif result.general is False:
             # A closed arithmetic fact checks one instance, so it *supports* the claim
             # it is filed under — it does not validate it. Real runs submitted "1+2 = 3"
             # against "for n=3, max A >= 4", and "2**(4-2) + 1 = 5" against the Happy

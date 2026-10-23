@@ -28,6 +28,9 @@ def _ot(tmp_path: Path) -> Path:
 
 
 class AcceptingVerifier:
+    # Deliberately not "lean4": an accepted Lean/Coq result promotes only when it is
+    # bound to a frozen formal statement (tests/test_statement_fidelity.py). These
+    # tests pin the confirmation discipline, so they use a backend outside that rule.
     name = "stub"
 
     def is_available(self) -> bool:
@@ -38,8 +41,35 @@ class AcceptingVerifier:
 
     def verify(self, source: str) -> VerificationResult:
         return VerificationResult(
+            backend="stub", backend_version="stub-1.0", accepted=True, output="ok"
+        )
+
+
+class AcceptingLeanVerifier(AcceptingVerifier):
+    def verify(self, source: str) -> VerificationResult:
+        return VerificationResult(
             backend="lean4", backend_version="stub-1.0", accepted=True, output="ok"
         )
+
+
+def test_unbound_lean_proof_never_promotes(tmp_path: Path) -> None:
+    # Statement fidelity: an accepted Lean file with no frozen statement proves *some*
+    # theorem; it may not lift the claim to formally_verified, even with confirmation.
+    ot = _ot(tmp_path)
+    claim = new_claim(ot, "Lemma L.")
+    submit_proof(
+        ot,
+        default_config(),
+        "lean4",
+        "theorem L",
+        claim_id=claim.id,
+        verifier=AcceptingLeanVerifier(),
+    )
+    try:
+        update_claim(ot, claim.id, status="formally_verified", confirm=lambda a, b: True)
+        raise AssertionError("expected refusal for a statement-unbound Lean proof")
+    except OpenTorusError as exc:
+        assert "frozen formal statement" in str(exc)
 
 
 def test_math_statuses_present() -> None:

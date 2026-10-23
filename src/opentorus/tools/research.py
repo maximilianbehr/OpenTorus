@@ -1259,7 +1259,14 @@ class ProofSubmitTool(Tool):
         self.description = (
             "Machine-check formal source with an enabled verifier backend. Records a "
             "PROOF-* artifact with the verbatim accept/reject output; an ACCEPTED attempt "
-            "targeting a claim adds a 'validates' graph edge. On REJECTED, fix the source "
+            "targeting a claim adds a 'validates' graph edge. Lean/Coq sources pass a gate: "
+            "no sorry/Admitted, no axiom, no native_decide, no #eval/run_cmd/macro/IO or "
+            "other code execution; every theorem's axioms must be within propext, "
+            "Classical.choice, Quot.sound; name the result `theorem name : ... :=` (an "
+            "`example` cannot be audited). A Lean/Coq proof verifies a claim only when the "
+            "claim has a human-accepted frozen formal statement that the source contains "
+            "verbatim (same preamble, same elaborated type); otherwise it is support. "
+            "On REJECTED, fix the source "
             "using the returned verifier output and call proof_submit again — rejected "
             "attempts are preserved, never overwritten. Only an accepted proof_submit is "
             f"machine-checked; proof_write never is. Enabled backends: {backends}. "
@@ -1332,9 +1339,7 @@ class ProofSubmitTool(Tool):
                 backend=backend,
             )
 
-        output = (attempt.output or "").strip()
-        if len(output) > 4000:
-            output = output[:4000] + "\n… (output truncated)"
+        output = _model_facing_output(attempt)
         example = _CERTIFICATE_EXAMPLES.get(attempt.backend)
         schema_hint = (
             (
@@ -1353,6 +1358,10 @@ class ProofSubmitTool(Tool):
             "available": attempt.available,
             "inconclusive": attempt.inconclusive,
             "timeout_seconds": seconds,
+            "rejection": attempt.rejection,
+            "statement_bound": attempt.statement_bound,
+            "statement_id": attempt.statement_id,
+            "diagnostics": attempt.diagnostics,
         }
         # Only name the limit when the checker actually hit it. Stating "after 600s" for
         # every inconclusive result read as a timeout even when the certificate had
@@ -1361,6 +1370,15 @@ class ProofSubmitTool(Tool):
         timed_out = "timed out" in (attempt.output or "").lower()
         timing = f" after the {seconds}s limit" if timed_out else ""
         clamp = f"\n\n{clamp_note}" if clamp_note else ""
+        if attempt.rejection and not attempt.accepted and not attempt.inconclusive:
+            # The gate refused before (or regardless of) the checker's verdict: a
+            # forbidden token, `sorry`, a non-standard axiom, a statement mismatch.
+            return self.fail(
+                call,
+                f"{attempt.id} REJECTED by the {attempt.backend} gate "
+                f"({attempt.rejection}). Fix the source and call proof_submit again:\n\n" + output,
+                **meta,
+            )
         if not attempt.available:
             return self.fail(
                 call,
@@ -1369,12 +1387,21 @@ class ProofSubmitTool(Tool):
                 **meta,
             )
         if attempt.accepted:
+            from opentorus.research.verifiers.proofs import can_promote
+
             version = f" {attempt.backend_version}" if attempt.backend_version else ""
-            linked = (
-                f" Added a 'validates' edge to {claim_id}."
-                if claim_id
-                else " No claim linked (pass claim_id to target one)."
-            )
+            promotes, why_not = can_promote(attempt)
+            if claim_id and promotes:
+                linked = f" Added a 'validates' edge to {claim_id}."
+            elif claim_id:
+                linked = (
+                    f" Recorded as SUPPORT for {claim_id} (a 'supports' edge), not as "
+                    f"verification: {why_not}."
+                )
+            else:
+                linked = " No claim linked (pass claim_id to target one)."
+            if attempt.statement_bound:
+                linked += f" Statement-bound to {attempt.statement_id}."
             return self.ok(
                 call,
                 f"{attempt.id} ACCEPTED by {attempt.backend}{version}.{linked} "
@@ -1406,6 +1433,30 @@ class ProofSubmitTool(Tool):
             "verifier output and call proof_submit again:\n\n" + output + schema_hint,
             **meta,
         )
+
+
+def _model_facing_output(attempt) -> str:  # noqa: ANN001 — ProofAttempt
+    """What the model sees of the checker output.
+
+    Lean/Coq output is summarized (error classes, first error, unsolved goal,
+    repairability — ``verifiers.diagnostics``) plus the gate's own verdict line, rather
+    than a 4000-character dump; the raw output stays in the PROOF-* artifact. Other
+    backends keep the (bounded) raw output, which is short and is the schema teacher.
+    """
+    from opentorus.research.verifiers.diagnostics import render
+
+    raw = (attempt.output or "").strip()
+    rendered = render(attempt.diagnostics)
+    if attempt.backend in ("lean4", "coq") and (rendered or attempt.rejection):
+        gate = next((ln for ln in raw.splitlines() if ln.startswith("[opentorus gate]")), "")
+        parts = [p for p in (gate, rendered) if p]
+        if not rendered and raw and not gate:
+            parts.append(raw[:1500])
+        parts.append(f"(Raw checker output is kept in the {attempt.id} record.)")
+        return "\n".join(parts)
+    if len(raw) > 4000:
+        raw = raw[:4000] + "\n… (output truncated)"
+    return raw
 
 
 class KbQueryTool(Tool):

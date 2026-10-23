@@ -133,7 +133,7 @@ def _require_verification_artifact(
     attempt, and an inconclusive one (timeout/crash) are each refused with the
     reason, so "the checker never finished" can never be laundered into "verified".
     """
-    from opentorus.research.verifiers.proofs import get_proof, proofs_path
+    from opentorus.research.verifiers.proofs import can_promote, get_proof, proofs_path
 
     ids = [a.strip() for a in (source_artifacts or []) if _PROOF_ID_RE.match(a.strip())]
     if not ids:
@@ -185,6 +185,20 @@ def _require_verification_artifact(
                 f"{art}: recorded for {proof.claim_id}, not {claim_id} — a verifier run is "
                 "bound to the claim it was submitted for"
             )
+        elif not can_promote(proof)[0]:
+            # Statement fidelity: an accepted Lean/Coq file proves *some* theorem.
+            # Only one checked against the claim's human-accepted frozen formal
+            # statement (verbatim + elaborated type) verifies the claim.
+            problems.append(can_promote(proof)[1])
+        elif (
+            claim_id is not None
+            and proof.statement_id is not None
+            and not _statement_belongs_to(ot_dir, proof.statement_id, claim_id, problem_id)
+        ):
+            problems.append(
+                f"{art}: bound to frozen statement {proof.statement_id}, which belongs to "
+                f"another claim — it verifies nothing for {claim_id}"
+            )
         else:
             accepted.append(art)
     if not accepted:
@@ -192,6 +206,15 @@ def _require_verification_artifact(
             f"Cannot record {evidence_type} evidence: no cited attempt was accepted.\n  - "
             + "\n  - ".join(problems)
         )
+
+
+def _statement_belongs_to(ot_dir: Path, statement_id: str, claim_id: str, problem_id: str) -> bool:
+    from opentorus.research.verifiers.statements import get_statement
+
+    stmt = get_statement(ot_dir, statement_id)
+    if stmt is None:
+        return False
+    return stmt.claim_id == claim_id.strip().upper() and stmt.problem_id in (None, problem_id)
 
 
 def add_evidence(

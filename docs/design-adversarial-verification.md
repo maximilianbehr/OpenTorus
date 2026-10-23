@@ -32,6 +32,12 @@ sketch; a pass is corroboration only), and the open-problem status sketch asks f
 both routes and the crux blocking each. `--disprove` now only changes priority.
 Pinned by `test_build_prove_prompt_default_is_neutral_prove_or_refute`.
 
+Statement fidelity for *formal* proofs is now enforced mechanically: a Lean/Coq
+proof promotes a claim only when it is bound to a human-accepted frozen formal
+statement (`FSTMT-*`) — verbatim statement, unchanged preamble, identical elaborated
+type — see `docs/artifact-model.md` ("Frozen formal statements"). Natural-language
+proofs and SMT/certificate checks are not covered by that rule.
+
 Not done, and worth a follow-up: a *statement-fidelity* referee finding. The paper's
 §7.1 reports the model "conveniently reinterpreting" a question (an existential bound
 delivered for a worst-case ask). `referee.py` classifies claims but does not compare
