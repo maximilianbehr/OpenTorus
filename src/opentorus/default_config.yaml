@@ -368,3 +368,25 @@ campaign:
     cost: 1.0
     redundancy: 1.0
     failure: 1.0
+
+# --- Memory (MEMORY.md consolidation, citation-driven retention) --------------
+memory:
+  # Show .opentorus/MEMORY.md and the ranked ledger entries to the agent (framed as data)
+  enabled: true
+  # Run `memory consolidate` automatically after `run` / `campaign` (model calls; off = unchanged)
+  auto_consolidate: false
+  # Drop entries no session cited for this many days (never-shown entries are kept)
+  max_unused_days: 30
+  # Size caps for the published MEMORY.md; a bigger consolidation output is rejected
+  max_bytes: 8000
+  max_lines: 60
+  # Typed-ledger entries shown in the memory block, most-cited first (0 = off)
+  ledger_entries: 8
+  # Sessions summarised per consolidation run (oldest un-summarised first)
+  max_sessions_per_run: 20
+
+# --- Skills (.opentorus/skills/<name>/SKILL.md) --------------------------------
+skills:
+  enabled: true
+  # Also list ~/.opentorus/skills (project skills win on a name clash)
+  include_user: true

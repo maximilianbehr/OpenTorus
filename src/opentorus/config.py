@@ -549,6 +549,37 @@ class CampaignConfig(BaseModel):
     scheduler_weights: SchedulerWeights = Field(default_factory=SchedulerWeights)
 
 
+class MemoryConfig(BaseModel):
+    """Consolidated memory (``.opentorus/MEMORY.md``) and citation-driven retention."""
+
+    # Show MEMORY.md (and the ranked ledger entries) to the agent as a framed data block.
+    enabled: bool = True
+    # Consolidate automatically at the end of ``run`` / ``campaign`` (two model calls
+    # per new session). Off by default: the mock/golden behaviour stays unchanged.
+    auto_consolidate: bool = False
+    # An entry cited by no session for this many days is dropped at consolidation.
+    # One shown to sessions but never cited is judged from when it was first shown;
+    # one no session has seen yet is kept (it has not had the chance to be useful).
+    max_unused_days: int = Field(default=30, ge=1)
+    # Hard cap on the published MEMORY.md; a consolidation output above it is rejected
+    # and the previous version kept.
+    max_bytes: int = Field(default=8000, ge=200)
+    max_lines: int = Field(default=60, ge=1)
+    # Typed-ledger entries (facts, decisions, failed attempts, …) shown in the memory
+    # block, most-cited first; 0 disables. Failed attempts are always eligible.
+    ledger_entries: int = Field(default=8, ge=0)
+    # Sessions summarised per ``memory consolidate`` (oldest first).
+    max_sessions_per_run: int = Field(default=20, ge=1)
+
+
+class SkillsConfig(BaseModel):
+    """Project playbooks: ``.opentorus/skills/<name>/SKILL.md`` (and ``~/.opentorus/skills``)."""
+
+    enabled: bool = True
+    # Also list the user's skills from ~/.opentorus/skills (project skills win on a name clash).
+    include_user: bool = True
+
+
 class Config(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
@@ -564,6 +595,8 @@ class Config(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     governance: GovernanceConfig = Field(default_factory=GovernanceConfig)
     campaign: CampaignConfig = Field(default_factory=CampaignConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
     def to_yaml(self) -> str:
         return yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False)

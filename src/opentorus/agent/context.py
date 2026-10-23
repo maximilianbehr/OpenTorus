@@ -112,6 +112,32 @@ def format_relevant(selected) -> str:
     return "\n".join(lines)
 
 
+def format_memory_context(ot_dir: Path, config: Config) -> str | None:
+    """The stable remembered-context block: MEMORY.md (framed as data) + the skills list.
+
+    Both change rarely (a consolidation, a new skill), so they sit in the stable
+    prefix. ``None`` when there is neither — a workspace without memory or skills sees
+    exactly the context it saw before. The framing and rules live with the data they
+    frame (:mod:`opentorus.research.memory_index`, :mod:`opentorus.skills`).
+    """
+    from opentorus.research.memory_index import format_memory_block
+    from opentorus.skills import discover_skills, format_skills_catalog
+
+    parts = [
+        format_memory_block(ot_dir, config),
+        format_skills_catalog(discover_skills(ot_dir, config)),
+    ]
+    text = "\n\n".join(part for part in parts if part)
+    return text or None
+
+
+def format_memory_ledgers(ot_dir: Path, config: Config) -> str | None:
+    """The volatile memory part: top typed-ledger entries ranked by citation use."""
+    from opentorus.research.memory_index import format_ledger_block
+
+    return format_ledger_block(ot_dir, config)
+
+
 def build_context_summary(
     root: Path,
     ot_dir: Path,
@@ -201,6 +227,9 @@ def build_messages(
         from opentorus.agent.prompts import LOCAL_TOOL_HINT
 
         messages.append(SessionMessage(role="system", content=LOCAL_TOOL_HINT))
+    remembered = format_memory_context(ot_dir, config)
+    if remembered:
+        messages.append(SessionMessage(role="system", content=remembered))
     if planned_task is not None:
         messages.append(
             SessionMessage(
@@ -234,6 +263,9 @@ def build_messages(
         ot_dir, config, latest_user_query(ot_dir, session_id=history_session_id)
     )
     retrieval = format_relevant(selected) if selected else None
+    ledgers = format_memory_ledgers(ot_dir, config)
+    if ledgers:
+        retrieval = f"{retrieval}\n\n{ledgers}" if retrieval else ledgers
 
     if not config.context.stable_prefix:
         # Legacy ordering, kept verbatim so the change can be switched off if a model

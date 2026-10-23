@@ -98,6 +98,8 @@ RULES: dict[str, tuple[str, ...]] = {
     "suggest": (*FRONT_ENDS, "campaign", "providers", "evals"),
     "doctor": (*FRONT_ENDS, "agent", "campaign", "evals"),
     "ux": (*FRONT_ENDS, "research", "campaign", "tools", "evals"),
+    # Skills are read-only data files: config/yaml only, nothing that acts.
+    "skills": (*_UPPER_LAYERS, "governance", "privacy"),
     "actions": _UPPER_LAYERS,
     "workspace": _UPPER_LAYERS,
     "notifications": _UPPER_LAYERS,

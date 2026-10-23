@@ -78,3 +78,35 @@ def add_memory(workspace_dir: Path, kind: MemoryKind, text: str) -> MemoryEntry:
 
 def list_memory(workspace_dir: Path, kind: MemoryKind) -> list[MemoryEntry]:
     return read_jsonl(_kind_path(workspace_dir, kind), MemoryEntry)
+
+
+def rank_entries(
+    workspace_dir: Path,
+    *,
+    limit: int | None = None,
+    max_unused_days: int = 30,
+    kinds: tuple[MemoryKind, ...] = VALID_KINDS,
+    now: datetime | None = None,
+) -> list[MemoryEntry]:
+    """Ledger entries for the agent's context, ranked by use.
+
+    Order: most citing sessions first, then most recent use (an entry never cited
+    ranks by when it was written). An entry gone unused for ``max_unused_days`` (see
+    :func:`opentorus.research.memory_index.is_expired`) is left out of the selection —
+    it stays in its ledger, nothing is deleted. Failed attempts are always eligible:
+    a dead end nobody cited is still a dead end (invariant 5), so it is never aged out.
+    """
+    from opentorus.research.memory_index import is_expired, rank_key, usage_stats
+
+    stats = usage_stats(workspace_dir)
+    moment = now or _utcnow()
+    pool: list[MemoryEntry] = []
+    for kind in kinds:
+        for entry in list_memory(workspace_dir, kind):
+            if kind != "failed_attempts" and is_expired(
+                stats.get(entry.id), now=moment, max_unused_days=max_unused_days
+            ):
+                continue
+            pool.append(entry)
+    pool.sort(key=lambda e: rank_key(e.id, stats, e.created_at))
+    return pool if limit is None else pool[:limit]

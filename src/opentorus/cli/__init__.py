@@ -36,6 +36,7 @@ from opentorus.cli import (  # noqa: F401
     repo,
     review,
     root,
+    skills,
     task,
     theorem,
 )

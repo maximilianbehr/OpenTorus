@@ -557,4 +557,12 @@ def build_default_registry(
         from opentorus.tools.research import register_research_tools
 
         register_research_tools(registry, root, ot_dir, config, problem_id=problem_id)
+    if config is not None and config.skills.enabled:
+        from opentorus.skills import discover_skills
+
+        # Only when a skill exists: a workspace without skills sees the tool list unchanged.
+        if discover_skills(ot_dir, config):
+            from opentorus.tools.skills import SkillLoadTool
+
+            registry.register(SkillLoadTool(ot_dir, config))
     return registry

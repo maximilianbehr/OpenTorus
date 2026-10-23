@@ -781,8 +781,15 @@ class AgentLoop:
                             self._append(SessionMessage(role="assistant", content=response.content))
                         recovery_hint = self._deliverable.gap_fill_hint()
                         continue
-                self._append(SessionMessage(role="assistant", content=response.content))
-                result_text = response.content
+                # The <memory_citations> block is bookkeeping, not part of the answer:
+                # record which memory entries were used (once per session), then strip it.
+                from opentorus.research.memory_index import take_citations
+
+                final_text = take_citations(
+                    self.ot_dir, self.config, response.content, self.session_id
+                )
+                self._append(SessionMessage(role="assistant", content=final_text))
+                result_text = final_text
                 break
 
             # The model may request several tool calls in one turn; execute each
