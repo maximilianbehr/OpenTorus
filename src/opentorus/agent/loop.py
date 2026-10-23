@@ -81,6 +81,15 @@ from opentorus.providers.base import BaseProvider, ProviderResponse
 from opentorus.tools.base import Tool
 from opentorus.tools.registry import ToolRegistry
 
+# Results recorded for the calls of a batch that a cancel/interrupt cut short. The two
+# cases are kept apart on purpose: a call that never started certainly had no effect; a
+# call interrupted mid-run may have had any part of its effect.
+TOOL_NOT_EXECUTED = "[not executed — cancelled before dispatch; this call did not run]"
+TOOL_OUTCOME_UNKNOWN = (
+    "[outcome unknown — interrupted while running; the call may have had some or all of "
+    "its effect. Check the workspace state before repeating it.]"
+)
+
 # A confirmation callback receives the decision, a human-readable description
 # of the pending action, and an optional session scope (e.g. "external" for all
 # network tools). Returns True to allow it.
@@ -824,12 +833,21 @@ class AgentLoop:
             )
 
             cancelled: PolicyDecision | None = None
-            for nm, ar, cid in resolved:
+            for index, (nm, ar, cid) in enumerate(resolved):
                 cancelled = self._runner.check_cancel()
                 if cancelled is not None:
+                    # Every call from here on was never dispatched: say so explicitly,
+                    # so the persisted turn pairs every call with an honest result.
+                    self._record_unrun(resolved[index:], interrupted=None)
                     break
                 self._status("tool", nm)
-                content = self._run_tool(nm, ar, cid)
+                try:
+                    content = self._run_tool(nm, ar, cid)
+                except BaseException:
+                    # Ctrl-C (or any abort) while this tool was running: whether its
+                    # effect happened is unknown; the calls after it never ran.
+                    self._record_unrun(resolved[index:], interrupted=cid)
+                    raise
                 self._append(
                     SessionMessage(
                         role="tool",
@@ -874,6 +892,29 @@ class AgentLoop:
             task=task,
         )
         return result_text
+
+    def _record_unrun(self, calls: list[tuple[str, dict, str]], *, interrupted: str | None) -> None:
+        """Persist an explicit result for each call of a batch that did not complete.
+
+        ``interrupted`` is the id of the call that was running when the run was
+        aborted (its outcome is unknown); every other call listed was cancelled
+        before dispatch and did not run. Nothing is executed here, and a later
+        rebuild/replay of the session reads these results instead of guessing.
+        """
+        for name, _args, call_id in calls:
+            running = call_id == interrupted
+            self._append(
+                SessionMessage(
+                    role="tool",
+                    content=TOOL_OUTCOME_UNKNOWN if running else TOOL_NOT_EXECUTED,
+                    metadata={
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "ok": False,
+                        "unrun": "interrupted_while_running" if running else "not_dispatched",
+                    },
+                )
+            )
 
     def _handle_truncated(
         self, response: ProviderResponse, continuations: int
