@@ -178,7 +178,11 @@ class SymbolicWorker:
             loop = bounded_loop(ctx, rt, lease=lease)
             final = loop.run(_prompt(ctx))
             turns = loop.steps_run
-            new_ids = sorted(p.id for p in list_proofs(rt.ot_dir) if p.id not in before)
+            new_ids = sorted(
+                p.id
+                for p in list_proofs(rt.ot_dir)
+                if p.id not in before and not rt.is_foreign(p.id)
+            )
         steps = max(1, turns)
         proofs = {p.id: p for p in list_proofs(rt.ot_dir) if p.id in new_ids}
         artifacts = [

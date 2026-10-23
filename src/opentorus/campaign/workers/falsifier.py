@@ -218,7 +218,9 @@ class FalsifierWorker:
                 exp_ids = [created_exp.id]
         else:
             before = {e.id for e in _list_ws_experiments(rt.ot_dir)}
-            gate, hint = experiment_deliverable(rt.ot_dir, template=SEARCH_TEMPLATE, before=before)
+            gate, hint = experiment_deliverable(
+                rt.ot_dir, template=SEARCH_TEMPLATE, before=before, is_foreign=rt.is_foreign
+            )
             timeout_coercions: list[str] = []
             loop = bounded_loop(
                 ctx,
@@ -238,12 +240,18 @@ class FalsifierWorker:
                     f"{rt.config.campaign.max_experiment_seconds}s (asked: "
                     f"{', '.join(timeout_coercions)})"
                 )
-            exp_ids = sorted(e.id for e in _list_ws_experiments(rt.ot_dir) if e.id not in before)
+            exp_ids = sorted(
+                e.id
+                for e in _list_ws_experiments(rt.ot_dir)
+                if e.id not in before and not rt.is_foreign(e.id)
+            )
         # Evidence the model recorded through tools during the session must survive the
         # worker outcome — a live falsifier once filed contradicting evidence that the
         # canned no-witness signature then buried.
         session_evidence = sorted(
-            e.id for e in list_evidence(rt.ot_dir) if e.id not in evidence_before
+            e.id
+            for e in list_evidence(rt.ot_dir)
+            if e.id not in evidence_before and not rt.is_foreign(e.id)
         )
         for ev_id in session_evidence:
             artifacts.append(

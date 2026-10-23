@@ -441,7 +441,9 @@ def _apply_budget_consumed(s: CampaignSnapshot, e: ev.CampaignEvent, p: BaseMode
     ledger.steps_used += p.steps
     ledger.tokens_used += p.tokens
     ledger.cost_used_usd += p.cost_usd
-    ledger.wall_seconds_used += p.wall_seconds
+    ledger.wall_seconds_used += (
+        p.wall_seconds if p.campaign_wall_seconds is None else p.campaign_wall_seconds
+    )
     if p.scope == "model_invocation":
         ledger.model_invocations += 1
     elif p.scope == "tool_execution":

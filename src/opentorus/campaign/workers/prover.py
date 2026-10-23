@@ -298,7 +298,10 @@ class ProverWorker:
 
             def _proof_written() -> bool:
                 now = {p.id: p.updated_at for p in store.list_proof_attempts(rt.ot_dir, pid)}
-                return any(pid_ not in before or before[pid_] != ts for pid_, ts in now.items())
+                return any(
+                    (pid_ not in before or before[pid_] != ts) and not rt.is_foreign(pid_)
+                    for pid_, ts in now.items()
+                )
 
             loop = bounded_loop(
                 ctx,
@@ -313,7 +316,9 @@ class ProverWorker:
         final = loop.run(prompt)
         after = {p.id: p for p in store.list_proof_attempts(rt.ot_dir, pid)}
         changed = sorted(
-            p_id for p_id, p in after.items() if p_id not in before or before[p_id] != p.updated_at
+            p_id
+            for p_id, p in after.items()
+            if (p_id not in before or before[p_id] != p.updated_at) and not rt.is_foreign(p_id)
         )
         # A non-primary branch's obligations come from the sketch *it* wrote. The gate
         # keeps proof_write off the primary, so a changed primary here means some other

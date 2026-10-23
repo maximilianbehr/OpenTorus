@@ -35,6 +35,7 @@ from opentorus.config import Config
 if TYPE_CHECKING:
     from opentorus.agent.control.events import RunEventSink
     from opentorus.agent.loop import AgentLoop, ConfirmCallback
+    from opentorus.campaign.concurrency import ConcurrencyGate
     from opentorus.providers.pool import ProviderLease, ProviderPool
     from opentorus.tools.base import ToolResult
     from opentorus.tools.registry import ToolRegistry
@@ -58,6 +59,15 @@ class WorkerRuntime:
     # The work item's board sink: when set (a branch work item), model-driven loops under
     # a real provider get the ``board_post`` tool, which appends validated notes here.
     board: list[Finding] | None = None
+    # Parallel batches: the work lock (its experiment tools release it while they run)
+    # and "was this artifact created/touched by a *sibling* work item?" (see
+    # ``campaign.concurrency``). Both ``None`` in a sequential run.
+    gate: ConcurrencyGate | None = None
+    foreign: Callable[[str], bool] | None = None
+
+    def is_foreign(self, artifact_id: str) -> bool:
+        """True when a concurrent sibling work item created or last touched it."""
+        return bool(self.foreign is not None and self.foreign(artifact_id))
 
     def registry(self, problem_id: str | None) -> ToolRegistry:
         if self.registry_factory is not None:
@@ -376,6 +386,15 @@ def bounded_loop(
         registry or rt.registry(ctx.root_problem.problem_id), ctx.allowed_tools
     )
     allowed = ctx.allowed_tools
+    if rt.gate is not None:
+        from opentorus.campaign.concurrency import LOCK_RELEASING_TOOLS, gate_experiment_tool
+        from opentorus.tools.registry import ToolRegistry as _Registry
+
+        if any(restricted.get(name) is not None for name in LOCK_RELEASING_TOOLS):
+            gated = _Registry()
+            for tool in restricted.tools():
+                gated.register(gate_experiment_tool(tool, rt.gate))
+            restricted = gated
     # The board tool only for a branch work item under a real provider: the mock keys on
     # the tool names it sees, and offline runs must stay byte-identical.
     if rt.board is not None and ctx.allowed_tools and not is_mock_provider(lease.provider):
@@ -471,7 +490,11 @@ def experiment_timeout_gate(
 
 
 def experiment_deliverable(
-    ot_dir: Path, *, template: str, before: set[str]
+    ot_dir: Path,
+    *,
+    template: str,
+    before: set[str],
+    is_foreign: Callable[[str], bool] | None = None,
 ) -> tuple[Callable[[], bool], Callable[[], str]]:
     """``(session_gate, session_recovery_hint)`` for ``bounded_loop`` that make "an
     experiment created in this run" the work item's deliverable: a chat-only reply is
@@ -485,7 +508,10 @@ def experiment_deliverable(
     from opentorus.research.experiments import list_experiments
 
     def _gate() -> bool:
-        return any(e.id not in before for e in list_experiments(ot_dir))
+        return any(
+            e.id not in before and not (is_foreign is not None and is_foreign(e.id))
+            for e in list_experiments(ot_dir)
+        )
 
     def _hint() -> str:
         return (

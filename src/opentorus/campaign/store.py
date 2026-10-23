@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -134,6 +135,9 @@ class CampaignStore:
         self._snapshot: CampaignSnapshot | None = None
         self._record: CampaignRecord | None = None
         self._last_seq: int | None = None
+        # One writer at a time: the line append, the fold and the snapshot rewrite of an
+        # event are one step, even if a future caller appends from several threads.
+        self.lock = threading.RLock()
 
     # -- paths ----------------------------------------------------------------------
 
@@ -255,7 +259,34 @@ class CampaignStore:
 
         Raises :class:`InvalidTransition` (nothing written) for a phase move the table
         forbids, and ``pydantic.ValidationError`` for a payload the registry rejects.
+        Serialized by :attr:`lock` (seq assignment, line, fold and snapshot together).
         """
+        with self.lock:
+            return self._append_locked(
+                event_type,
+                payload,
+                actor=actor,
+                role=role,
+                refs=refs,
+                causation_id=causation_id,
+                correlation_id=correlation_id,
+                work_item_id=work_item_id,
+                branch_id=branch_id,
+            )
+
+    def _append_locked(
+        self,
+        event_type: str,
+        payload: BaseModel | dict[str, object],
+        *,
+        actor: str,
+        role: WorkerRole | None,
+        refs: tuple[str, ...] | list[str],
+        causation_id: str | None,
+        correlation_id: str | None,
+        work_item_id: str | None,
+        branch_id: str | None,
+    ) -> ev.CampaignEvent:
         snapshot = self._ensure_loaded()
         if snapshot.status.value in ("completed", "stopped", "failed") and event_type not in (
             ev.EventType.diagnostic_recorded,

@@ -174,7 +174,9 @@ class NumericalWorker:
                 exp_ids = [created_exp.id]
         else:
             before = {e.id for e in list_experiments(rt.ot_dir)}
-            gate, hint = experiment_deliverable(rt.ot_dir, template=template, before=before)
+            gate, hint = experiment_deliverable(
+                rt.ot_dir, template=template, before=before, is_foreign=rt.is_foreign
+            )
             timeout_coercions: list[str] = []
             loop = bounded_loop(
                 ctx,
@@ -194,7 +196,11 @@ class NumericalWorker:
                     f"{rt.config.campaign.max_experiment_seconds}s (asked: "
                     f"{', '.join(timeout_coercions)})"
                 )
-            exp_ids = sorted(e.id for e in list_experiments(rt.ot_dir) if e.id not in before)
+            exp_ids = sorted(
+                e.id
+                for e in list_experiments(rt.ot_dir)
+                if e.id not in before and not rt.is_foreign(e.id)
+            )
         recorded: list[str] = []
         scaffold_only = False
         for exp_id in exp_ids:

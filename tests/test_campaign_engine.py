@@ -370,16 +370,19 @@ def test_start_requires_an_existing_dossier(tmp_path: Path) -> None:
         engine.start("PROBLEM-0042", mode="exploration")
 
 
-def test_parallelism_above_one_is_capped_with_a_diagnostic(tmp_path: Path) -> None:
+def test_parallelism_above_one_is_real_not_capped(tmp_path: Path) -> None:
+    """Parallel workers are implemented (tests/test_campaign_parallel.py), so a value
+    above one is frozen into the record as is and no ``parallelism_capped`` is emitted;
+    the event type stays readable for older logs."""
     root, ot, pid = make_workspace(tmp_path)
     config = default_config()
     config.campaign.max_parallel_workers = 3
     engine = make_engine(root, ot, config=config)
     record = engine.start(pid, mode="exploration", run=False)
     snap = _snapshot(ot, record.id)
-    assert [d.kind for d in snap.diagnostics] == ["parallelism_capped"]
-    assert "3" in snap.diagnostics[0].message
-    assert "parallelism_capped" in _types(ot, record.id)
+    assert record.config_snapshot.max_parallel_workers == 3
+    assert snap.diagnostics == []
+    assert "parallelism_capped" not in _types(ot, record.id)
 
 
 def test_two_fresh_workspaces_produce_identical_logs_and_digests(tmp_path: Path) -> None:

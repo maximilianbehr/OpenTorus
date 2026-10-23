@@ -299,6 +299,7 @@ def select_next(
     *,
     branch_step_budget: int = 0,
     exclude: frozenset[str] | set[str] = frozenset(),
+    reserved_steps: int = 0,
 ) -> WorkItemPlan | None:
     """The next work item, or ``None`` when nothing is runnable.
 
@@ -307,8 +308,13 @@ def select_next(
     round). Choice = highest ``total``; ties by ``branch_id`` (the plan carries no
     work item id yet — the engine mints it — so the second tie-break is applied by
     the caller's id order).
+
+    ``reserved_steps`` are campaign steps already promised to work items scheduled in
+    the same parallel batch (0 in a sequential run): they are not available again, so
+    concurrent items can never jointly overspend ``max_steps``.
     """
-    if campaign_steps_remaining(snapshot) <= 0:
+    campaign_left = campaign_steps_remaining(snapshot) - max(0, reserved_steps)
+    if campaign_left <= 0:
         return None
     candidates: list[tuple[float, str, BranchRecord, ScoreBreakdown]] = []
     for bid in sorted(snapshot.branches):
@@ -328,10 +334,7 @@ def select_next(
     candidates.sort(key=lambda c: (c[0], c[1]))
     _neg, _bid, branch, score = candidates[0]
     role = branch.assigned_worker_role
-    max_steps = min(
-        branch_steps_remaining(branch, snapshot, branch_step_budget),
-        campaign_steps_remaining(snapshot),
-    )
+    max_steps = min(branch_steps_remaining(branch, snapshot, branch_step_budget), campaign_left)
     return WorkItemPlan(
         branch_id=branch.branch_id,
         role=role,

@@ -336,7 +336,7 @@ campaign:
   initial_branches: 4
   # Branches scheduled concurrently; the rest wait as "proposed"
   max_active_branches: 3
-  # v1 executes work items sequentially; a larger value is capped to 1 with a diagnostic
+  # Work items run concurrently on distinct branches (threads); 1 = sequential, deterministic
   max_parallel_workers: 1
   # Total model turns across all workers; 0 = not configured / unlimited
   max_steps: 50

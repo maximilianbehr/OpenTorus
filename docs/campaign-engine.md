@@ -356,8 +356,20 @@ ledger's `exhausted` list) and the campaign is **paused** with reason
 `BUDGET_EXHAUSTED`. That is a valid, resumable state: raise the limit in
 `config.yaml`, or simply `campaign resume` -- a resume that finds the same axes
 still spent lets the mode's completion criterion end the campaign (`budget`)
-instead of pausing forever. `max_parallel_workers > 1` is accepted but capped to
-1 with a `parallelism_capped` event: v1 executes work items sequentially.
+instead of pausing forever.
+
+**Parallel workers.** With `max_parallel_workers > 1`, SCHEDULE plans up to that many
+work items on *distinct* branches and EXECUTE runs them on threads
+([adr/0002-parallel-campaign-workers.md](adr/0002-parallel-campaign-workers.md)). A
+work item's thread holds the campaign's work lock except while it waits for the model
+or an `exp_run` subprocess, so tool calls and dossier writes stay serialized and each
+item's artifacts are attributed exactly; the engine thread is the event log's only
+writer and records the results in scheduled order. Budgets are reserved before
+dispatch: steps exactly (each plan's `max_steps` is unavailable to the next), tokens
+and cost as equal shares of what is left, and every loop stops when the recorded
+ledger plus the live spend of all in-flight items reaches a limit. The campaign wall
+clock is charged a batch's elapsed time once. The formalizer always runs alone. With
+the default `1` the sequential path is unchanged and deterministic.
 
 A **provider outage** is treated the same way, not as a verdict on the strategy.
 A worker that raises fails its work item with a *signed* failure
@@ -382,7 +394,7 @@ so a resume months later runs under the same rules.
 | `campaign.default_mode` | `exploration` | mode when `--mode` is omitted (`prove-or-refute`, `exploration`, `survey`) |
 | `campaign.initial_branches` | `4` | proposals kept after de-duplication (`--branches` overrides) |
 | `campaign.max_active_branches` | `3` | branches scheduled concurrently; the rest wait as `proposed` |
-| `campaign.max_parallel_workers` | `1` | v1 executes sequentially; a larger value is capped to 1 with a diagnostic |
+| `campaign.max_parallel_workers` | `1` | work items run concurrently on distinct branches (threads; see Budgets); 1 = sequential and deterministic |
 | `campaign.max_steps` | `50` | model turns across all workers; 0 = unlimited (`--max-steps`) |
 | `campaign.max_wall_seconds` | `0` | wall-clock budget for the whole campaign; 0 = unlimited (`--max-wall-seconds`) |
 | `campaign.token_budget` | `0` | tokens across all workers; 0 = unlimited (`--token-budget`) |

@@ -120,7 +120,7 @@ Extras:
 | `migration_recorded` | source paths, sha256s, `imported_at`, `importer_version` | `campaign import-research` |
 | `diagnostic_recorded` | `Diagnostic` | the store or engine noticed something about the files themselves (the only event a terminal campaign still accepts) |
 | `campaign_failed` | reason | an illegal phase transition or a missing handler (terminal) |
-| `parallelism_capped` | requested, effective | `max_parallel_workers > 1` at start |
+| `parallelism_capped` | requested, effective | legacy: written by builds that capped `max_parallel_workers` to 1; still read, no longer emitted |
 | `problem_normalized` | `NormalizedProblem` | NORMALIZE |
 
 ## Reducer and replay
@@ -181,7 +181,7 @@ lists them):
 | `invalid_payload` | a known type whose payload the reducer could not validate |
 | `invalid_transition` | a phase move in an old log that the table forbids (skipped) |
 | `migration` | reserved for a record upgraded on read (every migration is the identity today) |
-| `parallelism_capped` | `max_parallel_workers > 1` |
+| `parallelism_capped` | legacy logs only (parallel workers are real since ADR 0002) |
 
 `schema_version` stamps every event and snapshot; `store.MIGRATIONS[v]` upgrades a
 raw event dict *to* version `v` and `migrate_events` runs a record through every

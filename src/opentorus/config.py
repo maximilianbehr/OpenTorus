@@ -527,7 +527,7 @@ class CampaignConfig(BaseModel):
     initial_branches: int = 4
     # Branches scheduled concurrently; the rest queue as ``proposed``.
     max_active_branches: int = 3
-    # v1 executes sequentially; a larger value is capped to 1 with a diagnostic.
+    # Work items of distinct branches run concurrently (threads); 1 = sequential.
     max_parallel_workers: int = 1
     # Total model turns across all workers; 0 = not configured / unlimited.
     max_steps: int = 50

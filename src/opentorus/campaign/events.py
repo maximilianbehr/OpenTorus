@@ -254,6 +254,10 @@ class BudgetConsumedPayload(_Payload):
     tokens: int = 0
     cost_usd: float = 0.0
     wall_seconds: float = 0.0
+    # Parallel batches: the wall seconds this event adds to the *campaign* ledger when
+    # they differ from the item's own (concurrent items overlap in time). ``None`` =
+    # same as ``wall_seconds`` (every sequential event).
+    campaign_wall_seconds: float | None = None
 
 
 class BudgetExhaustedPayload(_Payload):
